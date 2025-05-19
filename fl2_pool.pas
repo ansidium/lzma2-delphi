@@ -4,48 +4,65 @@ interface
 
 uses
   System.SysUtils,
+  System.Classes,
   System.SyncObjs,
-  System.Generics.Collections;
+  System.Generics.Collections,
+  FL2Threading;
 
-type
-  FL2POOL_function = procedure(opaque: Pointer; n: NativeInt);
-  PFL2POOL_ctx = ^TFL2POOL_ctx;
+const
+  // Индикатор бесконечного ожидания
+  InfiniteTimeout: Cardinal = INFINITE;
+  // Максимальное количество потоков в пуле
+  FL2POOL_MAXTHREADS = FL2_MAXTHREADS;
 
-  TFL2POOL_ctx = class
-  private
-    type
-      TJob = record
-        Index: NativeInt;
-      end;
+// ----------------------------------------------------------------------------
+// Подпись задачи
+//  opaque: пользовательский контекст
+//  n: индекс задачи
+// ----------------------------------------------------------------------------
+FL2POOL_function = procedure(opaque: Pointer; n: NativeInt);
 
-      TWorker = class(TThread)
-      private
-        FPool: TFL2POOL_ctx;
-      protected
-        procedure Execute; override;
-      public
-        constructor Create(APool: TFL2POOL_ctx);
-      end;
-  private
-    FWorkers: array of TWorker;
-    FQueue: System.Generics.Collections.TQueue<TJob>;
-    FLock: TCriticalSection;
-    FWorkEvent: TEvent;
-    FIdleEvent: TEvent;
-    FFunction: FL2POOL_function;
-    FOpaque: Pointer;
-    FBusy: Integer;
-    FShutdown: Boolean;
-  public
-    constructor Create(numThreads: Cardinal);
-    destructor Destroy; override;
-    procedure Add(func: FL2POOL_function; opaque: Pointer; n: NativeInt);
-    procedure AddRange(func: FL2POOL_function; opaque: Pointer; first, last: NativeInt);
-    function WaitAll(timeout: Cardinal): Integer;
-    function ThreadsBusy: NativeUInt;
-    function PoolSize: NativeUInt;
-  end;
+// ----------------------------------------------------------------------------
+// Контекст пула
+// ----------------------------------------------------------------------------
+PFL2POOL_ctx = ^TFL2POOL_ctx;
+TFL2POOL_ctx = class
+private
+  type
+    TJob = record
+      Index: NativeInt;
+    end;
+    TWorker = class(TThread)
+    private
+      FPool: TFL2POOL_ctx;
+    protected
+      procedure Execute; override;
+    public
+      constructor Create(APool: TFL2POOL_ctx);
+    end;
+private
+  FWorkers: array of TWorker;
+  FQueue: TQueue<TJob>;
+  FLock: TCriticalSection;
+  FWorkEvent: TEvent;
+  FIdleEvent: TEvent;
+  FFunction: FL2POOL_function;
+  FOpaque: Pointer;
+  FBusy: Integer;
+  FShutdown: Boolean;
+  function PoolSize: NativeUInt;
+public
+  constructor Create(numThreads: Cardinal);
+  destructor Destroy; override;
+  procedure Add(func: FL2POOL_function; opaque: Pointer; n: NativeInt);
+  procedure AddRange(func: FL2POOL_function; opaque: Pointer; first, last: NativeInt);
+  function WaitAll(timeout: Cardinal): Integer;
+  function ThreadsBusy: NativeUInt;
+end;
 
+// ----------------------------------------------------------------------------
+// Процедурный API
+// ----------------------------------------------------------------------------
 function FL2POOL_create(numThreads: Cardinal): PFL2POOL_ctx;
 procedure FL2POOL_free(ctx: PFL2POOL_ctx);
 function FL2POOL_sizeof(ctx: PFL2POOL_ctx): NativeUInt;
@@ -63,8 +80,9 @@ uses
 
 constructor TFL2POOL_ctx.TWorker.Create(APool: TFL2POOL_ctx);
 begin
-  FPool := APool;
   inherited Create(False);
+  FreeOnTerminate := False;
+  FPool := APool;
 end;
 
 procedure TFL2POOL_ctx.TWorker.Execute;
@@ -73,7 +91,7 @@ var
 begin
   while not Terminated do
   begin
-    if FPool.FWorkEvent.WaitFor(INFINITE) <> wrSignaled then
+    if FPool.FWorkEvent.WaitFor(InfiniteTimeout) <> wrSignaled then
       Continue;
     if Terminated or FPool.FShutdown then
       Break;
@@ -112,15 +130,21 @@ end;
 
 constructor TFL2POOL_ctx.Create(numThreads: Cardinal);
 var
-  i: Integer;
+  i, threads: Integer;
 begin
   inherited Create;
-  FLock := TCriticalSection.Create;
-  FWorkEvent := TEvent.Create(nil, True, False, '');
-  FIdleEvent := TEvent.Create(nil, True, True, '');
+  threads := Integer(numThreads);
+  if threads < 1 then
+    threads := 1;
+  threads := FL2_checkNbThreads(threads);
   FQueue := TQueue<TJob>.Create;
-  SetLength(FWorkers, numThreads);
-  for i := 0 to High(FWorkers) do
+  FLock := TCriticalSection.Create;
+  FWorkEvent := TEvent.Create(nil, False, False, '');
+  FIdleEvent := TEvent.Create(nil, False, False, '');
+  SetLength(FWorkers, threads);
+  FBusy := 0;
+  FShutdown := False;
+  for i := 0 to threads - 1 do
     FWorkers[i] := TWorker.Create(Self);
 end;
 
@@ -189,10 +213,10 @@ end;
 
 function TFL2POOL_ctx.PoolSize: NativeUInt;
 begin
-  Result := InstanceSize + Cardinal(Length(FWorkers)) * SizeOf(Pointer);
+  Result := SizeOf(TFL2POOL_ctx) + NativeUInt(Length(FWorkers)) * SizeOf(Pointer);
 end;
 
-{ Global wrappers }
+{ Процедурный API }
 
 function FL2POOL_create(numThreads: Cardinal): PFL2POOL_ctx;
 begin
