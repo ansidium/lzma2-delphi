@@ -3,276 +3,282 @@ unit FL2Pool;
 interface
 
 uses
-  System.Classes, System.SysUtils, System.SyncObjs,
-  FL2Threading;
+  System.SysUtils, System.SyncObjs, System.Classes,
+  System.Generics.Collections;
 
-const
-  // Индикатор бесконечного ожидания
-  InfiniteTimeout: Cardinal = INFINITE;
-  // Максимальное количество потоков в пуле
-  FL2POOL_MAXTHREADS = FL2_MAXTHREADS;
+type
+  // Тип функции задачи
+  FL2POOL_function = procedure(opaque: Pointer; n: PtrInt);
+  // Указатель на контекст пула
+  PFL2POOL_ctx = Pointer;
 
-// ----------------------------------------------------------------------------
-// Подпись задачи
-//  opaque: пользовательский контекст
-//  n: индекс задачи
-// ----------------------------------------------------------------------------
-TFL2PoolFunction = procedure(opaque: Pointer; n: PtrInt);
-
-// ----------------------------------------------------------------------------
-// Процедурный API пула
-// ----------------------------------------------------------------------------
-function FL2Pool_Create(numThreads: NativeUInt): Pointer;
-procedure FL2Pool_Free(ctx: Pointer);
-function FL2Pool_SizeOf(ctx: Pointer): NativeUInt;
-procedure FL2Pool_Add(ctx: Pointer; func: TFL2PoolFunction; opaque: Pointer; n: PtrInt);
-procedure FL2Pool_AddRange(ctx: Pointer; func: TFL2PoolFunction; opaque: Pointer; first, last: PtrInt);
-function FL2Pool_WaitAll(ctx: Pointer; timeout: Cardinal): Boolean;
-function FL2Pool_ThreadsBusy(ctx: Pointer): Cardinal;
+  // Создаёт пул потоков (numThreads = количество потоков)
+  function FL2POOL_create(numThreads: NativeUInt): PFL2POOL_ctx;
+  // Уничтожает пул
+  procedure FL2POOL_free(ctx: PFL2POOL_ctx);
+  // Возвращает примерный размер занимаемой пулом памяти
+  function FL2POOL_sizeOf(ctx: PFL2POOL_ctx): NativeUInt;
+  // Добавляет одну задачу (func) с индексом n в пул
+  procedure FL2POOL_add(ctx: PFL2POOL_ctx; func: FL2POOL_function; opaque: Pointer; n: PtrInt);
+  // Добавляет пакет задач в диапазоне [first..last-1]
+  procedure FL2POOL_addRange(ctx: PFL2POOL_ctx; func: FL2POOL_function; opaque: Pointer; first, last: PtrInt);
+  // Ожидает выполнения всех задач, возвращает 0 при успехе (или если все уже выполнены), 1 при таймауте
+  function FL2POOL_waitAll(ctx: PFL2POOL_ctx; timeout: Cardinal): Integer;
+  // Возвращает число задач, которые в данный момент исполняются
+  function FL2POOL_threadsBusy(ctx: PFL2POOL_ctx): NativeUInt;
 
 implementation
 
-// ----------------------------------------------------------------------------
-// Внутренний класс потока-рабочего
-// ----------------------------------------------------------------------------
 type
-  TFL2WorkerThread = class(TThread)
+  // Внутренний "задание" (job)
+  TFL2Job = record
+    Func: FL2POOL_function;
+    Opaque: Pointer;
+    Index: PtrInt;
+  end;
+
+  // Класс пула потоков
+  TFL2Pool = class
   private
-    FPool: Pointer; // TFL2PoolCtx
+    FQueue: TQueue<TFL2Job>;
+    FCrit: TCriticalSection;
+    FJobEvent: TEvent;
+    FBusyEvent: TEvent;
+    FThreads: array of TThread;
+    FShutdown: Boolean;
+    FBusy: Integer;
+    function DequeueJob(out Job: TFL2Job): Boolean;
+    procedure FinishedJob;
+  public
+    constructor Create(NumThreads: Integer);
+    destructor Destroy; override;
+    procedure Add(Func: FL2POOL_function; Opaque: Pointer; N: PtrInt);
+    procedure AddRange(Func: FL2POOL_function; Opaque: Pointer; First, Last: PtrInt);
+    function WaitAll(Timeout: Cardinal): Boolean;
+    function ThreadsBusy: Cardinal;
+    function SizeOfContext: NativeUInt;
+  end;
+
+  // Поток-воркер, который выбирает задания из очереди
+  TFL2Worker = class(TThread)
+  private
+    FPool: TFL2Pool;
   protected
     procedure Execute; override;
   public
-    constructor Create(APool: Pointer);
+    constructor Create(APool: TFL2Pool);
   end;
 
-// ----------------------------------------------------------------------------
-// Внутренний контекст пула
-// ----------------------------------------------------------------------------
-  TFL2PoolCtx = class
-  private
-    FThreads: array of TFL2WorkerThread;
-    FMutex: TCriticalSection;
-    FNewJobs: TEvent;
-    FBusyEvent: TEvent;
-    FFunction: TFL2PoolFunction;
-    FOpaque: Pointer;
-    FQueueIndex, FQueueEnd: PtrInt;
-    FNumBusy: Integer;
-    FShutdown: Boolean;
-    function PopJob(out N: PtrInt): Boolean;
-    procedure FinishJob;
-    function SizeOfContext: NativeUInt;
-  public
-    constructor Create(numThreads: Cardinal);
-    destructor Destroy; override;
-    procedure AddRange(func: TFL2PoolFunction; opaque: Pointer; first, last: PtrInt);
-    procedure Add(func: TFL2PoolFunction; opaque: Pointer; n: PtrInt);
-    function WaitAll(timeout: Cardinal): Boolean;
-    function ThreadsBusy: Cardinal;
-  end;
+{ TFL2Worker }
 
-// ----------------------------------------------------------------------------
-// API реализации
-// ----------------------------------------------------------------------------
-
-function FL2Pool_Create(numThreads: NativeUInt): Pointer;
+constructor TFL2Worker.Create(APool: TFL2Pool);
 begin
-  Result := TFL2PoolCtx.Create(numThreads);
-end;
-
-procedure FL2Pool_Free(ctx: Pointer);
-begin
-  if Assigned(ctx) then
-    TObject(ctx).Free;
-end;
-
-function FL2Pool_SizeOf(ctx: Pointer): NativeUInt;
-begin
-  if Assigned(ctx) then
-    Result := TFL2PoolCtx(ctx).SizeOfContext
-  else
-    Result := 0;
-end;
-
-procedure FL2Pool_Add(ctx: Pointer; func: TFL2PoolFunction; opaque: Pointer; n: PtrInt);
-begin
-  if Assigned(ctx) then
-    TFL2PoolCtx(ctx).Add(func, opaque, n);
-end;
-
-procedure FL2Pool_AddRange(ctx: Pointer; func: TFL2PoolFunction; opaque: Pointer; first, last: PtrInt);
-begin
-  if Assigned(ctx) then
-    TFL2PoolCtx(ctx).AddRange(func, opaque, first, last);
-end;
-
-function FL2Pool_WaitAll(ctx: Pointer; timeout: Cardinal): Boolean;
-begin
-  if Assigned(ctx) then
-    Result := TFL2PoolCtx(ctx).WaitAll(timeout)
-  else
-    Result := True;
-end;
-
-function FL2Pool_ThreadsBusy(ctx: Pointer): Cardinal;
-begin
-  if Assigned(ctx) then
-    Result := TFL2PoolCtx(ctx).ThreadsBusy
-  else
-    Result := 0;
-end;
-
-// ----------------------------------------------------------------------------
-// TFL2WorkerThread implementation
-// ----------------------------------------------------------------------------
-
-constructor TFL2WorkerThread.Create(APool: Pointer);
-begin
-  inherited Create(False);
-  FreeOnTerminate := False;
   FPool := APool;
+  // Запуск сразу, False = не в "suspended"
+  inherited Create(False);
 end;
 
-procedure TFL2WorkerThread.Execute;
+procedure TFL2Worker.Execute;
 var
-  job: PtrInt;
+  Job: TFL2Job;
 begin
   while not Terminated do
   begin
-    if not TFL2PoolCtx(FPool).PopJob(job) then
-      Break;
+    // Пытаемся взять задание
+    if not FPool.DequeueJob(Job) then
+    begin
+      // Если пул завершает работу — выходим
+      if FPool.FShutdown then
+        Break;
+      // Иначе ждём сигнала о появлении новой задачи
+      FPool.FJobEvent.WaitFor(INFINITE);
+      Continue;
+    end;
     try
-      TFL2PoolCtx(FPool).FFunction(TFL2PoolCtx(FPool).FOpaque, job);
+      // Выполнить задание
+      Job.Func(Job.Opaque, Job.Index);
     finally
-      TFL2PoolCtx(FPool).FinishJob;
+      // Сообщить пулу о завершении одного задания
+      FPool.FinishedJob;
     end;
   end;
 end;
 
-// ----------------------------------------------------------------------------
-// TFL2PoolCtx implementation
-// ----------------------------------------------------------------------------
+{ TFL2Pool }
 
-constructor TFL2PoolCtx.Create(numThreads: Cardinal);
-var i: Integer;
+constructor TFL2Pool.Create(NumThreads: Integer);
+var
+  i: Integer;
 begin
   inherited Create;
-  if numThreads = 0 then
-    numThreads := 1;
-  numThreads := FL2_checkNbThreads(numThreads);
-  SetLength(FThreads, numThreads);
-  FMutex := TCriticalSection.Create;
-  FNewJobs := TEvent.Create(nil, False, False, '');
-  FBusyEvent := TEvent.Create(nil, False, False, '');
-  FFunction := nil;
-  FOpaque := nil;
-  FQueueIndex := 0;
-  FQueueEnd := 0;
-  FNumBusy := 0;
+  FQueue := TQueue<TFL2Job>.Create;
+  FCrit := TCriticalSection.Create;
+  // Событие для сигнализации о новых заданиях
+  FJobEvent := TEvent.Create(nil, False, False, '');
+  // Событие для ожидания "все задания выполнены"
+  // AutoReset = False, InitiallySignaled = True
+  FBusyEvent := TEvent.Create(nil, True, True, '');
   FShutdown := False;
-  for i := 0 to High(FThreads) do
-    FThreads[i] := TFL2WorkerThread.Create(Self);
+  FBusy := 0;
+  SetLength(FThreads, NumThreads);
+  for i := 0 to NumThreads - 1 do
+    FThreads[i] := TFL2Worker.Create(Self);
 end;
 
-destructor TFL2PoolCtx.Destroy;
-var i: Integer;
+destructor TFL2Pool.Destroy;
+var
+  Worker: TThread;
 begin
-  FMutex.Acquire;
-  try
-    FShutdown := True;
-    FNewJobs.SetEvent;
-  finally
-    FMutex.Release;
-  end;
-  for i := 0 to High(FThreads) do
+  // Сигнализируем о завершении, чтобы все воркеры вышли
+  FShutdown := True;
+  FJobEvent.SetEvent;
+  // Ждём закрытия потоков
+  for Worker in FThreads do
   begin
-    FThreads[i].WaitFor;
-    FThreads[i].Free;
+    Worker.Terminate;
+    Worker.WaitFor;
+    Worker.Free;
   end;
+  FCrit.Free;
+  FJobEvent.Free;
   FBusyEvent.Free;
-  FNewJobs.Free;
-  FMutex.Free;
+  FQueue.Free;
   inherited;
 end;
 
-function TFL2PoolCtx.PopJob(out N: PtrInt): Boolean;
+function TFL2Pool.DequeueJob(out Job: TFL2Job): Boolean;
 begin
-  Result := False;
-  while True do
-  begin
-    FMutex.Acquire;
-    try
-      if FShutdown then Exit;
-      if FQueueIndex < FQueueEnd then
-      begin
-        N := FQueueIndex;
-        Inc(FQueueIndex);
-        Inc(FNumBusy);
-        Result := True;
-        Exit;
-      end;
-      FNewJobs.ResetEvent;
-    finally
-      FMutex.Release;
-    end;
-    if not FNewJobs.WaitFor(InfiniteTimeout) then
-      Exit;
+  FCrit.Enter;
+  try
+    if FQueue.Count > 0 then
+    begin
+      Job := FQueue.Dequeue;
+      Inc(FBusy);
+      // Теперь пул "не пуст" — сбросим событие "все свободны"
+      FBusyEvent.ResetEvent;
+      Result := True;
+    end
+    else
+      Result := False;
+  finally
+    FCrit.Leave;
   end;
 end;
 
-procedure TFL2PoolCtx.FinishJob;
+procedure TFL2Pool.FinishedJob;
 begin
-  FMutex.Acquire;
+  FCrit.Enter;
   try
-    Dec(FNumBusy);
-    if FNumBusy = 0 then
+    Dec(FBusy);
+    // Если нет активных заданий и в очереди пусто — "все выполнено"
+    if (FBusy = 0) and (FQueue.Count = 0) then
       FBusyEvent.SetEvent;
   finally
-    FMutex.Release;
+    FCrit.Leave;
   end;
 end;
 
-procedure TFL2PoolCtx.AddRange(func: TFL2PoolFunction; opaque: Pointer; first, last: PtrInt);
+procedure TFL2Pool.Add(Func: FL2POOL_function; Opaque: Pointer; N: PtrInt);
+var
+  Job: TFL2Job;
 begin
-  FMutex.Acquire;
+  FCrit.Enter;
   try
-    FFunction := func;
-    FOpaque := opaque;
-    FQueueIndex := first;
-    FQueueEnd := last;
+    Job.Func := Func;
+    Job.Opaque := Opaque;
+    Job.Index := N;
+    FQueue.Enqueue(Job);
+    // Поскольку добавили новую задачу — сбрасываем сигнал "все готово"
     FBusyEvent.ResetEvent;
-    FNewJobs.SetEvent;
   finally
-    FMutex.Release;
+    FCrit.Leave;
   end;
+  // Сигнализируем воркерам, что есть новая работа
+  FJobEvent.SetEvent;
 end;
 
-procedure TFL2PoolCtx.Add(func: TFL2PoolFunction; opaque: Pointer; n: PtrInt);
+procedure TFL2Pool.AddRange(Func: FL2POOL_function; Opaque: Pointer; First, Last: PtrInt);
+var
+  N: PtrInt;
 begin
-  AddRange(func, opaque, n, n + 1);
+  for N := First to Last - 1 do
+    Add(Func, Opaque, N);
 end;
 
-function TFL2PoolCtx.WaitAll(timeout: Cardinal): Boolean;
+function TFL2Pool.WaitAll(Timeout: Cardinal): Boolean;
 begin
-  if timeout = 0 then
-    FBusyEvent.WaitFor(InfiniteTimeout)
-  else
-    Result := FBusyEvent.WaitFor(timeout) = wrSignaled;
+  // Ждём, пока FBusyEvent не встанет в Signaled (все задания выполнены) либо истечёт таймаут
+  Result := (FBusyEvent.WaitFor(Timeout) = wrSignaled);
 end;
 
-function TFL2PoolCtx.ThreadsBusy: Cardinal;
+function TFL2Pool.ThreadsBusy: Cardinal;
 begin
-  FMutex.Acquire;
+  FCrit.Enter;
   try
-    Result := FNumBusy;
+    Result := FBusy;
   finally
-    FMutex.Release;
+    FCrit.Leave;
   end;
 end;
 
-function TFL2PoolCtx.SizeOfContext: NativeUInt;
+function TFL2Pool.SizeOfContext: NativeUInt;
 begin
-  Result := SizeOf(TFL2PoolCtx) + Length(FThreads) * SizeOf(Pointer);
+  // Примерный расчёт: размер самого объекта + указатели на потоки + объём очереди
+  Result := SizeOf(Self)
+            + NativeUInt(Length(FThreads)) * SizeOf(Pointer)
+            + NativeUInt(FQueue.Count) * SizeOf(TFL2Job);
+end;
+
+{ Переходные функции API }
+
+function FL2POOL_create(numThreads: NativeUInt): PFL2POOL_ctx;
+begin
+  Result := PFL2POOL_ctx(TFL2Pool.Create(numThreads));
+end;
+
+procedure FL2POOL_free(ctx: PFL2POOL_ctx);
+begin
+  if ctx <> nil then
+    TFL2Pool(ctx).Free;
+end;
+
+function FL2POOL_sizeOf(ctx: PFL2POOL_ctx): NativeUInt;
+begin
+  if ctx <> nil then
+    Result := TFL2Pool(ctx).SizeOfContext
+  else
+    Result := 0;
+end;
+
+procedure FL2POOL_add(ctx: PFL2POOL_ctx; func: FL2POOL_function; opaque: Pointer; n: PtrInt);
+begin
+  if ctx <> nil then
+    TFL2Pool(ctx).Add(func, opaque, n);
+end;
+
+procedure FL2POOL_addRange(ctx: PFL2POOL_ctx; func: FL2POOL_function; opaque: Pointer; first, last: PtrInt);
+begin
+  if ctx <> nil then
+    TFL2Pool(ctx).AddRange(func, opaque, first, last);
+end;
+
+function FL2POOL_waitAll(ctx: PFL2POOL_ctx; timeout: Cardinal): Integer;
+begin
+  // Возвращаем 0 при успехе, 1 — при таймауте
+  if ctx = nil then
+    Exit(0);
+  if TFL2Pool(ctx).WaitAll(timeout) then
+    Result := 0
+  else
+    Result := 1;
+end;
+
+function FL2POOL_threadsBusy(ctx: PFL2POOL_ctx): NativeUInt;
+begin
+  if ctx <> nil then
+    Result := TFL2Pool(ctx).ThreadsBusy
+  else
+    Result := 0;
 end;
 
 end.

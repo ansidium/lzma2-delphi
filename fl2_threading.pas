@@ -29,17 +29,18 @@ function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 
 implementation
 
-uses
-  {$IFDEF MSWINDOWS}
-  Winapi.Windows,
-  {$ENDIF}
-  System.Classes;
+{$IFDEF MSWINDOWS}
+  uses
+    Winapi.Windows;  // для GetActiveProcessorCount
+{$ENDIF}
 
 function FL2_countPhysicalCores: Cardinal;
 begin
   {$IFDEF FPC}
+  // Для FPC обычно есть System.CPUCount
   Result := System.CPUCount;
   {$ELSE}
+  // Для Delphi
   Result := TThread.ProcessorCount;
   {$ENDIF}
   if Result = 0 then
@@ -49,8 +50,11 @@ end;
 function FL2_processorCount: Cardinal;
 begin
   {$IFDEF MSWINDOWS}
+  // Начиная с Windows 7 и Server 2008 R2 появилась функция GetActiveProcessorCount,
+  // которая учитывает группы процессоров в системах с большим числом CPU
   Result := GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
   {$ELSE}
+  // В остальных случаях берём просто TThread.ProcessorCount
   Result := TThread.ProcessorCount;
   {$ENDIF}
   if Result = 0 then
