@@ -2,81 +2,64 @@ unit FL2Threading;
 
 interface
 
-function FL2_countPhysicalCores: Cardinal;
-function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
-const
-
-  FL2_MAXTHREADS = 256;
-
-function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
-function FL2_processorCount: Cardinal;
-
 uses
-  Classes, SysUtils;
+  System.Classes;
 
+const
+  // Максимальное количество потоков по умолчанию
+  FL2_MAXTHREADS = 200;
+
+// Возвращает число физических ядер (или логических процессоров для FPC)
+function FL2_countPhysicalCores: Cardinal;
+// Возвращает активное число процессоров в системе (для Windows с группами)
+function FL2_processorCount: Cardinal;
+// Проверяет и корректирует число потоков: не больше FL2_MAXTHREADS, минимум 1
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 
 implementation
 
 uses
-  Classes;
-
-const
-  FL2_MAXTHREADS = 200;
+  {$IFDEF MSWINDOWS}
+  Winapi.Windows,
+  {$ENDIF}
+  System.Classes;
 
 function FL2_countPhysicalCores: Cardinal;
 begin
-{$IFDEF FPC}
+  {$IFDEF FPC}
   Result := System.CPUCount;
-{$ELSE}
+  {$ELSE}
   Result := TThread.ProcessorCount;
-{$ENDIF}
+  {$ENDIF}
   if Result = 0 then
-  {$IFDEF MSWINDOWS}Windows{$ENDIF},
-  Classes;
+    Result := 1;
+end;
 
 function FL2_processorCount: Cardinal;
 begin
   {$IFDEF MSWINDOWS}
-  Result := Windows.GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  // Получаем число активных процессоров во всех группах
+  Result := GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
   {$ELSE}
   Result := TThread.ProcessorCount;
   {$ENDIF}
-
-  System.Classes;
-function UTIL_countPhysicalCores: Integer;
-begin
-{$IFDEF FPC}
-  Result := System.GetCPUCount;
-{$ELSE}
-  Result := TThread.ProcessorCount;
-{$ENDIF}
-  if Result <= 0 then
-    Result := 1;
+  if Result = 0 then
+    // Падать обратно на физические ядра
+    Result := FL2_countPhysicalCores;
 end;
 
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 begin
+  // Если передано 0 — берём оптимальное число
   if nbThreads = 0 then
-    nbThreads := FL2_countPhysicalCores;
     nbThreads := FL2_processorCount;
-    nbThreads := TThread.ProcessorCount;
-    
-  if nbThreads = 0 then
-    nbThreads := 1;
+  // Ограничиваем максимумом
   if nbThreads > FL2_MAXTHREADS then
     nbThreads := FL2_MAXTHREADS;
+  // Гарантируем минимум
+  if nbThreads = 0 then
+    nbThreads := 1;
   Result := nbThreads;
 end;
 
-end.
-  begin
-    nbThreads := UTIL_countPhysicalCores();
-    if nbThreads = 0 then
-      nbThreads := 1;
-  end;
-  if nbThreads > 200 then
-    nbThreads := 200;
-  Result := nbThreads;
-end;
 end.
