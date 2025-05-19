@@ -9,11 +9,22 @@ const
   // Максимальное количество потоков по умолчанию
   FL2_MAXTHREADS = 200;
 
-// Возвращает число физических ядер (или логических процессоров для FPC)
+// ----------------------------------------------------------------------------
+// Returns the number of physical cores (or logical processors under FPC)
+// ----------------------------------------------------------------------------
 function FL2_countPhysicalCores: Cardinal;
-// Возвращает активное число процессоров в системе (для Windows с группами)
+
+// ----------------------------------------------------------------------------
+// Returns the active processor count (Windows groups aware)
+// ----------------------------------------------------------------------------
 function FL2_processorCount: Cardinal;
-// Проверяет и корректирует число потоков: не больше FL2_MAXTHREADS, минимум 1
+
+// ----------------------------------------------------------------------------
+// Validates and clamps requested thread count:
+//  - if 0, uses processorCount
+//  - max FL2_MAXTHREADS
+//  - min 1
+// ----------------------------------------------------------------------------
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 
 implementation
@@ -38,25 +49,21 @@ end;
 function FL2_processorCount: Cardinal;
 begin
   {$IFDEF MSWINDOWS}
-  // Получаем число активных процессоров во всех группах
+  // Get count across all processor groups
   Result := GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
   {$ELSE}
   Result := TThread.ProcessorCount;
   {$ENDIF}
   if Result = 0 then
-    // Падать обратно на физические ядра
     Result := FL2_countPhysicalCores;
 end;
 
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 begin
-  // Если передано 0 — берём оптимальное число
   if nbThreads = 0 then
     nbThreads := FL2_processorCount;
-  // Ограничиваем максимумом
   if nbThreads > FL2_MAXTHREADS then
     nbThreads := FL2_MAXTHREADS;
-  // Гарантируем минимум
   if nbThreads = 0 then
     nbThreads := 1;
   Result := nbThreads;
