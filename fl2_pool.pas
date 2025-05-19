@@ -2,6 +2,7 @@ unit FL2Pool;
 
 interface
 
+uses
 type
   FL2POOL_function = procedure(opaque: Pointer; n: PtrInt);
   PFL2POOL_ctx = ^FL2POOL_ctx;

@@ -10,6 +10,7 @@ const
 
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 function FL2_processorCount: Cardinal;
+
 uses
   Classes, SysUtils;
 
@@ -78,5 +79,4 @@ end.
     nbThreads := 200;
   Result := nbThreads;
 end;
-
 end.
