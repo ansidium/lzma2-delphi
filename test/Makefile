@@ -6,8 +6,7 @@ CC:=gcc
 
 EXT:=
 ifeq ($(OS),Windows_NT)
-	EXT:=.exe
-	LIB:=../libfast-lzma2.dll
+        EXT:=.exe
 endif
 CFLAGS+=-I../
 
