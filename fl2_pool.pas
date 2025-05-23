@@ -3,22 +3,12 @@ unit FL2Pool;
 interface
 
 uses
-  System.Classes, System.SyncObjs, System.SysUtils, FL2Threading;
+  System.SysUtils, FL2Threading;
 
 type
   TFL2POOL_function = procedure(opaque: Pointer; n: NativeInt);
 
   PFL2POOL_ctx = ^TFL2POOL_ctx;
-
-  TFL2PoolWorker = class(TThread)
-  private
-    FCtx: PFL2POOL_ctx;
-  protected
-    procedure Execute; override;
-  public
-    constructor Create(ACtx: PFL2POOL_ctx);
-  end;
-
   TFL2POOL_ctx = record
     numThreads: Cardinal;
     jobFunction: TFL2POOL_function;
@@ -26,11 +16,11 @@ type
     numThreadsBusy: Cardinal;
     queueIndex: NativeInt;
     queueEnd: NativeInt;
-    queueLock: TCriticalSection;
-    busyEvent: TEvent;
-    jobSem: TSemaphore;
-    shutdown: Boolean;
-    workers: array of TFL2PoolWorker;
+    queueMutex: TFL2_pthread_mutex_t;
+    busyCond: TFL2_pthread_cond_t;
+    newJobsCond: TFL2_pthread_cond_t;
+    shutdown: Integer;
+    threads: array of TFL2_pthread_t;
   end;
 
 function FL2POOL_create(numThreads: Cardinal): PFL2POOL_ctx;
@@ -42,65 +32,74 @@ function FL2POOL_threadsBusy(ctx: PFL2POOL_ctx): Cardinal;
 
 implementation
 
-{ TFL2PoolWorker }
-
-constructor TFL2PoolWorker.Create(ACtx: PFL2POOL_ctx);
-begin
-  FCtx := ACtx;
-  inherited Create(False);
-  FreeOnTerminate := False;
-end;
-
-procedure TFL2PoolWorker.Execute;
+function FL2POOL_thread(arg: Pointer): Pointer;
 var
+  ctx: PFL2POOL_ctx;
   n: NativeInt;
 begin
+  ctx := PFL2POOL_ctx(arg);
+  if ctx = nil then
+    Exit(nil);
+  FL2_pthread_mutex_lock(ctx^.queueMutex);
   while True do
   begin
-    FCtx^.jobSem.Acquire(INFINITE);
-    if FCtx^.shutdown then
-      Break;
-
-    FCtx^.queueLock.Acquire;
-    if FCtx^.queueIndex >= FCtx^.queueEnd then
+    while (ctx^.queueIndex >= ctx^.queueEnd) and (ctx^.shutdown = 0) do
+      FL2_pthread_cond_wait(ctx^.newJobsCond, ctx^.queueMutex);
+    if ctx^.shutdown <> 0 then
     begin
-      FCtx^.queueLock.Release;
-      Continue;
+      FL2_pthread_mutex_unlock(ctx^.queueMutex);
+      Exit(arg);
     end;
-    n := FCtx^.queueIndex;
-    Inc(FCtx^.queueIndex);
-    Inc(FCtx^.numThreadsBusy);
-    FCtx^.queueLock.Release;
+    n := ctx^.queueIndex;
+    Inc(ctx^.queueIndex);
+    Inc(ctx^.numThreadsBusy);
+    FL2_pthread_mutex_unlock(ctx^.queueMutex);
 
-    try
-      if Assigned(FCtx^.jobFunction) then
-        FCtx^.jobFunction(FCtx^.opaque, n);
-    finally
-      FCtx^.queueLock.Acquire;
-      Dec(FCtx^.numThreadsBusy);
-      if (FCtx^.numThreadsBusy = 0) and (FCtx^.queueIndex >= FCtx^.queueEnd) then
-        FCtx^.busyEvent.SetEvent;
-      FCtx^.queueLock.Release;
-    end;
+    if Assigned(ctx^.jobFunction) then
+      ctx^.jobFunction(ctx^.opaque, n);
+
+    FL2_pthread_mutex_lock(ctx^.queueMutex);
+    Dec(ctx^.numThreadsBusy);
+    FL2_pthread_cond_signal(ctx^.busyCond);
   end;
 end;
 
-{ Functions }
-
 function FL2POOL_create(numThreads: Cardinal): PFL2POOL_ctx;
 var
-  i: Integer;
+  i: Cardinal;
 begin
   numThreads := FL2_checkNbThreads(numThreads);
+  if numThreads = 0 then
+    Exit(nil);
   New(Result);
   FillChar(Result^, SizeOf(TFL2POOL_ctx), 0);
+  SetLength(Result^.threads, numThreads);
+  FL2_pthread_mutex_init(Result^.queueMutex);
+  FL2_pthread_cond_init(Result^.busyCond);
+  FL2_pthread_cond_init(Result^.newJobsCond);
+  Result^.shutdown := 0;
+  Result^.numThreads := 0;
+  for i := 0 to numThreads - 1 do
+    if FL2_pthread_create(Result^.threads[i], nil, @FL2POOL_thread, Result) <> 0 then
+    begin
+      Result^.numThreads := i;
+      FL2POOL_free(Result);
+      Exit(nil);
+    end;
   Result^.numThreads := numThreads;
-  Result^.queueLock := TCriticalSection.Create;
-  Result^.busyEvent := TEvent.Create(nil, True, True, '');
-  Result^.jobSem := TSemaphore.Create(0, MaxInt, '');
-  SetLength(Result^.workers, numThreads);
-  for i := 0 to Integer(numThreads) - 1 do
-    Result^.workers[i] := TFL2PoolWorker.Create(Result);
+end;
+
+procedure FL2POOL_join(ctx: PFL2POOL_ctx);
+var
+  i: Cardinal;
+  dummy: Pointer;
+begin
+  FL2_pthread_mutex_lock(ctx^.queueMutex);
+  ctx^.shutdown := 1;
+  FL2_pthread_cond_broadcast(ctx^.newJobsCond);
+  FL2_pthread_mutex_unlock(ctx^.queueMutex);
+  for i := 0 to ctx^.numThreads - 1 do
+    FL2_pthread_join(ctx^.threads[i], dummy);
 end;
 
 procedure FL2POOL_free(ctx: PFL2POOL_ctx);
@@ -109,17 +108,13 @@ var
 begin
   if ctx = nil then
     Exit;
-  ctx^.shutdown := True;
-  ctx^.jobSem.Release(Length(ctx^.workers));
-  for i := 0 to High(ctx^.workers) do
-  begin
-    ctx^.workers[i].WaitFor;
-    ctx^.workers[i].Free;
-  end;
-  ctx^.queueLock.Free;
-  ctx^.busyEvent.Free;
-  ctx^.jobSem.Free;
-  Finalize(ctx^.workers);
+  FL2POOL_join(ctx);
+  FL2_pthread_mutex_destroy(ctx^.queueMutex);
+  FL2_pthread_cond_destroy(ctx^.busyCond);
+  FL2_pthread_cond_destroy(ctx^.newJobsCond);
+  for i := 0 to High(ctx^.threads) do
+    ctx^.threads[i] := nil;
+  Finalize(ctx^.threads);
   Dispose(ctx);
 end;
 
@@ -129,37 +124,37 @@ begin
 end;
 
 procedure FL2POOL_addRange(ctx: PFL2POOL_ctx; func: TFL2POOL_function; opaque: Pointer; first, last: NativeInt);
-var
-  count: Integer;
 begin
   if ctx = nil then
     Exit;
-  ctx^.queueLock.Acquire;
+  Assert(ctx^.numThreadsBusy = 0);
+  FL2_pthread_mutex_lock(ctx^.queueMutex);
   ctx^.jobFunction := func;
   ctx^.opaque := opaque;
   ctx^.queueIndex := first;
   ctx^.queueEnd := last;
-  ctx^.busyEvent.ResetEvent;
-  count := last - first;
-  ctx^.queueLock.Release;
-  ctx^.jobSem.Release(count);
+  FL2_pthread_cond_broadcast(ctx^.newJobsCond);
+  FL2_pthread_mutex_unlock(ctx^.queueMutex);
 end;
 
 function FL2POOL_waitAll(ctx: PFL2POOL_ctx; timeout: Cardinal): Boolean;
 begin
-  if (ctx = nil) or ((ctx^.numThreadsBusy = 0) and (ctx^.queueIndex >= ctx^.queueEnd)) or ctx^.shutdown then
+  if (ctx = nil) or ((ctx^.numThreadsBusy = 0) and (ctx^.queueIndex >= ctx^.queueEnd)) or
+     (ctx^.shutdown <> 0) then
     Exit(False);
+  FL2_pthread_mutex_lock(ctx^.queueMutex);
   if timeout <> 0 then
   begin
-    if ((ctx^.numThreadsBusy <> 0) or (ctx^.queueIndex < ctx^.queueEnd)) and not ctx^.shutdown then
-      ctx^.busyEvent.WaitFor(timeout);
+    if ((ctx^.numThreadsBusy <> 0) or (ctx^.queueIndex < ctx^.queueEnd)) and (ctx^.shutdown = 0) then
+      FL2_pthread_cond_timedwait(ctx^.busyCond, ctx^.queueMutex, timeout);
   end
   else
   begin
-    while ((ctx^.numThreadsBusy <> 0) or (ctx^.queueIndex < ctx^.queueEnd)) and not ctx^.shutdown do
-      ctx^.busyEvent.WaitFor(INFINITE);
+    while ((ctx^.numThreadsBusy <> 0) or (ctx^.queueIndex < ctx^.queueEnd)) and (ctx^.shutdown = 0) do
+      FL2_pthread_cond_wait(ctx^.busyCond, ctx^.queueMutex);
   end;
-  Result := (ctx^.numThreadsBusy <> 0) and not ctx^.shutdown;
+  FL2_pthread_mutex_unlock(ctx^.queueMutex);
+  Result := (ctx^.numThreadsBusy <> 0) and (ctx^.shutdown = 0);
 end;
 
 function FL2POOL_threadsBusy(ctx: PFL2POOL_ctx): Cardinal;
