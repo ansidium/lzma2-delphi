@@ -49,6 +49,7 @@ type
 
 function FL2POOL_create(numThreads: Cardinal): PFL2POOL_ctx;
 procedure FL2POOL_free(ctx: PFL2POOL_ctx);
+function FL2POOL_sizeof(ctx: PFL2POOL_ctx): NativeUInt;
 procedure FL2POOL_add(ctx: PFL2POOL_ctx; func: TFL2POOL_function; opaque: Pointer; n: NativeInt);
 procedure FL2POOL_addRange(ctx: PFL2POOL_ctx; func: TFL2POOL_function; opaque: Pointer; first, last: NativeInt);
 function FL2POOL_waitAll(ctx: PFL2POOL_ctx; timeout: Cardinal): Boolean;
@@ -206,6 +207,13 @@ begin
   ctx^.newJobsCond.Free;
   SetLength(ctx^.threads, 0);
   Dispose(ctx);
+end;
+
+function FL2POOL_sizeof(ctx: PFL2POOL_ctx): NativeUInt;
+begin
+  if ctx = nil then
+    Exit(0);
+  Result := SizeOf(TFL2POOL_ctx) + ctx^.numThreads * SizeOf(Pointer);
 end;
 
 procedure FL2POOL_add(ctx: PFL2POOL_ctx; func: TFL2POOL_function; opaque: Pointer; n: NativeInt);
