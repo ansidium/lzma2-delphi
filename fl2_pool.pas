@@ -46,7 +46,6 @@ procedure FL2POOL_add(ctx: Pointer; func: TFL2POOLFunction; opaque: Pointer; n: 
 procedure FL2POOL_addRange(ctx: Pointer; func: TFL2POOLFunction; opaque: Pointer; first, last: NativeInt); cdecl;
 function FL2POOL_waitAll(ctx: Pointer; timeout: Cardinal): Integer; cdecl;
 function FL2POOL_threadsBusy(ctx: Pointer): NativeUInt; cdecl;
-
 implementation
 
 { TFL2PoolWorker }
@@ -213,7 +212,6 @@ begin
   else
     Result := 0;
 end;
-
 function FL2POOL_threadsBusy(ctx: Pointer): NativeUInt; cdecl;
 begin
   if ctx = nil then
