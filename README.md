@@ -28,11 +28,15 @@ Delphi to call the Fast LZMA2 compression routines.
 
 The units compile with **RAD Studio 12.3** or later. To use them:
 
-1. Create a Delphi project in RAD Studio or open an existing one.
+1. Create a Delphi project or open an existing one in RAD Studio.
 2. Add the three units to the project or include their directory in the search
    path.
-3. Build the project for the desired Win32 or Win64 target.
+3. Build for the desired Win32 or Win64 target.
 
-The compression functions are implemented in the Fast LZMA2 dynamic library.
-Compile `fast-lzma2.dll` using the provided `Makefile` or Visual Studio
-solution and ensure the DLL is available on your application's runtime path.
+These units depend only on the RTL (`System.SysUtils`, `System.Classes` and
+`System.SyncObjs`) and require the compiled `fast-lzma2.dll` to be available at
+run time. Build the DLL using the provided `Makefile` or Visual Studio solution
+and place it on your application's path.
+
+Optional debug information can be enabled by defining `FL2_DEBUG` in the project
+options.
