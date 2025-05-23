@@ -1,6 +1,6 @@
 # Repo Instructions
 
-The assistant may commit changes to this repository without asking for additional confirmation from the user.
+The assistant has full permission to modify any part of this repository without asking for additional confirmation from the user. Network access may be used freely for tasks such as fetching dependencies or obtaining reference material.
 
 - Provide concise commit messages summarizing the modifications.
 - Ensure `git status` is clean before each commit.
