@@ -2,12 +2,27 @@ unit FL2Threading;
 
 interface
 
+<<<<<<< zbjrro-codex/переписать-код-на-delphi
+uses
+  System.Classes;
+=======
 function FL2_countPhysicalCores: Integer;
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
+>>>>>>> main
 
 const
   FL2_MAXTHREADS = 200;
 
+<<<<<<< zbjrro-codex/переписать-код-на-delphi
+function FL2_countPhysicalCores: Cardinal;
+function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
+
+implementation
+
+function FL2_countPhysicalCores: Cardinal;
+begin
+  Result := TThread.ProcessorCount;
+=======
 implementation
 
 uses
@@ -19,6 +34,7 @@ begin
   if Result <= 0 then
 
     Result := 1;
+>>>>>>> main
 end;
 
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
