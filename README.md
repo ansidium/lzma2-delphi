@@ -33,6 +33,9 @@ The units compile with **RAD Studio 12.3** or later. To use them:
 2. Add the three units to the project or include their directory in the search
    path.
 3. Build for the desired Win32 or Win64 target.
+4. A ready to run console project is provided under `delphi/`. Open
+   `FastLZMA2Test.dproj` to see a minimal example that links the units and
+   performs a simple compression/decompression test.
 
 These units depend only on the RTL (`System.SysUtils`, `System.Classes` and
 `System.SyncObjs`) and require the compiled `fast-lzma2.dll` to be available at

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectVersion>18.12</ProjectVersion>
+    <MainSource>FastLZMA2Test.dpr</MainSource>
+    <Base>true</Base>
+    <Config Condition="'$(Config)'==''">Debug</Config>
+    <Platform Condition="'$(Platform)'==''">Win64</Platform>
+    <TargetedPlatforms>1</TargetedPlatforms>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Config)'=='Debug'">
+    <CfgParent>Base</CfgParent>
+    <DCC_DebugInformation>true</DCC_DebugInformation>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Config)'=='Release'">
+    <CfgParent>Base</CfgParent>
+    <DCC_DebugInformation>false</DCC_DebugInformation>
+    <DCC_Optimize>true</DCC_Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <DelphiCompile Include="FastLZMA2Test.dpr">
+      <MainSource>MainSource</MainSource>
+    </DelphiCompile>
+    <DCCReference Include="..\FL2Common.pas" />
+    <DCCReference Include="..\FL2Pool.pas" />
+    <DCCReference Include="..\FL2Threading.pas" />
+    <DCCReference Include="..\FL2API.pas" />
+  </ItemGroup>
+  <ItemGroup>
+    <BuildConfiguration Include="Debug">
+      <Key>Cfg_1</Key>
+    </BuildConfiguration>
+    <BuildConfiguration Include="Release">
+      <Key>Cfg_2</Key>
+    </BuildConfiguration>
+  </ItemGroup>
+  <ProjectExtensions>
+    <BorlandProject>
+      <Delphi.Personality>true</Delphi.Personality>
+      <ProjectType>Console</ProjectType>
+      <Version>19.0</Version>
+      <Source>
+        <Source Name="FastLZMA2Test.dpr"/>
+      </Source>
+    </BorlandProject>
+  </ProjectExtensions>
+</Project>
