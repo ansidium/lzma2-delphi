@@ -42,7 +42,7 @@ end;
 
 procedure ThreadPoolTest;
 var
-  Pool: PFL2POOL_ctx;
+  Pool: PFL2PoolCtx;
 begin
   Pool := FL2POOL_create(2);
   if Pool = nil then
