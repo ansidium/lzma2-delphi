@@ -69,5 +69,5 @@ begin
     nbThreads := 1;
   Result := nbThreads;
 end;
-
 end.
+
