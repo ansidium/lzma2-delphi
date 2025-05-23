@@ -3,7 +3,7 @@ unit FL2Helpers;
 interface
 
 uses
-  System.SysUtils, System.Classes, FL2API;
+  System.SysUtils, System.Classes, FL2Common, FL2API;
 
 function FL2CompressBytes(const Input: TBytes; Level: Integer; Threads: Cardinal = 0): TBytes;
 function FL2DecompressBytes(const Input: TBytes; Threads: Cardinal = 0): TBytes; overload;
