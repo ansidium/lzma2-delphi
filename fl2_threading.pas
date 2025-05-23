@@ -4,7 +4,6 @@ interface
 
 uses
   System.Classes, System.SysUtils;
-
 const
   FL2_MAXTHREADS = 200;
 
@@ -34,5 +33,4 @@ begin
   Result := nbThreads;
 {$ENDIF}
 end;
-
 end.

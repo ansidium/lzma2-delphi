@@ -150,7 +150,6 @@ function TFL2POOL_ctx.ThreadsBusy: Integer;
 begin
   Result := FNumThreadsBusy;
 end;
-
 { C API wrappers }
 
 function FL2POOL_create(numThreads: Cardinal): Pointer; cdecl;
