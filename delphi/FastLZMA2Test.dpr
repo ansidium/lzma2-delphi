@@ -4,7 +4,7 @@ program FastLZMA2Test;
 
 uses
   System.SysUtils, System.Classes,
-  FL2Common, FL2Pool, FL2Threading, FL2API;
+  FL2Common, FL2Pool, FL2Threading, FL2API, FL2Async;
 
 procedure BasicTest;
 var
@@ -55,11 +55,30 @@ begin
   end;
 end;
 
+procedure AsyncCompressionTest;
+var
+  Comp: TFL2AsyncCompressor;
+  ResultObj: TFL2AsyncCompressionResult;
+  Input, Output: TBytes;
+begin
+  Input := TEncoding.ASCII.GetBytes('Asynchronous compression test');
+  Comp := TFL2AsyncCompressor.Create(2);
+  try
+    ResultObj := Comp.CompressBytesAsync(Input, 1);
+    Output := ResultObj.WaitFor(INFINITE);
+    Writeln('Async output size: ', Length(Output));
+    ResultObj.Free;
+  finally
+    Comp.Free;
+  end;
+end;
+
 begin
   try
     Writeln('FastLZMA2 version: ', string(FL2_versionString));
     BasicTest;
     ThreadPoolTest;
+    AsyncCompressionTest;
     Readln;
   except
     on E: Exception do

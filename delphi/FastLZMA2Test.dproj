@@ -25,6 +25,7 @@
     <DCCReference Include="..\FL2Pool.pas" />
     <DCCReference Include="..\FL2Threading.pas" />
     <DCCReference Include="..\FL2API.pas" />
+    <DCCReference Include="..\FL2Async.pas" />
   </ItemGroup>
   <ItemGroup>
     <BuildConfiguration Include="Debug">

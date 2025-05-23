@@ -22,15 +22,16 @@ left of the graph. This provides an optimal speed/ratio tradeoff.
 
 ## Building and Using the Delphi Units
 
-Four Delphi units are provided in the repository: `fl2_common.pas`,
-`fl2_pool.pas`, `fl2_threading.pas`, and `fl2_helpers.pas`. They allow
+Five Delphi units are provided in the repository: `fl2_common.pas`,
+`fl2_pool.pas`, `fl2_threading.pas`, `fl2_helpers.pas`, and
+`fl2_async.pas`. They allow
 applications written in Delphi to call the Fast LZMA2 compression routines.
 `fl2_api.pas` wraps the DLL interface and provides simple buffer compression helpers.
 
 The units compile with **RAD Studio 12.3** or later. To use them:
 
 1. Create a Delphi project or open an existing one in RAD Studio.
-2. Add the four units to the project or include their directory in the search
+2. Add the five units to the project or include their directory in the search
    path.
 3. Build for the desired Win32 or Win64 target.
 4. A ready to run console project is provided under `delphi/`. Open
@@ -39,6 +40,11 @@ The units compile with **RAD Studio 12.3** or later. To use them:
 5. Another small project, `FastLZMA2.dproj`, simply prints the library
    version and can be used as a starting point when compiling the units
    natively in Delphi.
+
+The unit `fl2_async.pas` introduces `TFL2AsyncCompressor`, a helper class that
+queues compression jobs into the thread pool. Use `CompressBytesAsync` to start
+compression and call `WaitFor` on the returned result object to obtain the
+compressed data.
 
 These units depend only on the RTL (`System.SysUtils`, `System.Classes` and
 `System.SyncObjs`) and require the compiled `fast-lzma2.dll` to be available at
@@ -67,8 +73,8 @@ version. The steps below outline the typical setup:
 1. Open `delphi/FastLZMA2Test.dproj` for a working example targeting both Win32
    and Win64.
 2. For your own project add the units `fl2_common.pas`,
-   `fl2_threading.pas`, and `fl2_pool.pas` along with `fl2_api.pas` and
-   `fl2_helpers.pas` to the project or include their directory in the search
+   `fl2_threading.pas`, and `fl2_pool.pas` along with `fl2_api.pas`,
+   `fl2_helpers.pas`, and `fl2_async.pas` to the project or include their directory in the search
    path.
 3. Ensure `fast-lzma2.dll` is available at run time (either beside the
    executable or on the system `PATH`).
