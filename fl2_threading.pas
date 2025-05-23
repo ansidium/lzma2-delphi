@@ -3,8 +3,7 @@ unit FL2Threading;
 interface
 
 uses
-  System.Classes;
-
+  System.Classes, System.SysUtils;
 const
   FL2_MAXTHREADS = 200;
 
@@ -16,7 +15,7 @@ implementation
 function FL2_countPhysicalCores: Integer;
 begin
   Result := TThread.ProcessorCount;
-  if Result <= 0 then
+  if Result = 0 then
     Result := 1;
 end;
 
@@ -27,12 +26,11 @@ begin
 {$ELSE}
   if nbThreads = 0 then
     nbThreads := FL2_countPhysicalCores;
-  if nbThreads = 0 then
-    nbThreads := 1;
   if nbThreads > FL2_MAXTHREADS then
     nbThreads := FL2_MAXTHREADS;
+  if nbThreads = 0 then
+    nbThreads := 1;
   Result := nbThreads;
 {$ENDIF}
 end;
-
 end.
