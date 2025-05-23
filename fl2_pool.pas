@@ -185,6 +185,7 @@ end;
 procedure FL2POOL_join(ctx: PFL2POOL_ctx);
 var
   i: Cardinal;
+  Dummy: Pointer;
 begin
   ctx^.queueMutex.Acquire;
   ctx^.shutdown := True;
@@ -192,7 +193,7 @@ begin
   ctx^.queueMutex.Release;
 
   for i := 0 to ctx^.numThreads - 1 do
-    FL2_joinThread(ctx^.threads[i], dummy);
+    FL2_joinThread(ctx^.threads[i], Dummy);
 end;
 
 procedure FL2POOL_free(ctx: PFL2POOL_ctx);
