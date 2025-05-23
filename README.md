@@ -59,6 +59,22 @@ bindings.
 3. Choose either the *Win32* or *Win64* target platform and compile.
 4. Running the resulting executable prints the FastLZMA2 version string.
 
+## RAD Studio 12.3 Build Instructions
+
+The Delphi units compile cleanly with **RAD Studio 12.3**. To integrate them
+into your own project:
+
+1. Create or open a Delphi project in RAD Studio.
+2. Add `fl2_common.pas`, `fl2_threading.pas`, `fl2_pool.pas`,
+   `fl2_helpers.pas` and `fl2_api.pas` to the project or include their
+   directory in the search path.
+3. Build `fast-lzma2.dll` using the provided `Makefile` or Visual Studio
+   solution and ensure the DLL can be located at run time (either beside the
+   executable or on the system `PATH`).
+4. Under *Project Options → Delphi Compiler* add `FL2_DEBUG` to the
+   **Conditional defines** if you require additional debug assertions.
+5. Compile for the desired *Win32* or *Win64* platform.
+
 ## Compiling with RAD Studio 12.3
 
 The Delphi bindings can be built with **RAD Studio 12.3** or a compatible
