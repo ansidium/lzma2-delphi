@@ -16,13 +16,15 @@ begin
   Input := TEncoding.ASCII.GetBytes(string(TestData));
 
   SetLength(OutputBuf, FL2_compressBound(Length(Input)));
-  CompSize := CompressBuffer(Input[0], Length(Input), OutputBuf[0], Length(OutputBuf), 1);
+  CompSize := CompressBuffer(Input[0], Length(Input),
+    OutputBuf[0], Length(OutputBuf), 1, 2);
 
   if FL2_isError(CompSize) then
     raise Exception.Create(string(FL2_getErrorName(CompSize)));
 
   SetLength(Decomp, Length(Input));
-  DecompSize := DecompressBuffer(OutputBuf[0], CompSize, Decomp[0], Length(Decomp));
+  DecompSize := DecompressBuffer(OutputBuf[0], CompSize,
+    Decomp[0], Length(Decomp), 2);
 
   if FL2_isError(DecompSize) then
     raise Exception.Create(string(FL2_getErrorName(DecompSize)));
@@ -33,10 +35,31 @@ begin
     Writeln('Data mismatch');
 end;
 
+procedure PoolJob(opaque: Pointer; n: NativeInt);
+begin
+  Writeln('Job ', n, ' executed');
+end;
+
+procedure ThreadPoolTest;
+var
+  Pool: PFL2POOL_ctx;
+begin
+  Pool := FL2POOL_create(2);
+  if Pool = nil then
+    raise Exception.Create('Failed to create thread pool');
+  try
+    FL2POOL_addRange(Pool, PoolJob, nil, 0, 4);
+    FL2POOL_waitAll(Pool, 0);
+  finally
+    FL2POOL_free(Pool);
+  end;
+end;
+
 begin
   try
     Writeln('FastLZMA2 version: ', string(FL2_versionString));
     BasicTest;
+    ThreadPoolTest;
     Readln;
   except
     on E: Exception do
