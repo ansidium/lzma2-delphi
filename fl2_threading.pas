@@ -23,8 +23,13 @@ function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 begin
   if nbThreads = 0 then
     nbThreads := FL2_countPhysicalCores;
+
+  if nbThreads = 0 then
+    nbThreads := 1;
+
   if nbThreads > FL2_MAXTHREADS then
     nbThreads := FL2_MAXTHREADS;
+
   Result := nbThreads;
 end;
 end.
