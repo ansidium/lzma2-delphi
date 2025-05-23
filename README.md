@@ -61,17 +61,20 @@ bindings.
 
 ## Compiling with RAD Studio 12.3
 
-To build the units themselves open `delphi/FastLZMA2Test.dproj` in RAD Studio
-12.3. The project targets both Win32 and Win64 and demonstrates how the units
-are linked.
+The Delphi bindings can be built with **RAD Studio 12.3** or a compatible
+version. The steps below outline the typical setup:
 
-When creating your own project, add `fl2_common.pas`, `fl2_pool.pas`,
-`fl2_threading.pas`, `fl2_api.pas`, and `fl2_helpers.pas` to the search path. No third-party
-dependencies are required beyond the standard RTL units. Optionally define
-`FL2_DEBUG` for additional assertions. Ensure `fast-lzma2.dll` can be located at
-run time by placing it in the executable folder or on the system path.
+1. Open `delphi/FastLZMA2Test.dproj` for a working example targeting both Win32
+   and Win64.
+2. For your own project add the units `fl2_common.pas`,
+   `fl2_threading.pas`, and `fl2_pool.pas` along with `fl2_api.pas` and
+   `fl2_helpers.pas` to the project or include their directory in the search
+   path.
+3. Ensure `fast-lzma2.dll` is available at run time (either beside the
+   executable or on the system `PATH`).
+4. Optionally define `FL2_DEBUG` in the project\'s conditional defines to enable
+   additional assertions.
+5. Build for the desired Win32 or Win64 target.
 
-To compile the Delphi code natively without any additional setup simply open
-`delphi/FastLZMA2.dproj` in RAD Studio 12.3 and build for the desired platform.
-The resulting console application prints the FastLZMA2 version string and serves
-as a minimal template for integrating the units into your own projects.
+The small console project `delphi/FastLZMA2.dproj` is a minimal template that
+links the units and prints the FastLZMA2 version string.
