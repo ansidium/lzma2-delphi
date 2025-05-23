@@ -36,6 +36,9 @@ The units compile with **RAD Studio 12.3** or later. To use them:
 4. A ready to run console project is provided under `delphi/`. Open
    `FastLZMA2Test.dproj` to see a minimal example that links the units and
    performs a simple compression/decompression test.
+5. Another small project, `FastLZMA2.dproj`, simply prints the library
+   version and can be used as a starting point when compiling the units
+   natively in Delphi.
 
 These units depend only on the RTL (`System.SysUtils`, `System.Classes` and
 `System.SyncObjs`) and require the compiled `fast-lzma2.dll` to be available at
@@ -56,3 +59,8 @@ When creating your own project, add `fl2_common.pas`, `fl2_pool.pas`,
 dependencies are required beyond the standard RTL units. Optionally define
 `FL2_DEBUG` for additional assertions. Ensure `fast-lzma2.dll` can be located at
 run time by placing it in the executable folder or on the system path.
+
+To compile the Delphi code natively without any additional setup simply open
+`delphi/FastLZMA2.dproj` in RAD Studio 12.3 and build for the desired platform.
+The resulting console application prints the FastLZMA2 version string and serves
+as a minimal template for integrating the units into your own projects.
