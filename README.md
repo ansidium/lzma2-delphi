@@ -44,3 +44,15 @@ and place it on your application's path.
 
 Optional debug information can be enabled by defining `FL2_DEBUG` in the project
 options.
+
+## Compiling with RAD Studio 12.3
+
+To build the units themselves open `delphi/FastLZMA2Test.dproj` in RAD Studio
+12.3. The project targets both Win32 and Win64 and demonstrates how the units
+are linked.
+
+When creating your own project, add `fl2_common.pas`, `fl2_pool.pas`,
+`fl2_threading.pas`, and `fl2_api.pas` to the search path. No third-party
+dependencies are required beyond the standard RTL units. Optionally define
+`FL2_DEBUG` for additional assertions. Ensure `fast-lzma2.dll` can be located at
+run time by placing it in the executable folder or on the system path.
