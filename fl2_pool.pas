@@ -99,7 +99,7 @@ begin
   FL2_pthread_cond_broadcast(ctx^.newJobsCond);
   FL2_pthread_mutex_unlock(ctx^.queueMutex);
   for i := 0 to ctx^.numThreads - 1 do
-    FL2_pthread_join(ctx^.threads[i], dummy);
+    FL2_joinThread(ctx^.threads[i], dummy);
 end;
 
 procedure FL2POOL_free(ctx: PFL2POOL_ctx);

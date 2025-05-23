@@ -55,6 +55,11 @@ function FL2_pthread_create(out thread: TFL2_pthread_t; unused: Pointer;
   start_routine: TFL2ThreadProc; arg: Pointer): Integer;
 function FL2_pthread_join(thread: TFL2_pthread_t; out value_ptr: Pointer): Integer;
 
+{ Convenience wrappers matching the C API }
+function FL2_createThread(out thread: TFL2_pthread_t; start_routine: TFL2ThreadProc;
+  arg: Pointer): Integer; inline;
+function FL2_joinThread(thread: TFL2_pthread_t; out value_ptr: Pointer): Integer; inline;
+
 procedure FL2_pthread_mutex_init(out mutex: TFL2_pthread_mutex_t);
 procedure FL2_pthread_mutex_destroy(var mutex: TFL2_pthread_mutex_t);
 procedure FL2_pthread_mutex_lock(mutex: TFL2_pthread_mutex_t);
@@ -169,6 +174,17 @@ begin
   else
     value_ptr := nil;
   Result := 0;
+end;
+
+function FL2_createThread(out thread: TFL2_pthread_t; start_routine: TFL2ThreadProc;
+  arg: Pointer): Integer;
+begin
+  Result := FL2_pthread_create(thread, nil, start_routine, arg);
+end;
+
+function FL2_joinThread(thread: TFL2_pthread_t; out value_ptr: Pointer): Integer;
+begin
+  Result := FL2_pthread_join(thread, value_ptr);
 end;
 
 procedure FL2_pthread_mutex_init(out mutex: TFL2_pthread_mutex_t);
