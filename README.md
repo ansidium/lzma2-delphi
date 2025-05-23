@@ -19,3 +19,20 @@ achieve higher compression on smaller dictionaries. The speed/ratio tradeoff is 
 Here are the results of an in-memory benchmark using two threads on the [Silesia compression corpus] vs the 7-zip 19.00 LZMA2
 encoder. The design goal for the encoder and compression level parameters was to move the line as far as possible toward the top
 left of the graph. This provides an optimal speed/ratio tradeoff.
+
+## Building and Using the Delphi Units
+
+Three Delphi units are provided in the repository: `fl2_common.pas`,
+`fl2_pool.pas` and `fl2_threading.pas`. They allow applications written in
+Delphi to call the Fast LZMA2 compression routines.
+
+The units compile with **RAD Studio 12.3** or later. To use them:
+
+1. Create a Delphi project in RAD Studio or open an existing one.
+2. Add the three units to the project or include their directory in the search
+   path.
+3. Build the project for the desired Win32 or Win64 target.
+
+The compression functions are implemented in the Fast LZMA2 dynamic library.
+Compile `fast-lzma2.dll` using the provided `Makefile` or Visual Studio
+solution and ensure the DLL is available on your application's runtime path.
