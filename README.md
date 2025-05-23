@@ -25,6 +25,7 @@ left of the graph. This provides an optimal speed/ratio tradeoff.
 Three Delphi units are provided in the repository: `fl2_common.pas`,
 `fl2_pool.pas` and `fl2_threading.pas`. They allow applications written in
 Delphi to call the Fast LZMA2 compression routines.
+`fl2_api.pas` wraps the DLL interface and provides simple buffer compression helpers.
 
 The units compile with **RAD Studio 12.3** or later. To use them:
 
