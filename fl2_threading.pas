@@ -12,7 +12,6 @@ function FL2_countPhysicalCores: Cardinal;
 function FL2_checkNbThreads(nbThreads: Cardinal): Cardinal;
 
 implementation
-
 function FL2_countPhysicalCores: Cardinal;
 begin
   Result := TThread.ProcessorCount;
@@ -33,5 +32,4 @@ begin
 
   Result := nbThreads;
 end;
-
 end.

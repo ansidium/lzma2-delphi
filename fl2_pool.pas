@@ -61,10 +61,10 @@ end;
 procedure TFL2Worker.Execute;
 begin
   TFL2PoolCtx(FPool).WorkerExecute(Self);
+
 end;
 
 { TFL2PoolCtx }
-
 constructor TFL2PoolCtx.Create(numThreads: Cardinal);
 var
   i: Integer;
