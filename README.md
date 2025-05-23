@@ -22,15 +22,15 @@ left of the graph. This provides an optimal speed/ratio tradeoff.
 
 ## Building and Using the Delphi Units
 
-Three Delphi units are provided in the repository: `fl2_common.pas`,
-`fl2_pool.pas` and `fl2_threading.pas`. They allow applications written in
-Delphi to call the Fast LZMA2 compression routines.
+Four Delphi units are provided in the repository: `fl2_common.pas`,
+`fl2_pool.pas`, `fl2_threading.pas`, and `fl2_helpers.pas`. They allow
+applications written in Delphi to call the Fast LZMA2 compression routines.
 `fl2_api.pas` wraps the DLL interface and provides simple buffer compression helpers.
 
 The units compile with **RAD Studio 12.3** or later. To use them:
 
 1. Create a Delphi project or open an existing one in RAD Studio.
-2. Add the three units to the project or include their directory in the search
+2. Add the four units to the project or include their directory in the search
    path.
 3. Build for the desired Win32 or Win64 target.
 4. A ready to run console project is provided under `delphi/`. Open
@@ -55,7 +55,7 @@ To build the units themselves open `delphi/FastLZMA2Test.dproj` in RAD Studio
 are linked.
 
 When creating your own project, add `fl2_common.pas`, `fl2_pool.pas`,
-`fl2_threading.pas`, and `fl2_api.pas` to the search path. No third-party
+`fl2_threading.pas`, `fl2_api.pas`, and `fl2_helpers.pas` to the search path. No third-party
 dependencies are required beyond the standard RTL units. Optionally define
 `FL2_DEBUG` for additional assertions. Ensure `fast-lzma2.dll` can be located at
 run time by placing it in the executable folder or on the system path.
