@@ -4,10 +4,8 @@ interface
 
 uses
   System.SysUtils;
-
 type
   TFL2PoolFunction = procedure(opaque: Pointer; n: NativeInt);
-
   TFL2POOL_ctx = class
   private
     FNumThreads: Integer;

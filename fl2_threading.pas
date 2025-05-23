@@ -17,6 +17,7 @@ function FL2_countPhysicalCores: Integer;
 begin
   Result := TThread.ProcessorCount;
   if Result <= 0 then
+
     Result := 1;
 end;
 

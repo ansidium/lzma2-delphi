@@ -19,3 +19,8 @@ achieve higher compression on smaller dictionaries. The speed/ratio tradeoff is 
 Here are the results of an in-memory benchmark using two threads on the [Silesia compression corpus] vs the 7-zip 19.00 LZMA2
 encoder. The design goal for the encoder and compression level parameters was to move the line as far as possible toward the top
 left of the graph. This provides an optimal speed/ratio tradeoff.
+
+## Building and Using the Delphi Units
+1. Open `delphi/FastLZMA2.dproj` in **RAD Studio 12.3** or later.
+2. Choose either the *Win32* or *Win64* target platform and compile.
+3. Running the resulting executable prints the FastLZMA2 version string.
