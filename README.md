@@ -48,6 +48,17 @@ and place it on your application's path.
 Optional debug information can be enabled by defining `FL2_DEBUG` in the project
 options.
 
+## Building the Example Program
+
+The repository ships with a small console application demonstrating the Delphi
+bindings.
+
+1. Build `fast-lzma2.dll` using the supplied `Makefile` or the Visual Studio
+   solution.
+2. Open `delphi/FastLZMA2.dproj` in **RAD Studio 12.3** or later.
+3. Choose either the *Win32* or *Win64* target platform and compile.
+4. Running the resulting executable prints the FastLZMA2 version string.
+
 ## Compiling with RAD Studio 12.3
 
 To build the units themselves open `delphi/FastLZMA2Test.dproj` in RAD Studio
