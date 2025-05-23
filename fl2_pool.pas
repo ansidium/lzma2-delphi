@@ -192,10 +192,7 @@ begin
   ctx^.queueMutex.Release;
 
   for i := 0 to ctx^.numThreads - 1 do
-  begin
-    ctx^.threads[i].WaitFor;
-    ctx^.threads[i].Free;
-  end;
+    FL2_joinThread(ctx^.threads[i], dummy);
 end;
 
 procedure FL2POOL_free(ctx: PFL2POOL_ctx);
