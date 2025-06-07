@@ -29,10 +29,32 @@ type
     FL2_error_dstSize_tooSmall = 11,
     FL2_error_srcSize_wrong = 12,
     FL2_error_canceled = 13,
-    FL2_error_buffer = 14,
-    FL2_error_timedOut = 15,
-    FL2_error_maxCode = 20
+  FL2_error_buffer = 14,
+  FL2_error_timedOut = 15,
+  FL2_error_maxCode = 20
   );
+
+type
+  TFL2_inBuffer = record
+    src: Pointer;
+    size: NativeUInt;
+    pos: NativeUInt;
+  end;
+  PFL2_inBuffer = ^TFL2_inBuffer;
+
+  TFL2_outBuffer = record
+    dst: Pointer;
+    size: NativeUInt;
+    pos: NativeUInt;
+  end;
+  PFL2_outBuffer = ^TFL2_outBuffer;
+
+  TFL2_dataBlock = record
+    data: PByte;
+    start: NativeUInt;
+    EndPos: NativeUInt;
+  end;
+  PFL2_dataBlock = ^TFL2_dataBlock;
 
 const
   FL2_ERROR_MAX = NativeUInt(-Ord(FL2_error_maxCode));
