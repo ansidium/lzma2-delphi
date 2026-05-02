@@ -1,0 +1,291 @@
+{
+  "schemaVersion": 1,
+  "sdk": "LZMA SDK 26.01 C/LzFind.c reference trace",
+  "traces": [
+    {
+      "id": "hc4-basic-two-heads",
+      "finder": "HC4",
+      "sourceSize": 48,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 1,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCZ" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 3, "distance": 10 },
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "hc4-boundary-tail",
+      "finder": "HC4",
+      "sourceSize": 23,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "inserts": [0],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCD" },
+        { "offset": 20, "ascii": "ABC" }
+      ],
+      "expected": []
+    },
+    {
+      "id": "hc4-skip-range",
+      "finder": "HC4",
+      "sourceSize": 32,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "operations": [
+        { "op": "skip", "start": 0, "count": 20 },
+        { "op": "insert", "pos": 10 }
+      ],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDZZZZ" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 4, "distance": 10 },
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "hc4-dictionary-limit",
+      "finder": "HC4",
+      "sourceSize": 32,
+      "dictionarySize": 8,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDEFGH" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": []
+    },
+    {
+      "id": "hc4-four-byte-collision",
+      "finder": "HC4",
+      "sourceSize": 48,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 1,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "bytes": [0, 4, 4, 126] },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "hc5-basic-two-heads",
+      "finder": "HC5",
+      "sourceSize": 48,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 1,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDZ" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 4, "distance": 10 },
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "hc5-boundary-tail",
+      "finder": "HC5",
+      "sourceSize": 24,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "inserts": [0],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCD" },
+        { "offset": 20, "ascii": "ABCD" }
+      ],
+      "expected": []
+    },
+    {
+      "id": "hc5-skip-range",
+      "finder": "HC5",
+      "sourceSize": 32,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "operations": [
+        { "op": "skip", "start": 0, "count": 20 },
+        { "op": "insert", "pos": 10 }
+      ],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDEZZZ" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 5, "distance": 10 },
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "hc5-dictionary-limit",
+      "finder": "HC5",
+      "sourceSize": 32,
+      "dictionarySize": 8,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDEFGH" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": []
+    },
+    {
+      "id": "hc5-crc-hash-collision",
+      "finder": "HC5",
+      "sourceSize": 48,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 1,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "bytes": [64, 82, 67, 64, 197, 120, 120, 120] },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "bt4-basic-two-heads",
+      "finder": "BT4",
+      "sourceSize": 48,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 1,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCZ" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 3, "distance": 10 },
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "bt4-boundary-tail",
+      "finder": "BT4",
+      "sourceSize": 23,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "inserts": [0],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCD" },
+        { "offset": 20, "ascii": "ABC" }
+      ],
+      "expected": []
+    },
+    {
+      "id": "bt4-skip-range",
+      "finder": "BT4",
+      "sourceSize": 32,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "operations": [
+        { "op": "skip", "start": 0, "count": 20 },
+        { "op": "insert", "pos": 10 }
+      ],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDZZZZ" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 4, "distance": 10 },
+        { "length": 8, "distance": 20 }
+      ]
+    },
+    {
+      "id": "bt4-dictionary-limit",
+      "finder": "BT4",
+      "sourceSize": 32,
+      "dictionarySize": 8,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 8,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "ascii": "ABCDEFGH" },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": []
+    },
+    {
+      "id": "bt4-four-byte-collision",
+      "finder": "BT4",
+      "sourceSize": 48,
+      "dictionarySize": 64,
+      "fastBytes": 32,
+      "maxMatchLen": 273,
+      "cutValue": 1,
+      "inserts": [0, 10],
+      "query": 20,
+      "segments": [
+        { "offset": 0, "ascii": "ABCDEFGH" },
+        { "offset": 10, "bytes": [0, 4, 4, 126] },
+        { "offset": 20, "ascii": "ABCDEFGH" }
+      ],
+      "expected": [
+        { "length": 8, "distance": 20 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "sevenzip-smoke.xz",
+  "sourcePath": "tests/fixtures/sources/sevenzip-smoke.txt",
+  "compressedPath": "tests/fixtures/xz/sevenzip-smoke.xz",
+  "sourceSha256": "a632da867e0b20ad11c7b5ef026e6a3dbfc0df4616bf597689ebb9b1c1a81350",
+  "compressedSha256": "687db8e0f810fc8e089155e8dc892f818ea7c364a3b236c185286b41928bedc5",
+  "tool": "7zr",
+  "toolVersion": "26.01",
+  "commandLine": "7zr.exe a -txz -mx=1 sevenzip.xz sample.txt",
+  "container": "xz",
+  "method": "lzma2",
+  "level": 1,
+  "dictionarySize": 1048576,
+  "check": "crc64"
+}

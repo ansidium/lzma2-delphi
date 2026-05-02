@@ -1,0 +1,49 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{7D8F7936-4A64-46BB-8B78-8DAD81F98A4D}</ProjectGuid>
+    <ProjectVersion>22.0</ProjectVersion>
+    <FrameworkType>None</FrameworkType>
+    <MainSource>Lzma2.dpr</MainSource>
+    <Base>True</Base>
+    <Config Condition="'$(Config)'==''">Release</Config>
+    <Platform Condition="'$(Platform)'==''">Win64</Platform>
+    <TargetedPlatforms>64</TargetedPlatforms>
+    <AppType>Console</AppType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Base)'!=''">
+    <DCC_Namespace>System;System.Win;Winapi;$(DCC_Namespace)</DCC_Namespace>
+    <DCC_UnitSearchPath>..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_UsePackage>rtl;$(DCC_UsePackage)</DCC_UsePackage>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_1)'!=''">
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Base_Win64)'!=''">
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_1_Win64)'!=''">
+    <CfgParent>Cfg_1</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+  <ItemGroup>
+    <DelphiCompile Include="$(MainSource)">
+      <MainSource>MainSource</MainSource>
+    </DelphiCompile>
+    <DCCReference Include="..\src\Lzma.Api.pas"/>
+    <DCCReference Include="..\src\Lzma.Types.pas"/>
+    <DCCReference Include="..\src\Lzma.Errors.pas"/>
+    <DCCReference Include="..\src\Lzma.Lzma.pas"/>
+    <DCCReference Include="..\src\Lzma.MatchFinder.pas"/>
+    <DCCReference Include="..\src\Lzma.MtDec.pas"/>
+    <DCCReference Include="..\src\Lzma.SevenZip.pas"/>
+    <DCCReference Include="..\src\Lzma.Sdk.pas"/>
+    <DCCReference Include="..\src\Lzma.Xz.pas"/>
+    <DCCReference Include="..\src\Lzma.XzCrc.pas"/>
+    <DCCReference Include="..\src\Lzma2.Encoder.pas"/>
+    <DCCReference Include="..\src\Lzma2.Decoder.pas"/>
+    <DCCReference Include="..\src\Lzma.CliPaths.pas"/>
+  </ItemGroup>
+  <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
+</Project>

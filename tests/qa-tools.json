@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "cache": {
+    "envName": "LZMA_QA_TOOLS_ROOT",
+    "defaultLocalAppDataSubdir": "lzma2-delphi\\qa-tools"
+  },
+  "references": {
+    "lzmaSdk": {
+      "version": "26.01",
+      "releaseDate": "2026-04-27",
+      "officialPage": "https://www.7-zip.org/sdk.html",
+      "archiveUrl": "https://www.7-zip.org/a/lzma2601.7z",
+      "archiveFile": "lzma2601.7z",
+      "archiveSha256": "b860f17f9df3c0524dd2ef2c639ab5e43ad0006b77b8f7bb6d191bf528536885",
+      "source": "LZMA SDK",
+      "includes": [
+        "bin/x64/7zr.exe",
+        "bin/x64/lzma.exe"
+      ]
+    },
+    "sevenZip": {
+      "version": "26.01",
+      "releaseDate": "2026-04-27",
+      "githubRelease": "https://github.com/ip7z/7zip/releases/tag/26.01",
+      "sourceForgeFolder": "https://sourceforge.net/projects/sevenzip/files/7-Zip/26.01/",
+      "source": "7-Zip"
+    },
+    "xzUtils": {
+      "version": "5.8.3",
+      "releaseDate": "2026-03-31",
+      "officialPage": "https://tukaani.org/xz/",
+      "githubRelease": "https://github.com/tukaani-project/xz/releases/tag/v5.8.3",
+      "archiveUrl": "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3-windows.zip",
+      "archiveFile": "xz-5.8.3-windows.zip",
+      "archiveSha256": "8d0048ee51177b11ef1613959c2a268c951f4e7f6fb3706e681e00e34bb6d5e3",
+      "source": "XZ Utils official Windows binaries",
+      "includes": [
+        "bin_x86-64/xz.exe",
+        "bin_x86-64/liblzma.dll"
+      ],
+      "defaultInstallDir": "xz-utils-{version}"
+    }
+  },
+  "tools": {
+    "sevenZip": {
+      "envName": "LZMA_TEST_7Z",
+      "displayName": "LZMA SDK 26.01 7zr.exe",
+      "expectedExecutable": "7zr.exe",
+      "versionArgs": [ "i" ],
+      "versionPattern": "\\b26\\.01\\b",
+      "pinMode": "archive-sha256",
+      "expectedVersionRef": "lzmaSdk",
+      "sourceRef": "lzmaSdk",
+      "defaultRelativePath": "lzma-sdk-26.01\\bin\\x64\\7zr.exe"
+    },
+    "lzma": {
+      "envName": "LZMA_TEST_LZMA",
+      "displayName": "LZMA SDK 26.01 lzma.exe",
+      "expectedExecutable": "lzma.exe",
+      "versionArgs": [],
+      "versionPattern": "\\b26\\.01\\b",
+      "pinMode": "archive-sha256",
+      "expectedVersionRef": "lzmaSdk",
+      "sourceRef": "lzmaSdk",
+      "defaultRelativePath": "lzma-sdk-26.01\\bin\\x64\\lzma.exe"
+    },
+    "xz": {
+      "envName": "LZMA_TEST_XZ",
+      "displayName": "XZ Utils 5.8.3 official xz.exe",
+      "expectedExecutable": "xz.exe",
+      "versionArgs": [ "--version" ],
+      "versionPattern": "(?m)^xz \\(XZ Utils\\) 5\\.8\\.3\\b",
+      "pinMode": "archive-sha256",
+      "expectedVersionRef": "xzUtils",
+      "sourceRef": "xzUtils",
+      "pathPatternTemplate": "(?i)\\\\xz-utils-{version}\\\\bin_x86-64\\\\xz\\.exe$",
+      "defaultRelativePathTemplate": "xz-utils-{version}\\bin_x86-64\\xz.exe"
+    }
+  }
+}

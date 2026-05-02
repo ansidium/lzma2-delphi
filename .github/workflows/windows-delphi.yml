@@ -1,0 +1,131 @@
+name: Delphi Win64
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Run full release acceptance with performance corpus
+        required: false
+        default: 'false'
+        type: boolean
+      soak:
+        description: Run soak acceptance
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  quick:
+    name: Win64 quick build, tests, compatibility
+    runs-on: [self-hosted, Windows, X64, Delphi-13.1]
+    env:
+      BDS: C:\Program Files (x86)\Embarcadero\Studio\37.0
+      LZMA_PERF_WORKROOT: ${{ vars.LZMA_PERF_WORKROOT || 'D:\lzma2-delphi-perf' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned QA tools
+        shell: powershell
+        run: |
+          .\tests\install-qa-tools.ps1
+
+      - name: Run Delphi CI quick
+        shell: powershell
+        run: |
+          .\tests\run-ci.ps1 -Mode quick -RequireExternalTools $true
+
+      - name: Verify source tree stayed clean
+        shell: powershell
+        run: |
+          $status = git status --short --untracked-files=all
+          if (-not [string]::IsNullOrWhiteSpace($status)) {
+            $status
+            throw 'Source tree changed during CI.'
+          }
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lzma2-delphi-qa-artifacts-quick
+          path: artifacts/**
+
+  release:
+    name: Win64 release acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.release == true
+    runs-on: [self-hosted, Windows, X64, Delphi-13.1]
+    env:
+      BDS: C:\Program Files (x86)\Embarcadero\Studio\37.0
+      LZMA_PERF_WORKROOT: ${{ vars.LZMA_PERF_WORKROOT || 'D:\lzma2-delphi-perf' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned QA tools
+        shell: powershell
+        run: |
+          .\tests\install-qa-tools.ps1
+
+      - name: Run Delphi CI release
+        shell: powershell
+        run: |
+          .\tests\run-ci.ps1 -Mode release -RequireExternalTools $true -ReleasePerformance $true
+
+      - name: Verify source tree stayed clean
+        shell: powershell
+        run: |
+          $status = git status --short --untracked-files=all
+          if (-not [string]::IsNullOrWhiteSpace($status)) {
+            $status
+            throw 'Source tree changed during CI.'
+          }
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lzma2-delphi-qa-artifacts-release
+          path: artifacts/**
+
+  soak:
+    name: Win64 soak acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.soak == true
+    runs-on: [self-hosted, Windows, X64, Delphi-13.1]
+    env:
+      BDS: C:\Program Files (x86)\Embarcadero\Studio\37.0
+      LZMA_PERF_WORKROOT: ${{ vars.LZMA_PERF_WORKROOT || 'D:\lzma2-delphi-perf' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned QA tools
+        shell: powershell
+        run: |
+          .\tests\install-qa-tools.ps1
+
+      - name: Run Delphi CI soak
+        shell: powershell
+        run: |
+          .\tests\run-ci.ps1 -Mode soak -RequireExternalTools $true -ReleasePerformance $true
+
+      - name: Verify source tree stayed clean
+        shell: powershell
+        run: |
+          $status = git status --short --untracked-files=all
+          if (-not [string]::IsNullOrWhiteSpace($status)) {
+            $status
+            throw 'Source tree changed during CI.'
+          }
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lzma2-delphi-qa-artifacts-soak
+          path: artifacts/**

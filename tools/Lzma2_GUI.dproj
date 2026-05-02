@@ -1,0 +1,53 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{2F3C1C14-3C80-4381-A773-593E18B9699E}</ProjectGuid>
+    <ProjectVersion>22.0</ProjectVersion>
+    <FrameworkType>VCL</FrameworkType>
+    <MainSource>Lzma2_GUI.dpr</MainSource>
+    <Base>True</Base>
+    <Config Condition="'$(Config)'==''">Release</Config>
+    <Platform Condition="'$(Platform)'==''">Win64</Platform>
+    <BDSCOMMONDIR Condition="'$(BDSCOMMONDIR)'==''">$(PUBLIC)\Documents\Embarcadero\Studio\37.0</BDSCOMMONDIR>
+    <TargetedPlatforms>64</TargetedPlatforms>
+    <AppType>Application</AppType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Base)'!=''">
+    <DCC_Namespace>System;System.Win;Winapi;Vcl;$(DCC_Namespace)</DCC_Namespace>
+    <DCC_UnitSearchPath>..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_UsePackage>rtl;vcl;$(DCC_UsePackage)</DCC_UsePackage>
+    <Custom_Styles>&quot;Windows Modern Dark|VCLSTYLE|$(BDSCOMMONDIR)\Styles\WindowsModernDark.vsf&quot;</Custom_Styles>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_1)'!=''">
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Base_Win64)'!=''">
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_1_Win64)'!=''">
+    <CfgParent>Cfg_1</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+  <ItemGroup>
+    <RcCompile Include="Lzma2GUIManifest.rc"/>
+    <DelphiCompile Include="$(MainSource)">
+      <MainSource>MainSource</MainSource>
+    </DelphiCompile>
+    <DCCReference Include="Lzma2GUIMain.pas"/>
+    <DCCReference Include="..\src\Lzma.Api.pas"/>
+    <DCCReference Include="..\src\Lzma.Types.pas"/>
+    <DCCReference Include="..\src\Lzma.Errors.pas"/>
+    <DCCReference Include="..\src\Lzma.Lzma.pas"/>
+    <DCCReference Include="..\src\Lzma.MatchFinder.pas"/>
+    <DCCReference Include="..\src\Lzma.MtDec.pas"/>
+    <DCCReference Include="..\src\Lzma.SevenZip.pas"/>
+    <DCCReference Include="..\src\Lzma.Sdk.pas"/>
+    <DCCReference Include="..\src\Lzma.Xz.pas"/>
+    <DCCReference Include="..\src\Lzma.XzCrc.pas"/>
+    <DCCReference Include="..\src\Lzma2.Encoder.pas"/>
+    <DCCReference Include="..\src\Lzma2.Decoder.pas"/>
+    <None Include="Lzma2_GUI.exe.manifest"/>
+  </ItemGroup>
+  <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
+</Project>
