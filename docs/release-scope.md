@@ -35,5 +35,6 @@ The ZIP contains only:
 
 - `Lzma2.exe`
 - `Lzma2_GUI.exe`
+- `sk4d.dll`
 
 Source archives are provided by GitHub from the `v26.01` tag.

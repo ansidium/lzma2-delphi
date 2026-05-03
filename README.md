@@ -156,8 +156,9 @@ The public release asset set is:
 - `lzma2-delphi-26.01-win64.zip`
 - `lzma2-delphi-26.01-win64.zip.sha256`
 
-The ZIP contains only the Win64 command-line and GUI binaries:
-`Lzma2.exe` and `Lzma2_GUI.exe`.
+The ZIP contains the Win64 command-line tool, the GUI tool, and the Skia runtime
+DLL used by the GUI:
+`Lzma2.exe`, `Lzma2_GUI.exe`, and `sk4d.dll`.
 
 ## Documentation
 
