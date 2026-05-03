@@ -15,6 +15,9 @@ The benchmark work root must be an owned scratch directory outside the
 repository. Use a local SSD path for normal runs. A RAM-backed path can be used
 only when explicitly selected by `-RamWorkRoot`.
 
+`quick` does not run `tests/run-performance.ps1`. Release and soak modes run
+`tests/run-performance.ps1` and own the full performance evidence.
+
 ## Outputs
 
 `tests/run-performance.ps1` writes data-only files under ignored
@@ -48,3 +51,5 @@ round trips instead.
 
 Short smoke runs can be noisy. Use release-size corpora and repeated samples
 when making performance claims.
+
+GitHub run id/SHA/ref/attempt and workflow name are required when the manifest contains GitHub Actions context.

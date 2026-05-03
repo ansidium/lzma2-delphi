@@ -56,6 +56,9 @@ Compatibility tests cover these directions where the format supports them:
 External tools are used only by tests, fixtures, CI, and benchmarks. The pinned
 tool versions and hashes are configured in `tests/qa-tools.json`.
 
+GitHub Actions metadata when present must identify the workflow run used for
+compatibility evidence.
+
 ## Error Behavior
 
 Malformed chunks, bad checksums, truncated input, unsupported filters, and

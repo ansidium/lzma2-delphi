@@ -57,15 +57,11 @@ uses
 var
   Options: TLzma2Options;
 begin
-  Options := TLzma2.DefaultOptions;
-  Options.Container := lcXz;
-  Options.Level := 1;
-  Options.DictionarySize := 1 shl 20;
-  Options.ThreadCount := 4;
-  Options.Check := lzCheckCrc64;
+  Options := TLzma2.XzOptions(1, 4, lzCheckCrc64);
 
-  TLzma2.Compress(SourceStream, DestinationStream, Options);
-  TLzma2.Decompress(SourceStream, DestinationStream, Options);
+  TLzma2.Compress(SourceStream, PackedStream, Options);
+  PackedStream.Position := 0;
+  TLzma2.Decompress(PackedStream, OutputStream, Options);
 end;
 ```
 

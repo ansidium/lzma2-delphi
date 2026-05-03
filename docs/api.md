@@ -1,41 +1,111 @@
 # Public API
 
-The main entry point is `Lzma.Api.TLzma2`.
+The normal entry point is `Lzma.Api.TLzma2`. It exposes stream-first methods,
+file helpers, and option factories for the common containers. Most applications
+should start with these helpers instead of filling every `TLzma2Options` field
+manually.
+
+## Common Recipes
+
+### XZ File
+
+```pascal
+uses
+  Lzma.Api,
+  Lzma.Types;
+
+var
+  Options: TLzma2Options;
+begin
+  Options := TLzma2.XzOptions(6, 4, lzCheckCrc64);
+  TLzma2.CompressFile('data.bin', 'data.xz', Options);
+  TLzma2.DecompressFile('data.xz', 'data.out', Options);
+end;
+```
+
+### Raw LZMA2 Stream
 
 ```pascal
 var
   Options: TLzma2Options;
-
-Options := TLzma2.DefaultOptions;
-Options.Container := lcXz;          // lcRawLzma2, lcLzma, lcXz, or lc7z
-Options.Level := 0;                 // 0..9
-Options.DictionarySize := 1 shl 20; // normalized to the LZMA2 property grid
-Options.ThreadCount := 1;
-Options.Check := lzCheckCrc64;
-Options.FastBytes := 0;             // 0 keeps the level default; otherwise 5..273
-Options.CutValue := 0;              // 0 keeps the level default match-finder cycles
-Options.Lc := -1;                   // -1 keeps SDK defaults; explicit lc/lp/pb are supported
-Options.Lp := -1;
-Options.Pb := -1;
-Options.ArchiveFileName := 'data.bin'; // used by lc7z encode
-Options.LzmaEndMarker := False;     // lcLzma encode: False stores known size, True writes SDK end marker
-
-TLzma2.Compress(SourceStream, DestinationStream, Options);
-TLzma2.Decompress(SourceStream, DestinationStream, Options);
-
-Task := TLzma2.CompressAsync(SourceStream, DestinationStream, Options);
-Task.Wait;
-
-Task := TLzma2.DecompressAsync(SourceStream, DestinationStream, Options);
-Task.Wait;
+begin
+  Options := TLzma2.RawLzma2Options(6, 1);
+  TLzma2.Compress(SourceStream, PackedStream, Options);
+  PackedStream.Position := 0;
+  TLzma2.Decompress(PackedStream, OutputStream, Options);
+end;
 ```
 
-Stream ownership stays with the caller. The library does not close input or output streams. Single-thread raw LZMA2, standalone `.lzma`, and XZ encode/decode paths operate forward over the source stream and are covered with `TStream` contract tests where the format permits it. The `lcLzma` path writes the classic 13-byte standalone LZMA header, encodes either a known unpack size or an SDK end marker via `LzmaEndMarker`, decodes known-size streams, and decodes unknown-size streams through the SDK end marker. The `lc7z` encoder needs a seekable destination because the 7z signature header is patched after the packed stream and header sizes are known; it writes one LZMA2 folder/coder. `TLzma2.Decompress` remains a single-file 7z stream API and rejects multi-entry archives instead of concatenating files. `Lzma.SevenZip.TLzma7z.List` and `ExtractAll` provide the archive API for multi-entry LZMA/LZMA2 7z files, including directories, empty files, multiple folders/pack streams, solid substreams, CRC metadata, and unencoded or LZMA/LZMA2-encoded headers. Multi-threaded decode uses seekable input when it can split independent raw LZMA2 reset chunks or XZ blocks; unsuitable and non-seekable sources fall back to single-thread decode.
+### Standalone LZMA
+
+```pascal
+var
+  Options: TLzma2Options;
+begin
+  Options := TLzma2.StandaloneLzmaOptions(6, False);
+  TLzma2.CompressFile('data.bin', 'data.lzma', Options);
+  TLzma2.DecompressFile('data.lzma', 'data.out', Options);
+end;
+```
+
+Set `EndMarker` to `True` when writing an SDK end-marker stream instead of a
+known unpack-size standalone LZMA stream.
+
+### Single-File 7z
+
+```pascal
+var
+  Options: TLzma2Options;
+begin
+  Options := TLzma2.SevenZipOptions('', 6, 2);
+  TLzma2.CompressFile('data.bin', 'data.7z', Options);
+end;
+```
+
+When `ArchiveFileName` is empty, `CompressFile` stores
+`ExtractFileName(SourceFileName)` in the 7z metadata.
+
+### Factory Shortcuts
+
+```pascal
+var
+  Options: TLzma2Options;
+begin
+  Options := TLzma2.DefaultOptionsFor(lcXz, 6, 1);
+  Options := TLzma2.FastOptionsFor(lcRawLzma2, 4); // level 1
+  Options := TLzma2.MaxOptionsFor(lcXz, 4);        // level 9
+end;
+```
+
+For stream methods, ownership stays with the caller. The library does not close input or output streams. File helpers open and close their own `TFileStream` instances. Single-thread raw LZMA2, standalone `.lzma`, and XZ encode/decode paths operate forward over the source stream and are covered with `TStream` contract tests where the format permits it. The `lcLzma` path writes the classic 13-byte standalone LZMA header, encodes either a known unpack size or an SDK end marker via `LzmaEndMarker`, decodes known-size streams, and decodes unknown-size streams through the SDK end marker. The `lc7z` encoder needs a seekable destination because the 7z signature header is patched after the packed stream and header sizes are known; it writes one LZMA2 folder/coder. `TLzma2.Decompress` remains a single-file 7z stream API and rejects multi-entry archives instead of concatenating files. `Lzma.SevenZip.TLzma7z.List` and `ExtractAll` provide the archive API for multi-entry LZMA/LZMA2 7z files, including directories, empty files, multiple folders/pack streams, solid substreams, CRC metadata, and unencoded or LZMA/LZMA2-encoded headers. Multi-threaded decode uses seekable input when it can split independent raw LZMA2 reset chunks or XZ blocks; unsuitable and non-seekable sources fall back to single-thread decode.
 Async calls return a started `System.Threading.ITask`; the caller must keep both streams alive and not use them concurrently until the task has completed. Progress callbacks run on the task/worker thread, so UI code should marshal or poll state instead of touching controls directly.
 XZ decompression streams decoded bytes to the destination while calculating the block check; if a later block check fails, the destination may already contain bytes written before the error.
 
 Progress callbacks receive total input and output bytes and can cancel by setting `Cancel := True`.
 Cancellation raises `ELzmaCancelled`.
+
+## Advanced Options
+
+`TLzma2Options` remains public for callers that need to mirror CLI settings or
+fine-tune encoder internals. The option factories initialize the normal fields;
+advanced callers can then override specific values:
+
+```pascal
+Options := TLzma2.XzOptions(6, 4, lzCheckCrc64);
+Options.DictionarySize := 64 * 1024 * 1024;
+Options.FastBytes := 64;        // 0 keeps the level default; otherwise 5..273
+Options.CutValue := 32;         // 0 keeps the level default match-finder cycles
+Options.Lc := -1;               // -1 keeps SDK defaults; explicit lc/lp/pb are supported
+Options.Lp := -1;
+Options.Pb := -1;
+Options.XzBlockSize := 0;       // 0 keeps the streaming single-block writer
+Options.ParserMode := lpmSdkProfile;
+Options.MatchFinderProfile := lmfpAuto;
+```
+
+For `lc7z`, `ArchiveFileName` controls the stored file name. For `lcLzma`,
+`LzmaEndMarker` selects known-size standalone output (`False`) or SDK end-marker
+output (`True`).
 
 Decode diagnostics are opt-in through `TLzma2Options.DecodeDiagnostics`:
 
@@ -69,10 +139,13 @@ Typed exceptions are declared in `Lzma.Errors`:
 - `ELzmaCancelled`
 - `ELzmaThreadError`
 
-Low-level modules expose:
+Advanced and low-level modules expose:
 
 - `Lzma2.Encoder.TLzma2Encoder.EncodeRaw`
 - `Lzma2.Decoder.TLzma2Decoder.DecodeRaw`
+- `Lzma.Encoder` records and parser helpers, which are internal/advanced
+  building blocks for the native encoder rather than the recommended first-use
+  API
 - `Lzma.Sdk` for a Delphi-native SDK-style facade with `SRes` return
   codes, `ILzmaSeqInStream`, `ILzmaSeqOutStream`, `ILzmaCompressProgress`,
   `ILzmaAllocator` / `TLzmaSdkSystemAllocator`, LZMA/LZMA2 props

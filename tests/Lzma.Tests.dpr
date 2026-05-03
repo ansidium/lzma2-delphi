@@ -390,6 +390,20 @@ type
     procedure PublicOptionsExposeParityAndDiagnosticsDefaults;
     [Test]
     [Category('unit')]
+    procedure PublicOptionFactoriesExposeCommonProfiles;
+    [Test]
+    [Category('unit')]
+    [Category('container')]
+    procedure FileHelpersRoundTripCommonContainers;
+    [Test]
+    [Category('unit')]
+    [Category('container')]
+    procedure FileHelperSevenZipDefaultsArchiveFileName;
+    [Test]
+    [Category('unit')]
+    procedure FileHelpersRejectEmptyPathsWithTypedErrors;
+    [Test]
+    [Category('unit')]
     procedure SdkFacadeLzmaPropsNormalizeAndWriteMatchRawProps;
     [Test]
     [Category('unit')]
@@ -5047,6 +5061,171 @@ begin
   Assert.AreEqual(-1, Options.Pb, 'default pb keeps SDK properties');
   Assert.AreEqual(UInt64(0), Options.XzBlockSize, 'default XZ block size keeps the streaming single-block writer');
   Assert.IsNull(Options.EncodeDiagnostics, 'encode diagnostics default');
+end;
+
+procedure TLzma2NativeTests.PublicOptionFactoriesExposeCommonProfiles;
+var
+  Options: TLzma2Options;
+begin
+  Options := TLzma2.DefaultOptionsFor(lcRawLzma2, 3, 5);
+  Assert.AreEqual(Ord(lcRawLzma2), Ord(Options.Container), 'raw LZMA2 container');
+  Assert.AreEqual(3, Integer(Options.Level), 'raw LZMA2 level');
+  Assert.AreEqual(DefaultDictionaryForLevel(3), Options.DictionarySize, 'raw LZMA2 dictionary');
+  Assert.AreEqual(5, Options.ThreadCount, 'raw LZMA2 thread count');
+  Assert.AreEqual(Ord(lzCheckNone), Ord(Options.Check), 'raw LZMA2 has no container check');
+  Assert.IsFalse(Options.LzmaEndMarker, 'raw LZMA2 has no standalone end marker');
+
+  Options := TLzma2.RawLzma2Options(4, 6);
+  Assert.AreEqual(Ord(lcRawLzma2), Ord(Options.Container), 'raw LZMA2 factory container');
+  Assert.AreEqual(4, Integer(Options.Level), 'raw LZMA2 factory level');
+  Assert.AreEqual(6, Options.ThreadCount, 'raw LZMA2 factory thread count');
+  Assert.AreEqual(Ord(lzCheckNone), Ord(Options.Check), 'raw LZMA2 factory check');
+
+  Options := TLzma2.XzOptions(7, 4, lzCheckSha256);
+  Assert.AreEqual(Ord(lcXz), Ord(Options.Container), 'XZ container');
+  Assert.AreEqual(7, Integer(Options.Level), 'XZ level');
+  Assert.AreEqual(4, Options.ThreadCount, 'XZ thread count');
+  Assert.AreEqual(Ord(lzCheckSha256), Ord(Options.Check), 'XZ check');
+
+  Options := TLzma2.StandaloneLzmaOptions(5, True);
+  Assert.AreEqual(Ord(lcLzma), Ord(Options.Container), 'standalone LZMA container');
+  Assert.AreEqual(5, Integer(Options.Level), 'standalone LZMA level');
+  Assert.AreEqual(1, Options.ThreadCount, 'standalone LZMA default thread count');
+  Assert.AreEqual(Ord(lzCheckNone), Ord(Options.Check), 'standalone LZMA has no container check');
+  Assert.IsTrue(Options.LzmaEndMarker, 'standalone LZMA end marker');
+
+  Options := TLzma2.SevenZipOptions('payload.bin', 2, 3);
+  Assert.AreEqual(Ord(lc7z), Ord(Options.Container), '7z container');
+  Assert.AreEqual(2, Integer(Options.Level), '7z level');
+  Assert.AreEqual(3, Options.ThreadCount, '7z thread count');
+  Assert.AreEqual(Ord(lzCheckCrc64), Ord(Options.Check), '7z keeps the public default check field');
+  Assert.AreEqual('payload.bin', Options.ArchiveFileName, '7z archive file name');
+  Assert.IsFalse(Options.LzmaEndMarker, '7z has no standalone end marker');
+
+  Options := TLzma2.FastOptionsFor(lcXz, 8);
+  Assert.AreEqual(Ord(lcXz), Ord(Options.Container), 'fast shortcut container');
+  Assert.AreEqual(1, Integer(Options.Level), 'fast shortcut level');
+  Assert.AreEqual(8, Options.ThreadCount, 'fast shortcut thread count');
+
+  Options := TLzma2.MaxOptionsFor(lcRawLzma2, 2);
+  Assert.AreEqual(Ord(lcRawLzma2), Ord(Options.Container), 'max shortcut container');
+  Assert.AreEqual(9, Integer(Options.Level), 'max shortcut level');
+  Assert.AreEqual(2, Options.ThreadCount, 'max shortcut thread count');
+end;
+
+procedure TLzma2NativeTests.FileHelpersRoundTripCommonContainers;
+var
+  ArchivePath: string;
+  Data: TBytes;
+  OutputPath: string;
+  Options: TLzma2Options;
+  RoundTrip: TBytes;
+  SourcePath: string;
+
+  procedure RunFileRoundTrip(const Container: TLzma2Container; const Extension: string);
+  begin
+    ArchivePath := TPath.Combine(CrossToolDir, 'api-helper-' + Extension);
+    OutputPath := TPath.Combine(CrossToolDir, 'api-helper-' + Extension + '.out');
+    DeleteFileIfExists(ArchivePath);
+    DeleteFileIfExists(OutputPath);
+
+    case Container of
+      lcRawLzma2:
+        Options := TLzma2.RawLzma2Options(0, 1);
+      lcLzma:
+        Options := TLzma2.StandaloneLzmaOptions(0, False);
+    else
+      Options := TLzma2.XzOptions(0, 1, lzCheckCrc64);
+    end;
+
+    TLzma2.CompressFile(SourcePath, ArchivePath, Options);
+    TLzma2.DecompressFile(ArchivePath, OutputPath, Options);
+    RoundTrip := ReadAllBytesFromFile(OutputPath);
+    AssertBytesEqual(Data, RoundTrip, 'file helper roundtrip for ' + Extension);
+  end;
+
+begin
+  SourcePath := TPath.Combine(CrossToolDir, 'api-helper-source.bin');
+  ArchivePath := '';
+  OutputPath := '';
+  Data := RepeatingBytes(4096);
+  WriteAllBytes(SourcePath, Data);
+  try
+    RunFileRoundTrip(lcXz, 'xz');
+    RunFileRoundTrip(lcRawLzma2, 'lzma2');
+    RunFileRoundTrip(lcLzma, 'lzma');
+  finally
+    DeleteFileIfExists(SourcePath);
+    if ArchivePath <> '' then
+      DeleteFileIfExists(ArchivePath);
+    if OutputPath <> '' then
+      DeleteFileIfExists(OutputPath);
+  end;
+end;
+
+procedure TLzma2NativeTests.FileHelperSevenZipDefaultsArchiveFileName;
+var
+  ArchivePath: string;
+  ArchiveStream: TFileStream;
+  Data: TBytes;
+  Entries: TArray<TLzma7zEntry>;
+  Options: TLzma2Options;
+  SourcePath: string;
+begin
+  SourcePath := TPath.Combine(CrossToolDir, 'api-helper-7z-source.bin');
+  ArchivePath := TPath.Combine(CrossToolDir, 'api-helper-default-name.7z');
+  Data := BytesOfSize(2048);
+  WriteAllBytes(SourcePath, Data);
+  DeleteFileIfExists(ArchivePath);
+  try
+    Options := TLzma2.SevenZipOptions('', 0, 1);
+    TLzma2.CompressFile(SourcePath, ArchivePath, Options);
+
+    ArchiveStream := TFileStream.Create(ArchivePath, fmOpenRead or fmShareDenyWrite);
+    try
+      Entries := TLzma7z.List(ArchiveStream);
+    finally
+      ArchiveStream.Free;
+    end;
+
+    Assert.AreEqual(1, Integer(Length(Entries)), '7z helper entry count');
+    Assert.AreEqual(ExtractFileName(SourcePath), Entries[0].FileName, '7z helper default archive file name');
+  finally
+    DeleteFileIfExists(SourcePath);
+    DeleteFileIfExists(ArchivePath);
+  end;
+end;
+
+procedure TLzma2NativeTests.FileHelpersRejectEmptyPathsWithTypedErrors;
+var
+  Options: TLzma2Options;
+begin
+  Options := TLzma2.XzOptions(0, 1, lzCheckCrc64);
+  Assert.WillRaise(
+    procedure
+    begin
+      TLzma2.CompressFile('', TPath.Combine(CrossToolDir, 'api-helper-empty-source.xz'), Options);
+    end,
+    ELzmaInvalidParameter);
+  Assert.WillRaise(
+    procedure
+    begin
+      TLzma2.DecompressFile('', TPath.Combine(CrossToolDir, 'api-helper-empty-source.bin'), Options);
+    end,
+    ELzmaInvalidParameter);
+  Assert.WillRaise(
+    procedure
+    begin
+      TLzma2.CompressFile(TPath.Combine(CrossToolDir, 'api-helper-missing-source.bin'), '', Options);
+    end,
+    ELzmaInvalidParameter);
+  Assert.WillRaise(
+    procedure
+    begin
+      TLzma2.CompressFile(TPath.Combine(CrossToolDir, 'api-helper-missing-source.bin'),
+        TPath.Combine(CrossToolDir, 'api-helper-missing-source.xz'), Options);
+    end,
+    ELzmaReadError);
 end;
 
 procedure TLzma2NativeTests.SdkFacadeLzmaPropsNormalizeAndWriteMatchRawProps;

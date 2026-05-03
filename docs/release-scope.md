@@ -40,3 +40,9 @@ The ZIP contains only:
 - `THIRD-PARTY-NOTICES.md`
 
 Source archives are provided by GitHub from the `v26.01` tag.
+
+## Validation Boundary
+
+`quick` mode does not run `tests/run-performance.ps1`; release and soak modes
+own the full benchmark matrix. Release packages must keep graph images out of
+the public artifact set, including absence of `lzma2-delphi-graph.*` files.
