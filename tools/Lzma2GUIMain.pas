@@ -14,7 +14,9 @@ uses
   System.Types,
   System.UITypes,
   Winapi.ActiveX,
+  Winapi.Dwmapi,
   Winapi.Messages,
+  Winapi.MultiMon,
   Winapi.ShlObj,
   Winapi.Windows,
   Vcl.ComCtrls,
@@ -137,6 +139,9 @@ type
     FUpdatingOutputPath: Boolean;
     FCancelRequested: Integer;
     FWatch: TStopwatch;
+    FTaskbarList: ITaskbarList3;
+    FTaskbarButtonCreatedMessage: UINT;
+    FOleInitialized: Boolean;
     procedure BuildUi;
     function BuildOptions: TLzma2Options;
     procedure CollectSevenZipSourceEntries(const SourcePath: string;
@@ -188,17 +193,29 @@ type
     function BuildTempOutputPath(const FinalPath: string): string;
     procedure FinalizeOutputFile;
     procedure CleanupOutputFile;
+    procedure ApplyDwmWindowAttributes;
     procedure UpdateProgressUi(const InBytes, OutBytes: UInt64);
     procedure FinishTask(const ErrorText: string);
+    procedure ClearTaskbarProgress;
+    procedure InitializeShellIntegration;
+    procedure InitializeTaskbarList;
+    procedure LoadApplicationIcon;
+    procedure MinimizeToTaskbar;
+    procedure SetTaskbarProgress(const Percent: Integer; const IsError: Boolean);
   protected
     procedure CreateWnd; override;
+    procedure DestroyWnd; override;
     procedure CreateParams(var Params: TCreateParams); override;
     procedure Resize; override;
     procedure TitleBarMouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
     procedure TitleBarMouseUp(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
+    procedure WndProc(var Message: TMessage); override;
+    procedure WMNCActivate(var Message: TMessage); message WM_NCACTIVATE;
+    procedure WMNCCalcSize(var Message: TWMNCCalcSize); message WM_NCCALCSIZE;
     procedure WMNCHitTest(var Message: TWMNCHitTest); message WM_NCHITTEST;
+    procedure WMNCPaint(var Message: TMessage); message WM_NCPAINT;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -229,15 +246,8 @@ const
   UiWindowCloseHover = TColor($005252E1);
 
   DictionaryMbValues: array[0..7] of Integer = (1, 4, 16, 32, 64, 128, 256, 512);
-
-function CodeText(const Codes: array of Word): string;
-var
-  I: Integer;
-begin
-  SetLength(Result, Length(Codes));
-  for I := 0 to High(Codes) do
-    Result[I + 1] := Char(Codes[I]);
-end;
+  AppIconResourceName = 'MAINICON';
+  TaskbarButtonCreatedMessageName = 'TaskbarButtonCreated';
 
 function ColorToSkia(const Color: TColor; const Alpha: Byte = $FF): TAlphaColor;
 var
@@ -385,6 +395,10 @@ begin
       'Erro', 'Błąd', '오류', '错误', 'エラー', 'Hata', 'Fejl', 'Fout',
       'Hiba', 'Feil', 'Erro', 'Fel', 'Eroare', 'Грешка', 'Σφάλμα',
       'Помилка'));
+  if EnglishText = 'OK' then
+    Exit(Pick('OK', 'OK', 'OK', 'OK', 'Aceptar', 'OK', 'OK', 'OK',
+      '확인', '确定', 'OK', 'Tamam', 'OK', 'OK', 'OK', 'OK', 'OK', 'OK',
+      'OK', 'OK', 'OK', 'OK'));
   if EnglishText = 'File compression' then
     Exit(Pick('Compression de fichiers', 'Tiedoston pakkaus',
       'Compressione file', 'Dateikomprimierung', 'Compresión de archivos',
@@ -696,6 +710,177 @@ begin
       'Oppgaven mislyktes', 'A tarefa falhou', 'Uppgiften misslyckades',
       'Sarcina a eșuat', 'Задачата е неуспешна', 'Η εργασία απέτυχε',
       'Завдання не виконано'));
+  if EnglishText = 'The source folder has no files to archive.' then
+    Exit(Pick('Le dossier source ne contient aucun fichier à archiver.',
+      'Lähdekansiossa ei ole arkistoitavia tiedostoja.',
+      'La cartella sorgente non contiene file da archiviare.',
+      'Der Quellordner enthält keine Dateien zum Archivieren.',
+      'La carpeta de origen no contiene archivos para archivar.',
+      'Zdrojová složka neobsahuje žádné soubory k archivaci.',
+      'A pasta de origem não contém arquivos para arquivar.',
+      'Folder źródłowy nie zawiera plików do zarchiwizowania.',
+      '원본 폴더에 보관할 파일이 없습니다.',
+      '源文件夹中没有可归档的文件。', 'ソースフォルダーにアーカイブするファイルがありません。',
+      'Kaynak klasörde arşivlenecek dosya yok.',
+      'Kildemappen indeholder ingen filer til arkivering.',
+      'De bronmap bevat geen bestanden om te archiveren.',
+      'A forrásmappában nincs archiválandó fájl.',
+      'Kildemappen har ingen filer å arkivere.',
+      'A pasta de origem não contém ficheiros para arquivar.',
+      'Källmappen innehåller inga filer att arkivera.',
+      'Folderul sursă nu conține fișiere de arhivat.',
+      'Изходната папка няма файлове за архивиране.',
+      'Ο φάκελος προέλευσης δεν περιέχει αρχεία για αρχειοθέτηση.',
+      'У вихідній папці немає файлів для архівування.'));
+  if EnglishText = 'Enter a dictionary size in MB: 1 or higher.' then
+    Exit(Pick('Saisissez une taille de dictionnaire en MB : 1 ou plus.',
+      'Anna sanakirjan koko MB-yksikkönä: vähintään 1.',
+      'Inserisci una dimensione del dizionario in MB: 1 o superiore.',
+      'Geben Sie eine Wörterbuchgröße in MB ein: 1 oder größer.',
+      'Introduce un tamaño de diccionario en MB: 1 o superior.',
+      'Zadejte velikost slovníku v MB: 1 nebo více.',
+      'Informe um tamanho de dicionário em MB: 1 ou maior.',
+      'Podaj rozmiar słownika w MB: 1 lub więcej.',
+      '사전 크기를 MB 단위로 입력하세요: 1 이상.',
+      '请输入字典大小（MB）：1 或更大。', '辞書サイズをMBで入力してください: 1以上。',
+      'Sözlük boyutunu MB olarak girin: 1 veya daha büyük.',
+      'Indtast ordbogsstørrelse i MB: 1 eller højere.',
+      'Voer een woordenboekgrootte in MB in: 1 of hoger.',
+      'Adja meg a szótár méretét MB-ban: legalább 1.',
+      'Angi ordbokstørrelse i MB: 1 eller høyere.',
+      'Introduza um tamanho de dicionário em MB: 1 ou superior.',
+      'Ange ordboksstorlek i MB: 1 eller högre.',
+      'Introduceți dimensiunea dicționarului în MB: 1 sau mai mult.',
+      'Въведете размер на речника в MB: 1 или повече.',
+      'Εισαγάγετε μέγεθος λεξικού σε MB: 1 ή μεγαλύτερο.',
+      'Введіть розмір словника в MB: 1 або більше.'));
+  if EnglishText = 'Enter a thread count of 1 or higher.' then
+    Exit(Pick('Saisissez un nombre de threads de 1 ou plus.',
+      'Anna säikeiden määrä: vähintään 1.',
+      'Inserisci un numero di thread pari a 1 o superiore.',
+      'Geben Sie eine Threadanzahl von 1 oder größer ein.',
+      'Introduce un número de hilos de 1 o superior.',
+      'Zadejte počet vláken 1 nebo více.',
+      'Informe uma contagem de threads de 1 ou maior.',
+      'Podaj liczbę wątków: 1 lub więcej.',
+      '스레드 수를 1 이상으로 입력하세요.',
+      '请输入线程数：1 或更大。', 'スレッド数を1以上で入力してください。',
+      'İş parçacığı sayısını 1 veya daha büyük girin.',
+      'Indtast et trådantal på 1 eller højere.',
+      'Voer een threadaantal van 1 of hoger in.',
+      'Adja meg a szálak számát: legalább 1.',
+      'Angi antall tråder: 1 eller høyere.',
+      'Introduza uma contagem de threads de 1 ou superior.',
+      'Ange antal trådar: 1 eller högre.',
+      'Introduceți un număr de fire de execuție de 1 sau mai mare.',
+      'Въведете брой нишки: 1 или повече.',
+      'Εισαγάγετε αριθμό νημάτων 1 ή μεγαλύτερο.',
+      'Введіть кількість потоків: 1 або більше.'));
+  if EnglishText = ' archive' then
+    Exit(Pick(' archive', ' arkisto', ' archivio', ' archive', ' archivo',
+      ' archiv', ' arquivo', ' archiwum', ' 아카이브', ' 归档', 'アーカイブ',
+      ' arşivi', '-arkiv', ' archief', ' archívum', '-arkiv', ' arquivo',
+      '-arkiv', ' arhivă', ' архив', ' αρχείο', ' архів'));
+  if EnglishText = 'speed: —' then
+    Exit(Pick('vitesse : —', 'nopeus: —', 'velocità: —',
+      'Geschwindigkeit: —', 'velocidad: —', 'rychlost: —',
+      'velocidade: —', 'szybkość: —', '속도: —', '速度：—', '速度: —',
+      'hız: —', 'hastighed: —', 'snelheid: —', 'sebesség: —',
+      'hastighet: —', 'velocidade: —', 'hastighet: —', 'viteză: —',
+      'скорост: —', 'ταχύτητα: —', 'швидкість: —'));
+  if EnglishText = 'speed: ' then
+    Exit(Pick('vitesse : ', 'nopeus: ', 'velocità: ',
+      'Geschwindigkeit: ', 'velocidad: ', 'rychlost: ',
+      'velocidade: ', 'szybkość: ', '속도: ', '速度：', '速度: ',
+      'hız: ', 'hastighed: ', 'snelheid: ', 'sebesség: ',
+      'hastighet: ', 'velocidade: ', 'hastighet: ', 'viteză: ',
+      'скорост: ', 'ταχύτητα: ', 'швидкість: '));
+  if EnglishText = 'Processed: %s of %s | written: %s | %s' then
+    Exit(Pick('Traité : %s sur %s | écrit : %s | %s',
+      'Käsitelty: %s / %s | kirjoitettu: %s | %s',
+      'Elaborato: %s di %s | scritto: %s | %s',
+      'Verarbeitet: %s von %s | geschrieben: %s | %s',
+      'Procesado: %s de %s | escrito: %s | %s',
+      'Zpracováno: %s z %s | zapsáno: %s | %s',
+      'Processado: %s de %s | escrito: %s | %s',
+      'Przetworzono: %s z %s | zapisano: %s | %s',
+      '처리됨: %s / %s | 기록됨: %s | %s',
+      '已处理：%s / %s | 已写入：%s | %s', '処理済み: %s / %s | 書き込み済み: %s | %s',
+      'İşlendi: %s / %s | yazıldı: %s | %s',
+      'Behandlet: %s af %s | skrevet: %s | %s',
+      'Verwerkt: %s van %s | geschreven: %s | %s',
+      'Feldolgozva: %s / %s | írva: %s | %s',
+      'Behandlet: %s av %s | skrevet: %s | %s',
+      'Processado: %s de %s | escrito: %s | %s',
+      'Bearbetat: %s av %s | skrivet: %s | %s',
+      'Procesat: %s din %s | scris: %s | %s',
+      'Обработено: %s от %s | записано: %s | %s',
+      'Επεξεργάστηκε: %s από %s | γράφτηκε: %s | %s',
+      'Оброблено: %s з %s | записано: %s | %s'));
+  if EnglishText = 'Done: %s -> %s' then
+    Exit(Pick('Terminé : %s -> %s', 'Valmis: %s -> %s',
+      'Completato: %s -> %s', 'Fertig: %s -> %s',
+      'Completado: %s -> %s', 'Hotovo: %s -> %s',
+      'Concluído: %s -> %s', 'Gotowe: %s -> %s',
+      '완료: %s -> %s', '完成：%s -> %s', '完了: %s -> %s',
+      'Tamamlandı: %s -> %s', 'Færdig: %s -> %s',
+      'Voltooid: %s -> %s', 'Kész: %s -> %s',
+      'Ferdig: %s -> %s', 'Concluído: %s -> %s',
+      'Klart: %s -> %s', 'Gata: %s -> %s',
+      'Готово: %s -> %s', 'Ολοκληρώθηκε: %s -> %s',
+      'Готово: %s -> %s'));
+  if EnglishText = ' | Ratio (input/output): %.3f' then
+    Exit(Pick(' | Ratio (entrée/sortie) : %.3f',
+      ' | Suhde (syöte/tulos): %.3f',
+      ' | Rapporto (input/output): %.3f',
+      ' | Verhältnis (Eingabe/Ausgabe): %.3f',
+      ' | Relación (entrada/salida): %.3f',
+      ' | Poměr (vstup/výstup): %.3f',
+      ' | Razão (entrada/saída): %.3f',
+      ' | Współczynnik (wejście/wyjście): %.3f',
+      ' | 비율(입력/출력): %.3f',
+      ' | 比率（输入/输出）：%.3f',
+      ' | 比率 (入力/出力): %.3f',
+      ' | Oran (giriş/çıkış): %.3f',
+      ' | Forhold (input/output): %.3f',
+      ' | Verhouding (invoer/uitvoer): %.3f',
+      ' | Arány (bemenet/kimenet): %.3f',
+      ' | Forhold (inndata/utdata): %.3f',
+      ' | Rácio (entrada/saída): %.3f',
+      ' | Förhållande (in/ut): %.3f',
+      ' | Raport (intrare/ieșire): %.3f',
+      ' | Съотношение (вход/изход): %.3f',
+      ' | Αναλογία (είσοδος/έξοδος): %.3f',
+      ' | Коефіцієнт (вхід/вихід): %.3f'));
+  if EnglishText = ' | Decode requested threads: %d | Decode actual threads: %d | Decode used MT: %s | Decode fallback: %s' then
+    Exit(Pick(' | Threads demandés au décodage : %d | Threads réels : %d | MT utilisé : %s | Repli : %s',
+      ' | Purun pyydetyt säikeet: %d | Todelliset säikeet: %d | MT käytössä: %s | Varareitti: %s',
+      ' | Thread richiesti in decodifica: %d | Thread effettivi: %d | MT usato: %s | Fallback: %s',
+      ' | Dekodierung angeforderte Threads: %d | Tatsächliche Threads: %d | MT verwendet: %s | Fallback: %s',
+      ' | Hilos solicitados al decodificar: %d | Hilos reales: %d | MT usado: %s | Reserva: %s',
+      ' | Požadovaná vlákna dekódování: %d | Skutečná vlákna: %d | Použito MT: %s | Fallback: %s',
+      ' | Threads solicitadas na decodificação: %d | Threads reais: %d | MT usado: %s | Fallback: %s',
+      ' | Żądane wątki dekodowania: %d | Rzeczywiste wątki: %d | Użyto MT: %s | Fallback: %s',
+      ' | 디코드 요청 스레드: %d | 실제 스레드: %d | MT 사용: %s | 대체 경로: %s',
+      ' | 解码请求线程：%d | 实际线程：%d | 使用 MT：%s | 回退：%s',
+      ' | デコード要求スレッド: %d | 実スレッド: %d | MT使用: %s | フォールバック: %s',
+      ' | Çözme istenen iş parçacığı: %d | Gerçek iş parçacığı: %d | MT kullanıldı: %s | Yedek yol: %s',
+      ' | Anmodede dekodningstråde: %d | Faktiske tråde: %d | MT brugt: %s | Fallback: %s',
+      ' | Gevraagde decodeerthreads: %d | Werkelijke threads: %d | MT gebruikt: %s | Fallback: %s',
+      ' | Kért dekódolási szálak: %d | Tényleges szálak: %d | MT használva: %s | Tartalék: %s',
+      ' | Ønskede dekodingstråder: %d | Faktiske tråder: %d | MT brukt: %s | Fallback: %s',
+      ' | Threads pedidas na descodificação: %d | Threads reais: %d | MT usado: %s | Fallback: %s',
+      ' | Begärda avkodningstrådar: %d | Faktiska trådar: %d | MT användes: %s | Reservväg: %s',
+      ' | Fire cerute la decodare: %d | Fire reale: %d | MT folosit: %s | Fallback: %s',
+      ' | Заявени нишки за декодиране: %d | Реални нишки: %d | Използван MT: %s | Резервен път: %s',
+      ' | Ζητούμενα νήματα αποκωδικοποίησης: %d | Πραγματικά νήματα: %d | Χρήση MT: %s | Εφεδρική διαδρομή: %s',
+      ' | Запитано потоків декодування: %d | Фактичні потоки: %d | Використано MT: %s | Резервний шлях: %s'));
+  if EnglishText = ' | %d ms' then
+    Exit(Pick(' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
+      ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
+      ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
+      ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
+      ' | %d ms', ' | %d ms', ' | %d ms'));
 end;
 
 constructor TRoundedPanel.Create(AOwner: TComponent);
@@ -1005,14 +1190,22 @@ begin
 end;
 
 constructor TMainForm.Create(AOwner: TComponent);
+var
+  OleResult: HRESULT;
 begin
   inherited CreateNew(AOwner);
+  OleResult := OleInitialize(nil);
+  FOleInitialized := Succeeded(OleResult);
+  FTaskbarButtonCreatedMessage := RegisterWindowMessage(TaskbarButtonCreatedMessageName);
   FLanguage := DetectGuiLanguage;
   BuildUi;
+  LoadApplicationIcon;
+  InitializeShellIntegration;
 end;
 
 destructor TMainForm.Destroy;
 begin
+  ClearTaskbarProgress;
   TInterlocked.Exchange(FCancelRequested, 1);
   FPollTimer.Enabled := False;
   if FTask <> nil then
@@ -1026,36 +1219,189 @@ begin
   end;
   CloseStreams;
   CleanupOutputFile;
+  FTaskbarList := nil;
   inherited Destroy;
+  if FOleInitialized then
+    OleUninitialize;
 end;
 
 procedure TMainForm.CreateWnd;
 begin
   inherited;
+  LoadApplicationIcon;
+  ApplyDwmWindowAttributes;
+  InitializeShellIntegration;
   Resize;
+end;
+
+procedure TMainForm.DestroyWnd;
+begin
+  ClearTaskbarProgress;
+  inherited;
 end;
 
 procedure TMainForm.CreateParams(var Params: TCreateParams);
 begin
   inherited CreateParams(Params);
-  Params.Style := Params.Style or WS_SYSMENU or WS_MINIMIZEBOX or WS_MAXIMIZEBOX;
+  Params.Style := (Params.Style and not WS_POPUP) or WS_OVERLAPPED or WS_CAPTION or
+    WS_THICKFRAME or WS_SYSMENU or WS_MINIMIZEBOX or WS_MAXIMIZEBOX;
+  Params.ExStyle := Params.ExStyle or WS_EX_APPWINDOW;
+  Params.WndParent := 0;
+end;
+
+procedure TMainForm.ApplyDwmWindowAttributes;
+var
+  CornerPreference: Integer;
+  NcRenderingPolicy: Integer;
+  TransitionsForcedDisabled: BOOL;
+begin
+  if not HandleAllocated then
+    Exit;
+
+  NcRenderingPolicy := DWMNCRP_ENABLED;
+  DwmSetWindowAttribute(Handle, DWMWA_NCRENDERING_POLICY,
+    @NcRenderingPolicy, SizeOf(NcRenderingPolicy));
+  TransitionsForcedDisabled := False;
+  DwmSetWindowAttribute(Handle, DWMWA_TRANSITIONS_FORCEDISABLED,
+    @TransitionsForcedDisabled, SizeOf(TransitionsForcedDisabled));
+  CornerPreference := DWMWCP_ROUND;
+  DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE,
+    @CornerPreference, SizeOf(CornerPreference));
+  SetWindowPos(Handle, 0, 0, 0, 0, 0,
+    SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or
+    SWP_FRAMECHANGED);
+end;
+
+procedure TMainForm.LoadApplicationIcon;
+var
+  ResourceIcon: HICON;
+begin
+  ResourceIcon := LoadIcon(HInstance, PChar(AppIconResourceName));
+  if ResourceIcon <> 0 then
+  begin
+    Icon.Handle := CopyIcon(ResourceIcon);
+    Application.Icon.Assign(Icon);
+    if HandleAllocated then
+    begin
+      SendMessage(Handle, WM_SETICON, ICON_SMALL, LPARAM(Icon.Handle));
+      SendMessage(Handle, WM_SETICON, ICON_BIG, LPARAM(Icon.Handle));
+    end;
+  end;
+end;
+
+procedure TMainForm.InitializeTaskbarList;
+var
+  Taskbar: ITaskbarList3;
+begin
+  if FTaskbarList <> nil then
+    Exit;
+
+  if Succeeded(CoCreateInstance(CLSID_TaskbarList, nil, CLSCTX_INPROC_SERVER,
+    ITaskbarList3, Taskbar)) and Succeeded(Taskbar.HrInit) then
+    FTaskbarList := Taskbar;
+end;
+
+procedure TMainForm.InitializeShellIntegration;
+begin
+  if not HandleAllocated then
+    HandleNeeded;
+  InitializeTaskbarList;
+  SetTaskbarProgress(FProgressPercent, FProgressError);
+end;
+
+procedure TMainForm.ClearTaskbarProgress;
+begin
+  if not HandleAllocated then
+    Exit;
+  InitializeTaskbarList;
+  if FTaskbarList <> nil then
+    FTaskbarList.SetProgressState(Handle, TBPF_NOPROGRESS);
+end;
+
+procedure TMainForm.SetTaskbarProgress(const Percent: Integer; const IsError: Boolean);
+var
+  NormalizedPercent: UInt64;
+begin
+  if not HandleAllocated then
+    Exit;
+  InitializeTaskbarList;
+  if FTaskbarList = nil then
+    Exit;
+
+  NormalizedPercent := UInt64(Max(0, Min(100, Percent)));
+  if IsError then
+  begin
+    FTaskbarList.SetProgressState(Handle, TBPF_ERROR);
+    FTaskbarList.SetProgressValue(Handle, NormalizedPercent, 100);
+  end
+  else if FTask <> nil then
+  begin
+    FTaskbarList.SetProgressState(Handle, TBPF_NORMAL);
+    FTaskbarList.SetProgressValue(Handle, NormalizedPercent, 100);
+  end
+  else
+    FTaskbarList.SetProgressState(Handle, TBPF_NOPROGRESS);
+end;
+
+procedure TMainForm.MinimizeToTaskbar;
+begin
+  if HandleAllocated then
+    SendMessage(Handle, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+end;
+
+procedure TMainForm.WndProc(var Message: TMessage);
+begin
+  if (FTaskbarButtonCreatedMessage <> 0) and
+    (Message.Msg = FTaskbarButtonCreatedMessage) then
+  begin
+    FTaskbarList := nil;
+    InitializeTaskbarList;
+    SetTaskbarProgress(FProgressPercent, FProgressError);
+    inherited WndProc(Message);
+    Exit;
+  end;
+  inherited WndProc(Message);
+end;
+
+procedure TMainForm.WMNCActivate(var Message: TMessage);
+begin
+  Message.Result := 1;
+end;
+
+procedure TMainForm.WMNCCalcSize(var Message: TWMNCCalcSize);
+var
+  MonitorInfo: TMonitorInfo;
+begin
+  if not Message.CalcValidRects then
+  begin
+    Message.Result := 0;
+    Exit;
+  end;
+
+  if Message.CalcSize_Params <> nil then
+  begin
+    if WindowState = wsMaximized then
+    begin
+      MonitorInfo.cbSize := SizeOf(MonitorInfo);
+      if GetMonitorInfo(MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST), @MonitorInfo) then
+        Message.CalcSize_Params.rgrc[0] := MonitorInfo.rcWork;
+    end;
+    Message.Result := 0;
+    Exit;
+  end;
+  inherited;
+end;
+
+procedure TMainForm.WMNCPaint(var Message: TMessage);
+begin
+  Message.Result := 0;
 end;
 
 procedure TMainForm.Resize;
-var
-  Region: HRGN;
 begin
   inherited;
   if not HandleAllocated then
     Exit;
-  if WindowState = wsMaximized then
-  begin
-    SetWindowRgn(Handle, 0, True);
-    LayoutMainPanels;
-    Exit;
-  end;
-  Region := CreateRoundRectRgn(0, 0, Width + 1, Height + 1, 18, 18);
-  SetWindowRgn(Handle, Region, True);
   LayoutMainPanels;
 end;
 
@@ -1179,7 +1525,7 @@ end;
 function TMainForm.DictionaryCaption(const ValueMb: Integer): string;
 begin
   if FLanguage = glRussian then
-    Result := Format('%d %s', [ValueMb, CodeText([1052, 1041])])
+    Result := Format('%d МБ', [ValueMb])
   else
     Result := Format('%d MB', [ValueMb]);
 end;
@@ -1420,6 +1766,7 @@ var
 begin
   FProgressPercent := Max(0, Min(100, Percent));
   FProgressError := IsError;
+  SetTaskbarProgress(FProgressPercent, IsError);
   if (FProgressTrack = nil) or (FProgressFill = nil) then
     Exit;
 
@@ -1442,6 +1789,7 @@ begin
     Exit;
   FProgressPercent := 0;
   FProgressError := False;
+  ClearTaskbarProgress;
   if FProgressTrack <> nil then
     FProgressTrack.Visible := False;
   if FProgressFill <> nil then
@@ -1533,7 +1881,7 @@ begin
     TitleLabel.Parent := TitleBar;
     TitleLabel.Left := 20;
     TitleLabel.Top := 14;
-    TitleLabel.Caption := TextOf(CodeText([1054, 1096, 1080, 1073, 1082, 1072]), 'Error');
+    TitleLabel.Caption := TextOf('Ошибка', 'Error');
     TitleLabel.Font.Name := 'Segoe UI Semibold';
     TitleLabel.Font.Size := 10;
     TitleLabel.Font.Color := UiText;
@@ -1573,7 +1921,7 @@ begin
     OkButton.BevelOuter := bvNone;
     OkButton.ParentBackground := False;
     OkButton.Color := UiAccent;
-    OkButton.Caption := 'OK';
+    OkButton.Caption := TextOf('OK', 'OK');
     OkButton.Alignment := taCenter;
     OkButton.Font.Name := 'Segoe UI Semibold';
     OkButton.Font.Size := 9;
@@ -1885,7 +2233,7 @@ end;
 
 procedure TMainForm.MinimizeWindowClick(Sender: TObject);
 begin
-  Application.Minimize;
+  MinimizeToTaskbar;
 end;
 
 procedure TMainForm.MaximizeWindowClick(Sender: TObject);
@@ -2322,7 +2670,7 @@ begin
   TitleButton.Margins.Bottom := 0;
   TitleButton.Width := 46;
   TitleButton.Kind := wbMinimize;
-  TitleButton.Hint := TextOf(CodeText([1057, 1074, 1077, 1088, 1085, 1091, 1090, 1100]), 'Minimize');
+  TitleButton.Hint := TextOf('Свернуть', 'Minimize');
   TitleButton.OnClick := MinimizeWindowClick;
 
   TitleButton := TWindowButton.Create(Self);
@@ -2335,7 +2683,7 @@ begin
   TitleButton.Margins.Bottom := 0;
   TitleButton.Width := 46;
   TitleButton.Kind := wbMaximize;
-  TitleButton.Hint := TextOf(CodeText([1056, 1072, 1079, 1074, 1077, 1088, 1085, 1091, 1090, 1100]), 'Maximize');
+  TitleButton.Hint := TextOf('Развернуть', 'Maximize');
   TitleButton.OnClick := MaximizeWindowClick;
 
   TitleButton := TWindowButton.Create(Self);
@@ -2348,7 +2696,7 @@ begin
   TitleButton.Margins.Bottom := 0;
   TitleButton.Width := 46;
   TitleButton.Kind := wbClose;
-  TitleButton.Hint := TextOf(CodeText([1047, 1072, 1082, 1088, 1099, 1090, 1100]), 'Close');
+  TitleButton.Hint := TextOf('Закрыть', 'Close');
   TitleButton.OnClick := CloseWindowClick;
   TitleBorderPanel.BringToFront;
 
@@ -3058,6 +3406,7 @@ begin
         Cancel := TInterlocked.CompareExchange(FCancelRequested, 0, 0) <> 0;
       end);
 
+  SetProgressVisual(0, False);
   FPollTimer.Enabled := True;
 end;
 
@@ -3159,6 +3508,10 @@ begin
       ShowErrorDialog(ErrorText);
   end;
   FTask := nil;
+  if ErrorText = '' then
+    ClearTaskbarProgress
+  else
+    SetTaskbarProgress(FProgressPercent, True);
   TInterlocked.Exchange(FCancelRequested, 0);
   SetInlineStatus(StatusText, ErrorText <> '');
   SetBusy(False);

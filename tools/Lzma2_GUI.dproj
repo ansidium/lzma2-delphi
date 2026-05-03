@@ -47,6 +47,7 @@
     <DCCReference Include="..\src\Lzma.XzCrc.pas"/>
     <DCCReference Include="..\src\Lzma2.Encoder.pas"/>
     <DCCReference Include="..\src\Lzma2.Decoder.pas"/>
+    <None Include="Lzma2_GUI.ico"/>
     <None Include="Lzma2_GUI.exe.manifest"/>
   </ItemGroup>
   <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>

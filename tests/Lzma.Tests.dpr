@@ -920,6 +920,14 @@ type
     [Test]
     [Category('unit')]
     [Category('perf-smoke')]
+    procedure VclGuiLocalizationTableCoversRuntimeStatusText;
+    [Test]
+    [Category('unit')]
+    [Category('perf-smoke')]
+    procedure VclGuiIntegratesTaskbarIconAndProgress;
+    [Test]
+    [Category('unit')]
+    [Category('perf-smoke')]
     procedure CiBuildsIndependentMsBuildProjectsInParallel;
     [Test]
     [Category('unit')]
@@ -12334,6 +12342,111 @@ begin
     'VCL GUI language detection must be separated from direct Windows API lookup');
   Assert.IsTrue(Pos('TranslateEnglishText', Vcl) > 0,
     'VCL GUI must keep translations in one fallback table keyed by English source text');
+end;
+
+procedure TLzma2NativeTests.VclGuiLocalizationTableCoversRuntimeStatusText;
+const
+  RuntimeEnglishTexts: array[0..9] of string = (
+    'The source folder has no files to archive.',
+    'Enter a dictionary size in MB: 1 or higher.',
+    'Enter a thread count of 1 or higher.',
+    ' archive',
+    'speed: ',
+    'Processed: %s of %s | written: %s | %s',
+    'Done: %s -> %s',
+    ' | Ratio (input/output): %.3f',
+    ' | Decode requested threads: %d | Decode actual threads: %d | Decode used MT: %s | Decode fallback: %s',
+    ' | %d ms');
+var
+  EnglishText: string;
+  Vcl: string;
+begin
+  Vcl := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tools\Lzma2GUIMain.pas'),
+    TEncoding.UTF8);
+
+  for EnglishText in RuntimeEnglishTexts do
+    Assert.IsTrue(Pos('if EnglishText = ' + QuotedStr(EnglishText) + ' then', Vcl) > 0,
+      Format('VCL GUI translation table must cover "%s"', [EnglishText]));
+  Assert.IsTrue(Pos('if EnglishText = ' + QuotedStr('speed: ' + #$2014) + ' then', Vcl) > 0,
+    'VCL GUI translation table must cover pending-speed status text');
+  Assert.IsTrue(Pos('CodeText(', Vcl) = 0,
+    'VCL GUI must not construct localized UI labels from codepoint arrays');
+end;
+
+procedure TLzma2NativeTests.VclGuiIntegratesTaskbarIconAndProgress;
+var
+  Dproj: string;
+  IconPath: string;
+  Rc: string;
+  Vcl: string;
+begin
+  Vcl := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tools\Lzma2GUIMain.pas'),
+    TEncoding.UTF8);
+  Rc := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tools\Lzma2GUIManifest.rc'),
+    TEncoding.UTF8);
+  Dproj := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tools\Lzma2_GUI.dproj'),
+    TEncoding.UTF8);
+  IconPath := TPath.Combine(GetCurrentDir, 'tools\Lzma2_GUI.ico');
+
+  Assert.IsTrue(TFile.Exists(IconPath), 'VCL GUI must ship a real application icon');
+  Assert.IsTrue(Pos('ICON "Lzma2_GUI.ico"', Rc) > 0,
+    'VCL GUI resource script must include the application icon');
+  Assert.IsTrue(Pos('Lzma2_GUI.ico', Dproj) > 0,
+    'VCL GUI project must track the icon resource for IDE/MSBuild builds');
+  Assert.IsTrue(Pos('LoadApplicationIcon', Vcl) > 0,
+    'VCL GUI must load the app icon into the form and Application.Icon');
+  Assert.IsTrue(Pos('WS_EX_APPWINDOW', Vcl) > 0,
+    'VCL GUI must force the borderless main form into the regular taskbar icon area');
+  Assert.IsTrue(Pos('WS_CAPTION', Vcl) > 0,
+    'VCL GUI must keep caption style bits so DWM can use standard window transitions');
+  Assert.IsTrue(Pos('WS_THICKFRAME', Vcl) > 0,
+    'VCL GUI must keep resize-frame style bits so DWM treats it as a normal top-level window');
+  Assert.IsTrue(Pos('Params.Style := (Params.Style and not WS_POPUP)', Vcl) > 0,
+    'VCL GUI must clear popup style from the custom main window');
+  Assert.IsTrue(Pos('WM_NCCALCSIZE', Vcl) > 0,
+    'VCL GUI must hide the native frame through non-client sizing instead of removing frame styles');
+  Assert.IsTrue(Pos('SWP_FRAMECHANGED', Vcl) > 0,
+    'VCL GUI must force Windows to recalculate non-client metrics after enabling the DWM-friendly style');
+  Assert.IsTrue(Pos('WM_NCPAINT', Vcl) > 0,
+    'VCL GUI must suppress native non-client painting so the custom title bar is not doubled');
+  Assert.IsTrue(Pos('WM_NCACTIVATE', Vcl) > 0,
+    'VCL GUI must suppress native non-client activation painting so the custom title bar is not doubled');
+  Assert.IsTrue(Pos('ApplyDwmWindowAttributes', Vcl) > 0,
+    'VCL GUI must explicitly opt into DWM window behavior for custom chrome');
+  Assert.IsTrue(Pos('DWMWA_TRANSITIONS_FORCEDISABLED', Vcl) > 0,
+    'VCL GUI must keep DWM transitions enabled');
+  Assert.IsTrue(Pos('DWMWA_WINDOW_CORNER_PREFERENCE', Vcl) > 0,
+    'VCL GUI must request DWM-managed rounded corners instead of using a main-window region');
+  Assert.IsTrue(Pos('CreateRoundRectRgn(0, 0, Width + 1, Height + 1, 18, 18)', Vcl) = 0,
+    'VCL GUI main form must not use SetWindowRgn because it disables normal DWM transitions');
+  Assert.IsTrue(Pos('MinimizeToTaskbar', Vcl) > 0,
+    'VCL GUI must minimize to the regular taskbar icon area');
+  Assert.IsTrue(Pos('SC_MINIMIZE', Vcl) > 0,
+    'VCL GUI must route custom chrome minimize through the system minimize command');
+  Assert.IsTrue(Pos('SendMessage(Handle, WM_SYSCOMMAND, SC_MINIMIZE', Vcl) > 0,
+    'VCL GUI custom minimize button must use the system minimize path so Windows can animate it');
+  Assert.IsTrue(Pos('SW_MINIMIZE', Vcl) = 0,
+    'VCL GUI must not bypass standard minimize animation with ShowWindow(SW_MINIMIZE)');
+  Assert.IsTrue(Pos('procedure TMainForm.WMSysCommand', Vcl) = 0,
+    'VCL GUI must not intercept SC_MINIMIZE and suppress the default animated system command');
+  Assert.IsTrue(Pos('Application.Minimize', Vcl) = 0,
+    'VCL GUI must not use Application.Minimize because it creates a classic minimized desktop window');
+  Assert.IsTrue(Pos('Shell_NotifyIcon', Vcl) = 0,
+    'VCL GUI must not minimize into the notification area near the clock');
+  Assert.IsTrue(Pos('NIM_ADD', Vcl) = 0,
+    'VCL GUI must not create notification-area tray icons for normal minimize');
+  Assert.IsTrue(Pos('SW_HIDE', Vcl) = 0,
+    'VCL GUI must not hide the form when the user expects taskbar minimization');
+  Assert.IsTrue(Pos('ITaskbarList3', Vcl) > 0,
+    'VCL GUI must use the Windows taskbar progress API');
+  Assert.IsTrue(Pos('SetProgressValue', Vcl) > 0,
+    'VCL GUI must publish progress values to the Windows taskbar');
+  Assert.IsTrue(Pos('TBPF_NORMAL', Vcl) > 0,
+    'VCL GUI taskbar progress must enter normal progress state while running');
+  Assert.IsTrue(Pos('TBPF_ERROR', Vcl) > 0,
+    'VCL GUI taskbar progress must surface failed tasks as taskbar errors');
+  Assert.IsTrue(Pos('TBPF_NOPROGRESS', Vcl) > 0,
+    'VCL GUI taskbar progress must clear itself outside active/error states');
 end;
 
 procedure TLzma2NativeTests.CiBuildsIndependentMsBuildProjectsInParallel;
