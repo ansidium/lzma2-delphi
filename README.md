@@ -4,6 +4,7 @@
 ![SDK baseline](https://img.shields.io/badge/LZMA%20SDK-26.01-blue)
 ![Runtime](https://img.shields.io/badge/runtime-pure%20Delphi-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 Native Delphi LZMA, LZMA2, XZ, and limited 7z implementation aligned with
 7-Zip/LZMA SDK 26.01. The runtime is source-only Delphi code: it does not load
@@ -156,9 +157,16 @@ The public release asset set is:
 - `lzma2-delphi-26.01-win64.zip`
 - `lzma2-delphi-26.01-win64.zip.sha256`
 
-The ZIP contains the Win64 command-line tool, the GUI tool, and the Skia runtime
-DLL used by the GUI:
-`Lzma2.exe`, `Lzma2_GUI.exe`, and `sk4d.dll`.
+The ZIP contains the Win64 command-line tool, the GUI tool, the Skia runtime
+DLL used by the GUI, and license notices:
+`Lzma2.exe`, `Lzma2_GUI.exe`, `sk4d.dll`, `LICENSE`, and
+`THIRD-PARTY-NOTICES.md`.
+
+## License
+
+Project source code is licensed under the MIT License. Binary release packages
+can include third-party runtime files that remain under their own license terms;
+see `THIRD-PARTY-NOTICES.md`.
 
 ## Documentation
 
