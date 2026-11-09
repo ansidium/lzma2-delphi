@@ -1,6 +1,6 @@
 # LZMA2 Delphi
 
-A native Delphi port of [LZMA SDK 26.06](https://www.7-zip.org/sdk.html) for Windows x86 and x64. Use the `TLzma2` stream API in a Delphi project, or run the command-line tool and VCL application from [GitHub Releases](https://github.com/ansidium/lzma2-delphi/releases).
+A pure Delphi port of [LZMA SDK 26.06](https://www.7-zip.org/sdk.html) for Windows x86 and x64. Use the `TLzma2` stream API in a Delphi project, or run the command-line tool and VCL application from [GitHub Releases](https://github.com/ansidium/lzma2-delphi/releases).
 
 | Format | Support |
 | --- | --- |

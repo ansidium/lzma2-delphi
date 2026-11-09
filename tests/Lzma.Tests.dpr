@@ -12660,76 +12660,86 @@ begin
     'VCL status must expose decode fallback reason');
 end;
 
+function LoadGuiTestCatalog: TJSONObject;
+var
+  Data: TJSONValue;
+begin
+  Data := TJSONObject.ParseJSONValue(TFile.ReadAllText(
+    TPath.Combine(GetCurrentDir, 'assets\gui.json'), TEncoding.UTF8));
+  try
+    Assert.IsTrue(Data is TJSONObject, 'The GUI catalog must be a JSON object');
+    Result := TJSONObject(Data);
+    Data := nil;
+  finally
+    Data.Free;
+  end;
+end;
+
 procedure TLzma2NativeTests.VclGuiSupportsPublicInstallerLanguageBaseline;
 const
-  ExpectedLanguages: array[0..23] of string = (
-    'glEnglish',
-    'glRussian',
-    'glFrench',
-    'glFinnish',
-    'glItalian',
-    'glGerman',
-    'glSpanish',
-    'glCzech',
-    'glBrazilian',
-    'glPolish',
-    'glKorean',
-    'glChineseSimplified',
-    'glJapanese',
-    'glTurkish',
-    'glDanish',
-    'glDutch',
-    'glHungarian',
-    'glNorwegian',
-    'glPortuguese',
-    'glSwedish',
-    'glRomanian',
-    'glBulgarian',
-    'glGreek',
-    'glUkrainian');
+  ExpectedCodes: array[0..23] of string = (
+    'en', 'ru', 'fr', 'fi', 'it', 'de', 'es', 'cs', 'pt-BR', 'pl', 'ko', 'zh-CN',
+    'ja', 'tr', 'da', 'nl', 'hu', 'no', 'pt', 'sv', 'ro', 'bg', 'el', 'uk');
 var
-  Language: string;
-  Vcl: string;
+  Catalog, Language: TJSONObject;
+  Languages: TJSONArray;
+  I: Integer;
 begin
-  Vcl := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tools\Lzma2GUIMain.pas'),
-    TEncoding.UTF8);
-
-  for Language in ExpectedLanguages do
-    Assert.IsTrue(Pos(Language, Vcl) > 0,
-      Format('VCL GUI must support the public installer baseline language %s', [Language]));
-  Assert.IsTrue(Pos('GuiLanguageFromLangId', Vcl) > 0,
-    'VCL GUI language detection must be separated from direct Windows API lookup');
-  Assert.IsTrue(Pos('TranslateEnglishText', Vcl) > 0,
-    'VCL GUI must keep translations in one fallback table keyed by English source text');
+  Catalog := LoadGuiTestCatalog;
+  try
+    Languages := Catalog.GetValue<TJSONArray>('languages');
+    Assert.AreEqual(Length(ExpectedCodes), Languages.Count, 'GUI language count');
+    for I := Low(ExpectedCodes) to High(ExpectedCodes) do
+    begin
+      Language := Languages.Items[I] as TJSONObject;
+      Assert.AreEqual(ExpectedCodes[I], Language.GetValue<string>('code'),
+        'GUI catalog order must match the language enum');
+      Assert.IsTrue(Language.GetValue<string>('name') <> '', ExpectedCodes[I] + ' needs a display name');
+      Assert.IsTrue(Language.GetValue<string>('locale') <> '', ExpectedCodes[I] + ' needs a locale');
+    end;
+  finally
+    Catalog.Free;
+  end;
 end;
 
 procedure TLzma2NativeTests.VclGuiLocalizationTableCoversRuntimeStatusText;
 const
-  RuntimeEnglishTexts: array[0..9] of string = (
+  RuntimeEnglishTexts: array[0..10] of string = (
     'The source folder has no files to archive.',
-    'Enter a dictionary size in MB: 1 or higher.',
-    'Enter a thread count of 1 or higher.',
+    'Enter a dictionary size from 1 to 4095 MB.',
+    'Reduce dictionary size or worker count',
     ' archive',
     'speed: ',
+    'speed: ' + #$2013,
     'Processed: %s of %s | written: %s | %s',
     'Done: %s -> %s',
     ' | Ratio (input/output): %.3f',
     ' | Decode requested threads: %d | Decode actual threads: %d | Decode used MT: %s | Decode fallback: %s',
     ' | %d ms');
 var
-  EnglishText: string;
-  Vcl: string;
+  Catalog, Strings, Entry: TJSONObject;
+  Languages: TJSONArray;
+  EnglishText, Code, Translation: string;
+  I: Integer;
 begin
-  Vcl := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tools\Lzma2GUIMain.pas'),
-    TEncoding.UTF8);
-
-  for EnglishText in RuntimeEnglishTexts do
-    Assert.IsTrue(Pos('if EnglishText = ' + QuotedStr(EnglishText) + ' then', Vcl) > 0,
-      Format('VCL GUI translation table must cover "%s"', [EnglishText]));
-  Assert.IsTrue(Pos('if EnglishText = ' + QuotedStr('speed: ' + #$2014) + ' then', Vcl) > 0,
-    'VCL GUI translation table must cover pending-speed status text');
-  Assert.IsTrue(Pos('CodeText(', Vcl) = 0,
-    'VCL GUI must not construct localized UI labels from codepoint arrays');
+  Catalog := LoadGuiTestCatalog;
+  try
+    Strings := Catalog.GetValue<TJSONObject>('strings');
+    Languages := Catalog.GetValue<TJSONArray>('languages');
+    for EnglishText in RuntimeEnglishTexts do
+    begin
+      Entry := Strings.GetValue(EnglishText) as TJSONObject;
+      Assert.IsNotNull(Entry, Format('Missing GUI text key "%s"', [EnglishText]));
+      for I := 0 to Languages.Count - 1 do
+      begin
+        Code := TJSONObject(Languages.Items[I]).GetValue<string>('code');
+        Assert.IsTrue(Entry.TryGetValue<string>(Code, Translation) and (Translation <> ''),
+          Format('Missing %s translation for "%s"', [Code, EnglishText]));
+      end;
+    end;
+  finally
+    Catalog.Free;
+  end;
 end;
 
 procedure TLzma2NativeTests.VclGuiIntegratesTaskbarIconAndProgress;
