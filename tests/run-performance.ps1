@@ -9,7 +9,9 @@ param(
   [string]$WorkRoot = $env:LZMA_PERF_WORKROOT,
   [string]$RamWorkRoot = $env:LZMA_PERF_RAMROOT,
   [string]$MatrixMaxDictionary = $env:LZMA_PERF_MATRIX_MAX_DICTIONARY,
-  [switch]$ReleaseCorpus
+  [switch]$ReleaseCorpus,
+  [ValidateRange(1, 100)][int]$MeasuredRuns = 3,
+  [ValidateRange(0, 100)][int]$WarmupRuns = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -484,8 +486,43 @@ function Join-ProcessArguments([string[]]$Arguments) {
   return ($parts -join ' ')
 }
 
+function Initialize-ProcessMemoryCounters {
+  if ('LzmaBenchmark.ProcessMemory' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace LzmaBenchmark {
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MemoryCounters {
+        internal uint Size, PageFaultCount;
+        internal UIntPtr PeakWorkingSet, WorkingSet, PeakPagedPool, PagedPool;
+        internal UIntPtr PeakNonPagedPool, NonPagedPool, Commit, PeakCommit, PrivateCommit;
+    }
+    public sealed class MemorySnapshot {
+        public long PeakWorkingSetBytes, PeakCommitBytes, PrivateCommitBytes;
+    }
+    public static class ProcessMemory {
+        [DllImport("psapi.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessMemoryInfo(IntPtr process, ref MemoryCounters counters, uint size);
+        public static MemorySnapshot Read(IntPtr process) {
+            MemoryCounters counters = new MemoryCounters();
+            counters.Size = (uint)Marshal.SizeOf(typeof(MemoryCounters));
+            if (!GetProcessMemoryInfo(process, ref counters, counters.Size)) return null;
+            return new MemorySnapshot {
+                PeakWorkingSetBytes = (long)counters.PeakWorkingSet.ToUInt64(),
+                PeakCommitBytes = (long)counters.PeakCommit.ToUInt64(),
+                PrivateCommitBytes = (long)counters.PrivateCommit.ToUInt64()
+            };
+        }
+    }
+}
+'@
+}
+
 function Invoke-TimedProcess([string]$Exe, [string[]]$Arguments, [string]$LogPath, [string]$WorkingDirectory) {
-  $memorySampleIntervalMs = 100
+  Initialize-ProcessMemoryCounters
+  $memorySampleIntervalMs = 10
   $psi = New-Object Diagnostics.ProcessStartInfo
   $psi.FileName = $Exe
   $psi.Arguments = Join-ProcessArguments $Arguments
@@ -499,34 +536,32 @@ function Invoke-TimedProcess([string]$Exe, [string[]]$Arguments, [string]$LogPat
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $peak = 0L
   $peakPaged = 0L
-  function Update-PeakMemory([Diagnostics.Process]$TargetProcess, [ref]$PeakValue, [ref]$PeakPagedValue) {
+  $sampledPeakPrivate = 0L
+  $cpuTimeMs = $null
+  $memorySamples = 0
+  function Update-PeakMemory([Diagnostics.Process]$TargetProcess, [ref]$PeakValue, [ref]$PeakPagedValue,
+    [ref]$SampledPrivateValue, [ref]$SampleCount) {
     try {
-      $TargetProcess.Refresh()
-      if ($TargetProcess.PeakWorkingSet64 -gt $PeakValue.Value) {
-        $PeakValue.Value = $TargetProcess.PeakWorkingSet64
-      }
-      if ($TargetProcess.WorkingSet64 -gt $PeakValue.Value) {
-        $PeakValue.Value = $TargetProcess.WorkingSet64
-      }
-      if ($TargetProcess.PeakPagedMemorySize64 -gt $PeakPagedValue.Value) {
-        $PeakPagedValue.Value = $TargetProcess.PeakPagedMemorySize64
-      }
-      if ($TargetProcess.PagedMemorySize64 -gt $PeakPagedValue.Value) {
-        $PeakPagedValue.Value = $TargetProcess.PagedMemorySize64
-      }
+      $snapshot = [LzmaBenchmark.ProcessMemory]::Read($TargetProcess.Handle)
+      if ($null -eq $snapshot) { return }
+      $SampleCount.Value++
+      $PeakValue.Value = [Math]::Max($PeakValue.Value, $snapshot.PeakWorkingSetBytes)
+      $PeakPagedValue.Value = [Math]::Max($PeakPagedValue.Value, $snapshot.PeakCommitBytes)
+      $SampledPrivateValue.Value = [Math]::Max($SampledPrivateValue.Value, $snapshot.PrivateCommitBytes)
     } catch {}
   }
   try {
     [void]$process.Start()
-    Update-PeakMemory $process ([ref]$peak) ([ref]$peakPaged)
+    Update-PeakMemory $process ([ref]$peak) ([ref]$peakPaged) ([ref]$sampledPeakPrivate) ([ref]$memorySamples)
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     while (-not $process.WaitForExit($memorySampleIntervalMs)) {
-      Update-PeakMemory $process ([ref]$peak) ([ref]$peakPaged)
+      Update-PeakMemory $process ([ref]$peak) ([ref]$peakPaged) ([ref]$sampledPeakPrivate) ([ref]$memorySamples)
     }
     $process.WaitForExit()
     $sw.Stop()
-    Update-PeakMemory $process ([ref]$peak) ([ref]$peakPaged)
+    Update-PeakMemory $process ([ref]$peak) ([ref]$peakPaged) ([ref]$sampledPeakPrivate) ([ref]$memorySamples)
+    try { $cpuTimeMs = $process.TotalProcessorTime.TotalMilliseconds } catch {}
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
     ($stdout + $stderr) | Set-Content -LiteralPath $LogPath -Encoding UTF8
@@ -549,7 +584,82 @@ function Invoke-TimedProcess([string]$Exe, [string[]]$Arguments, [string]$LogPat
     elapsedMs = $sw.ElapsedMilliseconds
     peakWorkingSetBytes = $peak
     peakPagedMemoryBytes = $peakPaged
-    memoryMeasurementStatus = if ($peak -gt 0) { 'measured' } else { 'unavailable' }
+    peakCommitBytes = $peakPaged
+    peakPrivateBytes = $peakPaged
+    sampledPeakPrivateBytes = $sampledPeakPrivate
+    privateMemoryMeasurement = 'windows-process-lifetime-peak-private-commit'
+    sampledPrivateMemoryMeasurement = 'sampled-private-commit-lower-bound'
+    memorySampleIntervalMs = $memorySampleIntervalMs
+    memorySampleCount = $memorySamples
+    cpuTimeMs = $cpuTimeMs
+    codecElapsedMs = Get-CliElapsedMs $LogPath
+    cpuMeasurementStatus = if ($null -ne $cpuTimeMs) { 'measured' } else { 'unavailable' }
+    memoryMeasurementStatus = if (($peak -gt 0) -and ($peakPaged -gt 0)) { 'measured' } else { 'unavailable' }
+  }
+}
+
+function Invoke-SampledProcess(
+  [string]$Exe,
+  [string[]]$Arguments,
+  [string]$LogPath,
+  [string]$WorkingDirectory,
+  [string[]]$ResetFiles = @(),
+  [string[]]$ResetDirectories = @()
+) {
+  $samples = [Collections.Generic.List[object]]::new()
+  $expectedOutputSignature = $null
+  for ($run = 0; $run -lt ($WarmupRuns + $MeasuredRuns); $run++) {
+    Remove-BenchmarkItem $ResetFiles
+    if ($ResetDirectories.Count -gt 0) { Remove-BenchmarkItem $ResetDirectories -Recurse }
+    $runLog = "$LogPath.run$run"
+    $measurement = Invoke-TimedProcess $Exe $Arguments $runLog $WorkingDirectory
+    $outputs = @()
+    foreach ($path in $ResetFiles) {
+      if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Measured command did not create $path" }
+      $outputs += [pscustomobject]@{name=(Split-Path -Leaf $path);bytes=(Get-Item -LiteralPath $path).Length;sha256=(Get-Sha256 $path)}
+    }
+    foreach ($directory in $ResetDirectories) {
+      if (-not (Test-Path -LiteralPath $directory -PathType Container)) { throw "Measured command did not create $directory" }
+      foreach ($file in @(Get-ChildItem -LiteralPath $directory -File -Recurse | Sort-Object FullName)) {
+        $outputs += [pscustomobject]@{name=(Get-RelativePath $directory $file.FullName);bytes=$file.Length;sha256=(Get-Sha256 $file.FullName)}
+      }
+    }
+    $signature = ConvertTo-Json -InputObject @($outputs) -Compress
+    if ($null -ne $expectedOutputSignature -and $signature -ne $expectedOutputSignature) {
+      throw 'Measured command output size or SHA-256 changed between warmup/sample runs.'
+    }
+    $expectedOutputSignature = $signature
+    if ($run -ge $WarmupRuns) {
+      $measurement | Add-Member -NotePropertyName logPath -NotePropertyValue $runLog
+      $samples.Add($measurement)
+    }
+  }
+  $orderedSamples = @($samples | Sort-Object elapsedMs)
+  $selected = $orderedSamples[[int][Math]::Floor(($orderedSamples.Count - 1) / 2)]
+  Copy-Item -LiteralPath $selected.logPath -Destination $LogPath -Force
+  $stats = New-ElapsedStats @($samples | ForEach-Object { [int64]$_.elapsedMs }) $WarmupRuns
+  $cpuMeasured = @($samples | Where-Object { $_.cpuMeasurementStatus -ne 'measured' }).Count -eq 0
+  $cpuMedian = $null
+  if ($cpuMeasured) {
+    $cpuValues = @($samples | ForEach-Object { [double]$_.cpuTimeMs } | Sort-Object)
+    $middle = [int][Math]::Floor($cpuValues.Count / 2)
+    $cpuMedian = if (($cpuValues.Count % 2) -eq 1) { $cpuValues[$middle] } else { ($cpuValues[$middle - 1] + $cpuValues[$middle]) / 2.0 }
+  }
+  return [pscustomobject]@{
+    elapsedMs = $stats.medianElapsedMs
+    peakWorkingSetBytes = [int64]($samples | Measure-Object peakWorkingSetBytes -Maximum).Maximum
+    peakPagedMemoryBytes = [int64]($samples | Measure-Object peakPagedMemoryBytes -Maximum).Maximum
+    peakCommitBytes = [int64]($samples | Measure-Object peakCommitBytes -Maximum).Maximum
+    peakPrivateBytes = [int64]($samples | Measure-Object peakPrivateBytes -Maximum).Maximum
+    sampledPeakPrivateBytes = [int64]($samples | Measure-Object sampledPeakPrivateBytes -Maximum).Maximum
+    cpuTimeMs = $cpuMedian
+    cpuMeasurementStatus = if ($cpuMeasured) { 'measured' } else { 'unavailable' }
+    memoryMeasurementStatus = if (@($samples | Where-Object { $_.memoryMeasurementStatus -ne 'measured' }).Count -eq 0) { 'measured' } else { 'unavailable' }
+    stats = $stats
+    samples = @($samples)
+    measuredRunCount = $MeasuredRuns
+    warmupCount = $WarmupRuns
+    outputSignature = $expectedOutputSignature
   }
 }
 
@@ -707,7 +817,34 @@ function Get-ToolFirstLineVersion([string]$Path, [string[]]$Arguments, [string]$
   return $Fallback
 }
 
-function Get-Throughput([long]$Bytes, [long]$ElapsedMs) {
+function Get-NativeCliMetadata([string]$Path) {
+  $versionText = & $Path '--version' 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) { throw 'Native CLI --version failed.' }
+  $global:LASTEXITCODE = 0
+  $fields = @{}
+  foreach ($line in @($versionText -split "`r?`n")) {
+    if ($line -match '^([^:]+):\s*(.+)$') { $fields[$Matches[1]] = $Matches[2].Trim() }
+  }
+  $versionMatch = [Regex]::Match($versionText, '(?m)^Lzma2 native Delphi CLI (\S+)\s*$')
+  foreach ($required in @('Compiler version', 'RTL version', 'RTL identity', 'Build target', 'Build optimization', 'SDK baseline')) {
+    if (-not $fields.ContainsKey($required)) { throw "Native CLI lacks $required metadata; rebuild tools/Lzma2.dpr." }
+  }
+  if (-not $versionMatch.Success -or $fields['SDK baseline'] -notmatch ('^7-Zip/LZMA SDK ' + [Regex]::Escape($script:LzmaSdkVersion) + '$')) {
+    throw 'Native CLI version or SDK baseline does not match the pinned QA configuration.'
+  }
+  return [pscustomobject]@{
+    version = $versionMatch.Groups[1].Value
+    compiler = "Delphi compiler $($fields['Compiler version']); RTL $($fields['RTL version']) ($($fields['RTL identity'])); $($fields['Build target'])"
+    compilerVersion = $fields['Compiler version']
+    rtlVersion = $fields['RTL version']
+    rtlIdentity = $fields['RTL identity']
+    target = $fields['Build target']
+    optimization = $fields['Build optimization']
+    executableSha256 = Get-Sha256 $Path
+  }
+}
+
+function Get-Throughput([long]$Bytes, [double]$ElapsedMs) {
   if ($ElapsedMs -le 0) {
     return 0
   }
@@ -883,7 +1020,8 @@ function Get-NormalizedBenchmarkOptions(
 function Add-BenchmarkSampleRows(
   [pscustomobject]$Row,
   [int64[]]$ProcessElapsedSamples,
-  [int64]$ThroughputBytes
+  [int64]$ThroughputBytes,
+  [object]$Measurement = $null
 ) {
   for ($sampleIndex = 0; $sampleIndex -lt $ProcessElapsedSamples.Count; $sampleIndex++) {
     $sampleElapsedMs = [int64]$ProcessElapsedSamples[$sampleIndex]
@@ -912,6 +1050,16 @@ function Add-BenchmarkSampleRows(
       outputBytes = $Row.outputBytes
       elapsedMs = $sampleElapsedMs
       elapsedSource = 'process-wall-sample'
+      codecElapsedMs = if ($Measurement) { $Measurement.samples[$sampleIndex].codecElapsedMs } else { $null }
+      cpuTimeMs = if ($Measurement) { $Measurement.samples[$sampleIndex].cpuTimeMs } else { $null }
+      cpuMeasurementStatus = if ($Measurement) { $Measurement.samples[$sampleIndex].cpuMeasurementStatus } else { 'unavailable' }
+      peakWorkingSetBytes = if ($Measurement) { $Measurement.samples[$sampleIndex].peakWorkingSetBytes } else { $null }
+      peakCommitBytes = if ($Measurement) { $Measurement.samples[$sampleIndex].peakCommitBytes } else { $null }
+      peakPrivateBytes = if ($Measurement) { $Measurement.samples[$sampleIndex].peakPrivateBytes } else { $null }
+      sampledPeakPrivateBytes = if ($Measurement) { $Measurement.samples[$sampleIndex].sampledPeakPrivateBytes } else { $null }
+      memoryMeasurementStatus = if ($Measurement) { $Measurement.samples[$sampleIndex].memoryMeasurementStatus } else { 'unavailable' }
+      memorySampleIntervalMs = if ($Measurement) { $Measurement.samples[$sampleIndex].memorySampleIntervalMs } else { $null }
+      memorySampleCount = if ($Measurement) { $Measurement.samples[$sampleIndex].memorySampleCount } else { $null }
       throughputMiBs = Get-Throughput $ThroughputBytes $sampleElapsedMs
       throughputMBs = Get-DecimalThroughput $ThroughputBytes $sampleElapsedMs
       normalizedCommand = $Row.normalizedCommand
@@ -932,7 +1080,7 @@ function Add-Row(
   [string]$InputName,
   [int64]$InputBytes,
   [int64]$OutputBytes,
-  [int64]$ElapsedMs,
+  [double]$ElapsedMs,
   [int64]$PeakWorkingSetBytes,
   [int64]$PeakPagedMemoryBytes,
   [string]$Check,
@@ -944,12 +1092,21 @@ function Add-Row(
   [object]$DecodeDiagnostics = $null,
   [object]$EncodeDiagnostics = $null,
   [object]$Stats = $null,
-  [object[]]$ProcessElapsedSamples = $null
+  [object[]]$ProcessElapsedSamples = $null,
+  [object]$Measurement = $null
 ) {
+  $codecElapsedMs = if ($ElapsedSource -eq 'cli-internal') { $ElapsedMs } else { $null }
+  if ($Measurement) {
+    $ElapsedMs = $Measurement.elapsedMs
+    $ProcessElapsedMs = $Measurement.elapsedMs
+    $ElapsedSource = 'process-wall-median'
+    $ProcessElapsedSamples = @($Measurement.samples | ForEach-Object { $_.elapsedMs })
+    $Stats = $Measurement.stats
+  }
   $throughputBytes = $InputBytes
   $ratio = $null
-  $memoryMeasurementStatus = if ($PeakWorkingSetBytes -gt 0) { 'measured' } else { 'unavailable' }
-  $effectiveProcessElapsedMs = if ($null -eq $ProcessElapsedMs) { $ElapsedMs } else { [int64]$ProcessElapsedMs }
+  $memoryMeasurementStatus = if ($Measurement) { $Measurement.memoryMeasurementStatus } elseif ($PeakWorkingSetBytes -gt 0) { 'measured' } else { 'unavailable' }
+  $effectiveProcessElapsedMs = if ($null -eq $ProcessElapsedMs) { $ElapsedMs } else { [double]$ProcessElapsedMs }
   $sampleElapsedValues = @()
   if ($null -ne $ProcessElapsedSamples) {
     $sampleElapsedValues = @($ProcessElapsedSamples | ForEach-Object { [int64]$_ } | Where-Object { $_ -ge 0 })
@@ -998,8 +1155,17 @@ function Add-Row(
     elapsedMs = $ElapsedMs
     processElapsedMs = $effectiveProcessElapsedMs
     elapsedSource = $ElapsedSource
+    codecElapsedMs = $codecElapsedMs
+    codecElapsedSource = if ($null -ne $codecElapsedMs) { 'cli-internal-diagnostic-only' } else { 'unavailable' }
+    cpuTimeMs = if ($Measurement) { $Measurement.cpuTimeMs } else { $null }
+    cpuMeasurementStatus = if ($Measurement) { $Measurement.cpuMeasurementStatus } else { 'unavailable' }
     peakWorkingSetBytes = $PeakWorkingSetBytes
     peakPagedMemoryBytes = $PeakPagedMemoryBytes
+    peakCommitBytes = if ($Measurement) { $Measurement.peakCommitBytes } else { $null }
+    peakPrivateBytes = if ($Measurement) { $Measurement.peakPrivateBytes } else { $null }
+    privateMemoryMeasurement = 'windows-process-lifetime-peak-private-commit'
+    sampledPeakPrivateBytes = if ($Measurement) { $Measurement.sampledPeakPrivateBytes } else { $null }
+    sampledPrivateMemoryMeasurement = 'sampled-private-commit-lower-bound'
     memoryMeasurementStatus = $memoryMeasurementStatus
     throughputMiBs = (Get-Throughput $throughputBytes $ElapsedMs)
     processThroughputMiBs = (Get-Throughput $throughputBytes $effectiveProcessElapsedMs)
@@ -1036,6 +1202,12 @@ function Add-Row(
     physicalCoreCount = $Metadata.physicalCoreCount
     os = $Metadata.os
     compiler = $Metadata.compiler
+    compilerVersion = $Metadata.compilerVersion
+    rtlVersion = $Metadata.rtlVersion
+    rtlIdentity = $Metadata.rtlIdentity
+    buildTarget = $Metadata.buildTarget
+    buildOptimization = $Metadata.buildOptimization
+    nativeExecutableSha256 = $Metadata.nativeExecutableSha256
     sdkVersion = $Metadata.sdkVersion
     requestedThreadCount = if ($DecodeDiagnostics -and $null -ne $DecodeDiagnostics.requestedThreadCount) { $DecodeDiagnostics.requestedThreadCount } else { $Threads }
     actualDecodeThreadCount = if ($DecodeDiagnostics) { $DecodeDiagnostics.actualDecodeThreadCount } else { $null }
@@ -1061,7 +1233,7 @@ function Add-Row(
     encodeFallback = if ($EncodeDiagnostics) { $EncodeDiagnostics.encodeFallback } else { '' }
   }
   [void]$Rows.Add($row)
-  Add-BenchmarkSampleRows $row $sampleElapsedValues $throughputBytes
+  Add-BenchmarkSampleRows $row $sampleElapsedValues $throughputBytes $Measurement
 }
 
 function Find-PerfRow(
@@ -1323,69 +1495,7 @@ function Add-PerformanceComparisons([System.Collections.ArrayList]$Rows) {
   }
 }
 
-function Write-OptimizationPlan(
-  [System.Collections.ArrayList]$Rows,
-  [string]$Path,
-  [pscustomobject]$Metadata
-) {
-  $flagged = @($Rows | Where-Object {
-    $_.acceptance -like 'below-*' -or
-    $_.acceptance -like '*-no-speedup' -or
-    $_.acceptance -like '*-inactive' -or
-    $_.acceptance -like '*-no-comparison'
-  })
-  $lines = New-Object System.Collections.Generic.List[string]
-  $lines.Add('# Performance Optimization Plan')
-  $lines.Add('')
-  $lines.Add("Generated on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss').")
-  $lines.Add('')
-  $lines.Add("CPU: $($Metadata.cpu)")
-  $lines.Add("Logical processors: $($Metadata.logicalProcessorCount)")
-  $lines.Add("Physical cores: $($Metadata.physicalCoreCount)")
-  $lines.Add("RAM bytes: $($Metadata.ramBytes)")
-  $lines.Add("OS: $($Metadata.os)")
-  $lines.Add("Compiler: $($Metadata.compiler)")
-  $lines.Add("Build config: $($Metadata.buildConfig)")
-  $lines.Add("SDK baseline: $($Metadata.sdkVersion)")
-  $lines.Add("Benchmark work root: $($Metadata.benchmarkWorkRoot)")
-  $lines.Add("Benchmark work dir: $($Metadata.benchmarkWorkDir)")
-  $lines.Add("RAM-backed work root: $($Metadata.ramBackedWorkRoot)")
-  $lines.Add('')
 
-  if ($flagged.Count -eq 0) {
-    $lines.Add('All smoke comparison rows met their configured thresholds.')
-  } else {
-    $lines.Add('Smoke comparison rows below target:')
-    $lines.Add('')
-    $lines.Add('| Tool | Operation | Mode | Threads | Throughput | Baseline | Ratio | Status |')
-    $lines.Add('|---|---|---|---:|---:|---|---:|---|')
-    foreach ($row in $flagged) {
-      $metric = if ($row.comparisonMetric) { $row.comparisonMetric } else { 'throughputMiBs' }
-      $lines.Add("| $($row.tool) | $($row.operation) | $($row.mode) | $($row.threads) | $($row.$metric) MiB/s | $($row.baselineTool) $($row.baselineThroughputMiBs) MiB/s | $($row.throughputRatioPct)% | $($row.acceptance) |")
-    }
-    $lines.Add('')
-    $lines.Add('Optimization work items:')
-    $lines.Add('')
-    $workItem = 1
-    if (@($flagged | Where-Object { $_.operation -eq 'decode' }).Count -ne 0) {
-      $lines.Add("${workItem}. Continue optimizing the LZMA decode hot path against the aligned ``LZMA2:20 CRC32`` SDK baseline, especially range decoding, match copy, and checksum/output streaming.")
-      $workItem++
-    }
-    if (@($flagged | Where-Object { $_.mode -in @('xz-delphi-multiblock-level1', 'xz-delphi-patterned-multiblock-level1') -and $_.operation -eq 'decode' }).Count -ne 0) {
-      $lines.Add("${workItem}. Tune the Delphi-generated XZ MT decode scheduler and worker granularity so the generated corpora beat their own 1-thread baselines while keeping ``inputSnapshot=false``.")
-      $workItem++
-    }
-    $lines.Add("${workItem}. Tune the active SDK-profile optimum parser and price tables against the failing rows, then rerun this suite.")
-    $workItem++
-    $lines.Add("${workItem}. Tune the active HC5/BT4 match-finder paths against the SDK ``C/LzFind.c`` traces for the failing corpus/options.")
-    $workItem++
-    $lines.Add("${workItem}. Continue reworking multi-threaded encode splitting/checksum scheduling and align the match-finder path with SDK block scheduling.")
-    $workItem++
-    $lines.Add("${workItem}. Keep the 256 MiB release-corpus mode in CI evidence and add release hardware baselines for future release candidates.")
-  }
-
-  $lines | Set-Content -Encoding UTF8 -LiteralPath $Path
-}
 
 function Write-BenchmarkSummary(
   [object[]]$Rows,
@@ -1413,6 +1523,17 @@ function Write-BenchmarkSummary(
       ramBytes = $Metadata.ramBytes
       os = $Metadata.os
       compiler = $Metadata.compiler
+      compilerVersion = $Metadata.compilerVersion
+      rtlVersion = $Metadata.rtlVersion
+      rtlIdentity = $Metadata.rtlIdentity
+      buildTarget = $Metadata.buildTarget
+      buildOptimization = $Metadata.buildOptimization
+      nativeExecutableSha256 = $Metadata.nativeExecutableSha256
+      nativeToolVersion = $Metadata.cliVersion
+      measuredRuns = $Metadata.measuredRuns
+      warmupRuns = $Metadata.warmupRuns
+      timingBoundary = $Metadata.timingBoundary
+      sampleSelection = $Metadata.sampleSelection
       sdkVersion = $Metadata.sdkVersion
       buildConfig = $Metadata.buildConfig
       benchmarkWorkRoot = $Metadata.benchmarkWorkRoot
@@ -1428,7 +1549,6 @@ function Write-BenchmarkSummary(
       json = 'artifacts/perf/lzma2-benchmark.json'
       samplesCsv = 'artifacts/perf/lzma2-benchmark.samples.csv'
       summaryJson = 'artifacts/perf/lzma2-benchmark.summary.json'
-      optimizationPlan = 'artifacts/ci/optimization-plan.md'
     }
     corpusCache = [ordered]@{
       root = $Metadata.corpusCacheRoot
@@ -1465,91 +1585,30 @@ function Invoke-DelphiRoundTrip(
   [int]$Threads,
   [pscustomobject]$Metadata,
   [int64]$Dictionary = 1048576,
-  [string]$Check = 'crc64',
-  [int]$EncodeSamples = 1
+  [string]$Check = 'crc64'
 ) {
   $archive = Join-Path $work "$Name.delphi.xz"
   $decoded = Join-Path $work "$Name.delphi.out"
   $compressLog = Join-Path $work "$Name.delphi.compress.log"
   $decompressLog = Join-Path $work "$Name.delphi.decompress.log"
-  $bestArchive = $null
-  $bestCompressLog = $null
-  $bestCodecElapsed = $null
-  $bestElapsedSource = 'process-wall'
-  $bestMeasurement = $null
-  $codecElapsed = $null
-  $elapsedSource = 'process-wall'
-  $sampleArchives = @()
-  $sampleProcessElapsedValues = @()
-  if ($EncodeSamples -lt 1) {
-    $EncodeSamples = 1
-  }
-  Remove-BenchmarkItem @($archive, $decoded)
-
-  for ($sampleIndex = 1; $sampleIndex -le $EncodeSamples; $sampleIndex++) {
-    if ($EncodeSamples -eq 1) {
-      $sampleArchive = $archive
-      $sampleCompressLog = $compressLog
-    } else {
-      $sampleArchive = Join-Path $work "$Name.sample$sampleIndex.delphi.xz"
-      $sampleCompressLog = Join-Path $work "$Name.sample$sampleIndex.delphi.compress.log"
-      $sampleArchives += $sampleArchive
-      Remove-BenchmarkItem @($sampleArchive)
-    }
-
-    $measurement = Invoke-TimedProcess $CliExe @('compress', $Source, $sampleArchive, 'xz', "$Level", "$Dictionary", "$Threads", $Check) $sampleCompressLog $root
-    $sampleProcessElapsedValues += [int64]$measurement.elapsedMs
-    $sampleCodecElapsed = Get-CliElapsedMs $sampleCompressLog
-    $sampleElapsedSource = 'cli-internal'
-    if (($null -eq $sampleCodecElapsed) -or ([int64]$sampleCodecElapsed -le 0)) {
-      $sampleCodecElapsed = $measurement.elapsedMs
-      $sampleElapsedSource = 'process-wall'
-    }
-
-    if (($null -eq $bestMeasurement) -or ([int64]$measurement.elapsedMs -lt [int64]$bestMeasurement.elapsedMs)) {
-      $bestArchive = $sampleArchive
-      $bestCompressLog = $sampleCompressLog
-      $bestCodecElapsed = $sampleCodecElapsed
-      $bestElapsedSource = $sampleElapsedSource
-      $bestMeasurement = $measurement
-    }
-  }
-
-  if ($EncodeSamples -gt 1) {
-    Copy-Item -LiteralPath $bestArchive -Destination $archive -Force
-    Remove-BenchmarkItem $sampleArchives
-  }
-
-  $measurement = $bestMeasurement
-  $codecElapsed = $bestCodecElapsed
-  $elapsedSource = $bestElapsedSource
-  $encodeNotes = "Native Delphi XZ $Check encode smoke."
-  if ($EncodeSamples -gt 1) {
-    $encodeNotes += " Best of $EncodeSamples encode samples by process wall time."
-  }
-  $encodeDiagnostics = Get-CliEncodeDiagnostics $bestCompressLog
-  $encodeStats = New-ElapsedStats $sampleProcessElapsedValues
-  Add-Row $Rows 'delphi-native' '13.1' 'encode' "xz-level$Level" $Level $Threads $Dictionary `
+  $measurement = Invoke-SampledProcess $CliExe @('compress', $Source, $archive, 'xz', "$Level", "$Dictionary", "$Threads", $Check) $compressLog $root -ResetFiles @($archive)
+  $codecElapsed = Get-CliElapsedMs $compressLog
+  $encodeDiagnostics = Get-CliEncodeDiagnostics $compressLog
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'encode' "xz-level$Level" $Level $Threads $Dictionary `
     (Split-Path -Leaf $Source) (Get-Item -LiteralPath $Source).Length (Get-Item -LiteralPath $archive).Length `
-    $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes $Check $encodeNotes $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $null $encodeDiagnostics $encodeStats $sampleProcessElapsedValues
+    $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes $Check "Native Delphi XZ $Check encode." $Metadata `
+    $measurement.elapsedMs 'cli-internal' '' $null $encodeDiagnostics -Measurement $measurement
 
-  $measurement = Invoke-TimedProcess $CliExe @('decompress', $archive, $decoded, 'xz', "$Level", "$Dictionary", "$Threads", $Check) $decompressLog $root
+  $measurement = Invoke-SampledProcess $CliExe @('decompress', $archive, $decoded, 'xz', "$Level", "$Dictionary", "$Threads", $Check) $decompressLog $root -ResetFiles @($decoded)
   $codecElapsed = Get-CliElapsedMs $decompressLog
   $decodeDiagnostics = Get-CliDecodeDiagnostics $decompressLog
-  if (($null -eq $codecElapsed) -or ([int64]$codecElapsed -le 0)) {
-    $codecElapsed = $measurement.elapsedMs
-    $elapsedSource = 'process-wall'
-  } else {
-    $elapsedSource = 'cli-internal'
-  }
   if ((Get-Sha256 $Source) -ne (Get-Sha256 $decoded)) {
     throw "Delphi round-trip SHA-256 mismatch for $Name"
   }
-  Add-Row $Rows 'delphi-native' '13.1' 'decode' "xz-level$Level" $Level $Threads $Dictionary `
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'decode' "xz-level$Level" $Level $Threads $Dictionary `
     (Split-Path -Leaf $archive) (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $decoded).Length `
-    $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes $Check "Native Delphi XZ $Check decode smoke." $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics
+    $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes $Check "Native Delphi XZ $Check decode." $Metadata `
+    $measurement.elapsedMs 'cli-internal' '' $decodeDiagnostics -Measurement $measurement
 }
 
 function Invoke-DelphiRawLzma2RoundTrip(
@@ -1571,7 +1630,7 @@ function Invoke-DelphiRawLzma2RoundTrip(
   $elapsedSource = 'process-wall'
   Remove-BenchmarkItem @($archive, $decoded, $xzDecoded)
 
-  $measurement = Invoke-TimedProcess $CliExe @('compress', $Source, $archive, 'raw', "$Level", "$Dictionary", "$Threads", 'none') $compressLog $root
+  $measurement = Invoke-SampledProcess $CliExe @('compress', $Source, $archive, 'raw', "$Level", "$Dictionary", "$Threads", 'none') $compressLog $root -ResetFiles @($archive)
   $codecElapsed = Get-CliElapsedMs $compressLog
   $encodeDiagnostics = Get-CliEncodeDiagnostics $compressLog
   $encodeStats = New-ElapsedStats @([int64]$measurement.elapsedMs)
@@ -1581,12 +1640,12 @@ function Invoke-DelphiRawLzma2RoundTrip(
   } else {
     $elapsedSource = 'cli-internal'
   }
-  Add-Row $Rows 'delphi-native' '13.1' 'encode' "raw-lzma2-level$Level" $Level $Threads $Dictionary `
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'encode' "raw-lzma2-level$Level" $Level $Threads $Dictionary `
     (Split-Path -Leaf $Source) (Get-Item -LiteralPath $Source).Length (Get-Item -LiteralPath $archive).Length `
     $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "Native Delphi raw LZMA2 encode smoke." $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $null $encodeDiagnostics $encodeStats
+    $measurement.elapsedMs $elapsedSource '' $null $encodeDiagnostics $encodeStats -Measurement $measurement
 
-  $measurement = Invoke-TimedProcess $CliExe @('decompress', $archive, $decoded, 'raw', "$Level", "$Dictionary", "$Threads", 'none') $decompressLog $root
+  $measurement = Invoke-SampledProcess $CliExe @('decompress', $archive, $decoded, 'raw', "$Level", "$Dictionary", "$Threads", 'none') $decompressLog $root -ResetFiles @($decoded)
   $codecElapsed = Get-CliElapsedMs $decompressLog
   $decodeDiagnostics = Get-CliDecodeDiagnostics $decompressLog
   if (($null -eq $codecElapsed) -or ([int64]$codecElapsed -le 0)) {
@@ -1598,10 +1657,10 @@ function Invoke-DelphiRawLzma2RoundTrip(
   if ((Get-Sha256 $Source) -ne (Get-Sha256 $decoded)) {
     throw "Delphi raw LZMA2 round-trip SHA-256 mismatch for $Name"
   }
-  Add-Row $Rows 'delphi-native' '13.1' 'decode' "raw-lzma2-level$Level" $Level $Threads $Dictionary `
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'decode' "raw-lzma2-level$Level" $Level $Threads $Dictionary `
     (Split-Path -Leaf $archive) (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $decoded).Length `
     $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "Native Delphi raw LZMA2 decode smoke." $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics
+    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics -Measurement $measurement
 
   if ($Xz) {
     if (-not (Test-Path -LiteralPath $Xz)) {
@@ -1609,15 +1668,15 @@ function Invoke-DelphiRawLzma2RoundTrip(
     }
     Remove-BenchmarkItem @($xzDecoded)
     $xzVersion = Get-ToolFirstLineVersion $Xz @('--version') 'xz-utils'
-    $measurement = Invoke-TimedProcess $Xz @('--decompress', '--format=raw', '--lzma2=dict=1MiB',
-      '--suffix=.lzma2', '-k', '-f', (Split-Path -Leaf $archive)) $xzDecodeLog $work
+    $measurement = Invoke-SampledProcess $Xz @('--decompress', '--format=raw', '--lzma2=dict=1MiB',
+      '--suffix=.lzma2', '-k', '-f', (Split-Path -Leaf $archive)) $xzDecodeLog $work -ResetFiles @($xzDecoded)
     if ((Get-Sha256 $Source) -ne (Get-Sha256 $xzDecoded)) {
       throw "xz-utils decode SHA-256 mismatch for Delphi raw LZMA2 archive $archive"
     }
     Add-Row $Rows 'xz-utils' $xzVersion 'decode' "raw-lzma2-level$Level" $Level 1 $Dictionary `
       (Split-Path -Leaf $archive) (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $xzDecoded).Length `
       $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "xz-utils decode of Delphi raw LZMA2 stream." $Metadata `
-      $measurement.elapsedMs 'process-wall' 'xz-decodes-delphi-raw-lzma2'
+      $measurement.elapsedMs 'process-wall' 'xz-decodes-delphi-raw-lzma2' -Measurement $measurement
   }
 }
 
@@ -1650,24 +1709,24 @@ function Invoke-XzRawLzma2Baseline(
   Copy-Item -LiteralPath $Source -Destination $rawSource -Force
 
   $xzVersion = Get-ToolFirstLineVersion $Xz @('--version') 'xz-utils'
-  $measurement = Invoke-TimedProcess $Xz @('-1', '--format=raw', '--lzma2=dict=1MiB',
-    '--suffix=.rawlzma2', '-k', '-f', $rawSourceName) $encodeLog $work
+  $measurement = Invoke-SampledProcess $Xz @('-1', '--format=raw', '--lzma2=dict=1MiB',
+    '--suffix=.rawlzma2', '-k', '-f', $rawSourceName) $encodeLog $work -ResetFiles @($archive)
   Add-Row $Rows 'xz-utils' $xzVersion 'encode' 'raw-lzma2-level1' 1 1 1048576 `
     $rawSourceName (Get-Item -LiteralPath $rawSource).Length (Get-Item -LiteralPath $archive).Length `
-    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' 'xz-utils raw LZMA2 encode baseline.' $Metadata
+    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' 'xz-utils raw LZMA2 encode baseline.' $Metadata -Measurement $measurement
 
   Remove-BenchmarkItem @($rawSource)
-  $measurement = Invoke-TimedProcess $Xz @('--decompress', '--format=raw', '--lzma2=dict=1MiB',
-    '--suffix=.rawlzma2', '-k', '-f', $archiveName) $decodeLog $work
+  $measurement = Invoke-SampledProcess $Xz @('--decompress', '--format=raw', '--lzma2=dict=1MiB',
+    '--suffix=.rawlzma2', '-k', '-f', $archiveName) $decodeLog $work -ResetFiles @($rawSource)
   if ((Get-Sha256 $Source) -ne (Get-Sha256 $rawSource)) {
     throw "xz-utils raw LZMA2 baseline SHA-256 mismatch"
   }
   Add-Row $Rows 'xz-utils' $xzVersion 'decode' 'raw-lzma2-level1' 1 1 1048576 `
     $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $rawSource).Length `
-    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' 'xz-utils raw LZMA2 decode baseline.' $Metadata
+    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' 'xz-utils raw LZMA2 decode baseline.' $Metadata -Measurement $measurement
 
   Remove-BenchmarkItem @($delphiDecoded)
-  $measurement = Invoke-TimedProcess $CliExe @('decompress', $archive, $delphiDecoded, 'raw', '1', '1048576', '1', 'none') $delphiDecodeLog $root
+  $measurement = Invoke-SampledProcess $CliExe @('decompress', $archive, $delphiDecoded, 'raw', '1', '1048576', '1', 'none') $delphiDecodeLog $root -ResetFiles @($delphiDecoded)
   $codecElapsed = Get-CliElapsedMs $delphiDecodeLog
   $decodeDiagnostics = Get-CliDecodeDiagnostics $delphiDecodeLog
   if (($null -eq $codecElapsed) -or ([int64]$codecElapsed -le 0)) {
@@ -1679,10 +1738,10 @@ function Invoke-XzRawLzma2Baseline(
   if ((Get-Sha256 $Source) -ne (Get-Sha256 $delphiDecoded)) {
     throw "Delphi decode SHA-256 mismatch for xz-utils raw LZMA2 baseline $archiveName"
   }
-  Add-Row $Rows 'delphi-native' '13.1' 'decode' 'raw-lzma2-level1' 1 1 1048576 `
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'decode' 'raw-lzma2-level1' 1 1 1048576 `
     $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $delphiDecoded).Length `
     $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' 'Native Delphi decode of the same xz-utils raw LZMA2 stream.' $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics
+    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics -Measurement $measurement
 }
 
 function Invoke-XzMtDecodeFixture(
@@ -1721,7 +1780,7 @@ function Invoke-XzMtDecodeFixture(
     $decodeLog = Join-Path $work "$sourceBase.block8m.${threads}t.delphi-decode.log"
     Remove-BenchmarkItem @($decoded)
 
-    $measurement = Invoke-TimedProcess $CliExe @('decompress', $archive, $decoded, 'xz', '1', '1048576', "$threads", 'crc32') $decodeLog $root
+    $measurement = Invoke-SampledProcess $CliExe @('decompress', $archive, $decoded, 'xz', '1', '1048576', "$threads", 'crc32') $decodeLog $root -ResetFiles @($decoded)
     $codecElapsed = Get-CliElapsedMs $decodeLog
     $decodeDiagnostics = Get-CliDecodeDiagnostics $decodeLog
     if (($null -eq $codecElapsed) -or ([int64]$codecElapsed -le 0)) {
@@ -1733,10 +1792,10 @@ function Invoke-XzMtDecodeFixture(
     if ((Get-Sha256 $Source) -ne (Get-Sha256 $decoded)) {
       throw "Delphi XZ MT decode fixture SHA-256 mismatch for threads=$threads"
     }
-    Add-Row $Rows 'delphi-native' '13.1' 'decode' 'xz-multiblock-level1' 1 $threads 1048576 `
+    Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'decode' 'xz-multiblock-level1' 1 $threads 1048576 `
       $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $decoded).Length `
       $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' "Native Delphi decode of xz-utils $xzVersion multi-block XZ fixture." $Metadata `
-      $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics
+      $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics -Measurement $measurement
   }
 }
 
@@ -1759,7 +1818,7 @@ function Invoke-DelphiXzMtDecodeFixture(
 
   Remove-BenchmarkItem @($archive)
 
-  $measurement = Invoke-TimedProcess $CliExe @('compress', $Source, $archive, 'xz', '1', '1048576', '1', 'crc32', "$BlockSize") $encodeLog $root
+  $measurement = Invoke-SampledProcess $CliExe @('compress', $Source, $archive, 'xz', '1', '1048576', '1', 'crc32', "$BlockSize") $encodeLog $root -ResetFiles @($archive)
   $codecElapsed = Get-CliElapsedMs $encodeLog
   $encodeDiagnostics = Get-CliEncodeDiagnostics $encodeLog
   $encodeStats = New-ElapsedStats @([int64]$measurement.elapsedMs)
@@ -1770,17 +1829,17 @@ function Invoke-DelphiXzMtDecodeFixture(
     $elapsedSource = 'cli-internal'
   }
 
-  Add-Row $Rows 'delphi-native' '13.1' 'encode' $Mode 1 1 1048576 `
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'encode' $Mode 1 1 1048576 `
     $sourceName (Get-Item -LiteralPath $Source).Length (Get-Item -LiteralPath $archive).Length `
     $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' $Notes $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $null $encodeDiagnostics $encodeStats
+    $measurement.elapsedMs $elapsedSource '' $null $encodeDiagnostics $encodeStats -Measurement $measurement
 
   foreach ($threads in @(1, 2, 4, 8, 16)) {
     $decoded = Join-Path $work "$sourceBase.$Suffix.${threads}t.delphi.out"
     $decodeLog = Join-Path $work "$sourceBase.$Suffix.${threads}t.delphi-decode.log"
     Remove-BenchmarkItem @($decoded)
 
-    $measurement = Invoke-TimedProcess $CliExe @('decompress', $archive, $decoded, 'xz', '1', '1048576', "$threads", 'crc32') $decodeLog $root
+    $measurement = Invoke-SampledProcess $CliExe @('decompress', $archive, $decoded, 'xz', '1', '1048576', "$threads", 'crc32') $decodeLog $root -ResetFiles @($decoded)
     $codecElapsed = Get-CliElapsedMs $decodeLog
     $decodeDiagnostics = Get-CliDecodeDiagnostics $decodeLog
     if (($null -eq $codecElapsed) -or ([int64]$codecElapsed -le 0)) {
@@ -1792,10 +1851,10 @@ function Invoke-DelphiXzMtDecodeFixture(
     if ((Get-Sha256 $Source) -ne (Get-Sha256 $decoded)) {
       throw "Delphi-generated XZ MT decode fixture SHA-256 mismatch for threads=$threads"
     }
-    Add-Row $Rows 'delphi-native' '13.1' 'decode' $Mode 1 $threads 1048576 `
+    Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'decode' $Mode 1 $threads 1048576 `
       $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $decoded).Length `
       $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' $Notes $Metadata `
-      $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics
+      $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics -Measurement $measurement
   }
 }
 
@@ -1826,7 +1885,7 @@ function Invoke-SevenZipBaseline(
   Remove-BenchmarkItem @($extractDir) -Recurse
   New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
 
-  $measurement = Invoke-TimedProcess $SevenZip @('a', '-txz', '-mx=1', '-mmt=1', '-m0=LZMA2:d=1m', $archiveName, $sourceName) $encodeLog $work
+  $measurement = Invoke-SampledProcess $SevenZip @('a', '-txz', '-mx=1', '-mmt=1', '-m0=LZMA2:d=1m', $archiveName, $sourceName) $encodeLog $work -ResetFiles @($archive)
   $oldErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
@@ -1844,9 +1903,9 @@ function Invoke-SevenZipBaseline(
   }
   Add-Row $Rows '7zr-sdk' $script:LzmaSdkVersion 'encode' 'xz-lzma2-level1' 1 1 1048576 `
     $sourceName (Get-Item -LiteralPath $Source).Length (Get-Item -LiteralPath $archive).Length `
-    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' "$script:LzmaSdkLabel 7zr XZ encode smoke baseline, LZMA2:20 CRC32." $Metadata
+    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' "$script:LzmaSdkLabel 7zr XZ encode smoke baseline, LZMA2:20 CRC32." $Metadata -Measurement $measurement
 
-  $measurement = Invoke-TimedProcess $SevenZip @('x', $archiveName, "-o$extractDir", '-y') $decodeLog $work
+  $measurement = Invoke-SampledProcess $SevenZip @('x', '-mmt=1', $archiveName, "-o$extractDir", '-y') $decodeLog $work -ResetDirectories @($extractDir)
   $decodedFiles = @(Get-ChildItem -LiteralPath $extractDir -File)
   if ($decodedFiles.Count -ne 1) {
     throw "7zr baseline produced $($decodedFiles.Count) files; expected one decoded payload."
@@ -1857,9 +1916,9 @@ function Invoke-SevenZipBaseline(
   }
   Add-Row $Rows '7zr-sdk' $script:LzmaSdkVersion 'decode' 'xz-lzma2-level1' 1 1 1048576 `
     $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $decoded).Length `
-    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' "$script:LzmaSdkLabel 7zr XZ decode smoke baseline, LZMA2:20 CRC32." $Metadata
+    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' "$script:LzmaSdkLabel 7zr XZ decode smoke baseline, LZMA2:20 CRC32." $Metadata -Measurement $measurement
 
-  $measurement = Invoke-TimedProcess $CliExe @('decompress', $archive, $delphiDecoded, 'xz', '1', '1048576', '1', 'crc32') $delphiDecodeLog $root
+  $measurement = Invoke-SampledProcess $CliExe @('decompress', $archive, $delphiDecoded, 'xz', '1', '1048576', '1', 'crc32') $delphiDecodeLog $root -ResetFiles @($delphiDecoded)
   $codecElapsed = Get-CliElapsedMs $delphiDecodeLog
   $decodeDiagnostics = Get-CliDecodeDiagnostics $delphiDecodeLog
   if (($null -eq $codecElapsed) -or ([int64]$codecElapsed -le 0)) {
@@ -1871,10 +1930,10 @@ function Invoke-SevenZipBaseline(
   if ((Get-Sha256 $Source) -ne (Get-Sha256 $delphiDecoded)) {
     throw "Delphi decode SHA-256 mismatch for 7zr baseline $archiveName"
   }
-  Add-Row $Rows 'delphi-native' '13.1' 'decode' 'xz-level1' 1 1 1048576 `
+  Add-Row $Rows 'delphi-native' $Metadata.cliVersion 'decode' 'xz-level1' 1 1 1048576 `
     $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $delphiDecoded).Length `
     $codecElapsed $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'crc32' 'Native Delphi decode of the same 7zr SDK XZ CRC32 baseline archive.' $Metadata `
-    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics
+    $measurement.elapsedMs $elapsedSource '' $decodeDiagnostics -Measurement $measurement
 }
 
 function Invoke-LzmaBaseline(
@@ -1897,18 +1956,18 @@ function Invoke-LzmaBaseline(
   $decodeLog = Join-Path $work "$sourceBase.lzma.decode.log"
   Remove-BenchmarkItem @($archive, $decoded)
 
-  $measurement = Invoke-TimedProcess $LzmaExe @('e', $Source, $archive, '-d20', '-mt1') $encodeLog $root
+  $measurement = Invoke-SampledProcess $LzmaExe @('e', $Source, $archive, '-d20', '-mt1') $encodeLog $root -ResetFiles @($archive)
   Add-Row $Rows 'lzma-sdk' $script:LzmaSdkVersion 'encode' 'raw-lzma-level-default' 5 1 1048576 `
     (Split-Path -Leaf $Source) (Get-Item -LiteralPath $Source).Length (Get-Item -LiteralPath $archive).Length `
-    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "$script:LzmaSdkLabel lzma.exe raw LZMA encode smoke baseline." $Metadata
+    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "$script:LzmaSdkLabel lzma.exe raw LZMA encode smoke baseline." $Metadata -Measurement $measurement
 
-  $measurement = Invoke-TimedProcess $LzmaExe @('d', $archive, $decoded) $decodeLog $root
+  $measurement = Invoke-SampledProcess $LzmaExe @('d', $archive, $decoded) $decodeLog $root -ResetFiles @($decoded)
   if ((Get-Sha256 $Source) -ne (Get-Sha256 $decoded)) {
     throw "lzma.exe baseline SHA-256 mismatch"
   }
   Add-Row $Rows 'lzma-sdk' $script:LzmaSdkVersion 'decode' 'raw-lzma-level-default' 5 1 1048576 `
     $archiveName (Get-Item -LiteralPath $archive).Length (Get-Item -LiteralPath $decoded).Length `
-    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "$script:LzmaSdkLabel lzma.exe raw LZMA decode smoke baseline." $Metadata
+    $measurement.elapsedMs $measurement.peakWorkingSetBytes $measurement.peakPagedMemoryBytes 'none' "$script:LzmaSdkLabel lzma.exe raw LZMA decode smoke baseline." $Metadata -Measurement $measurement
 }
 
 $repeat = Join-Path $work 'repeat5-1m.bin'
@@ -1985,15 +2044,27 @@ try { $ramBytes = [int64](Get-CimInstance Win32_ComputerSystem | Select-Object -
 $gitCommit = Get-GitCommit
 $gitBranch = Get-GitBranch
 $gitRef = Get-GitRef $gitBranch
+$nativeCliMetadata = Get-NativeCliMetadata $CliExe
 $metadata = [pscustomobject]@{
   cpu = $cpu
   logicalProcessorCount = $logicalProcessorCount
   physicalCoreCount = $physicalCoreCount
   ramBytes = $ramBytes
   os = $os
-  compiler = 'Delphi 13.1 Win64'
+  compiler = $nativeCliMetadata.compiler
+  compilerVersion = $nativeCliMetadata.compilerVersion
+  rtlVersion = $nativeCliMetadata.rtlVersion
+  rtlIdentity = $nativeCliMetadata.rtlIdentity
+  buildTarget = $nativeCliMetadata.target
+  buildOptimization = $nativeCliMetadata.optimization
+  nativeExecutableSha256 = $nativeCliMetadata.executableSha256
+  cliVersion = $nativeCliMetadata.version
+  measuredRuns = $MeasuredRuns
+  warmupRuns = $WarmupRuns
+  timingBoundary = 'individual-command-process-start-to-exit'
+  sampleSelection = 'median'
   sdkVersion = $script:LzmaSdkLabel
-  buildConfig = if ($ReleaseCorpus) { 'Win64 release-corpus' } else { 'Win64 smoke' }
+  buildConfig = "$($nativeCliMetadata.target) optimization-$($nativeCliMetadata.optimization) $(if ($ReleaseCorpus) { 'release-corpus' } else { 'smoke' })"
   benchmarkWorkRoot = $workRoot
   benchmarkWorkDir = $work
   corpusCacheRoot = $corpusCacheRoot
@@ -2009,7 +2080,7 @@ Invoke-DelphiRoundTrip $rows 'repeat5-1m-l0-1t' $repeat 0 1 $metadata
 Invoke-DelphiRoundTrip $rows 'repeat5-1m-l1-1t' $repeat 1 1 $metadata
 Invoke-DelphiRoundTrip $rows 'repeat5-1m-l1-1t-crc32' $repeat 1 1 $metadata 1048576 'crc32'
 Invoke-DelphiRoundTrip $rows 'repeat5-4m-l1-1t' $largeRepeat 1 1 $metadata
-Invoke-DelphiRoundTrip $rows 'repeat5-4m-l1-1t-crc32' $largeRepeat 1 1 $metadata 1048576 'crc32' 3
+Invoke-DelphiRoundTrip $rows 'repeat5-4m-l1-1t-crc32' $largeRepeat 1 1 $metadata 1048576 'crc32'
 Invoke-DelphiRoundTrip $rows 'repeat5-4m-l1-4t' $largeRepeat 1 4 $metadata
 Invoke-DelphiRoundTrip $rows 'zeroes-1m-l1-1t' $zeroes 1 1 $metadata
 Invoke-DelphiRoundTrip $rows 'ff-1m-l1-1t' $ff 1 1 $metadata
@@ -2032,7 +2103,6 @@ foreach ($matrixLevel in @(0, 1, 3, 5, 7, 9)) {
 if ($ReleaseCorpus) {
   $releaseRepeat = Join-Path $work 'repeat5-256m.bin'
   $releaseMixed = Join-Path $work 'mixed-256m.bin'
-  $releaseEncodeSamples = 5
   $releaseThreadMatrix = @(1, 2, 4, 8, 16)
   if ($logicalProcessorCount -gt 16) {
     $releaseThreadMatrix = @($releaseThreadMatrix + $logicalProcessorCount | Sort-Object -Unique)
@@ -2046,12 +2116,12 @@ if ($ReleaseCorpus) {
     New-PatternFile $path $size 'mixed'
   } ([ordered]@{ pattern = 'mixed'; releaseCorpus = $true })
   Invoke-DelphiRoundTrip $rows 'release-repeat5-256m-l1-1t-crc32' `
-    $releaseRepeat 1 1 $metadata 1048576 'crc32' $releaseEncodeSamples
+    $releaseRepeat 1 1 $metadata 1048576 'crc32'
   foreach ($releaseThreads in $releaseThreadMatrix) {
     Invoke-DelphiRoundTrip $rows "release-repeat5-256m-l1-${releaseThreads}t" `
-      $releaseRepeat 1 $releaseThreads $metadata 1048576 'crc64' $releaseEncodeSamples
+      $releaseRepeat 1 $releaseThreads $metadata 1048576 'crc64'
     Invoke-DelphiRoundTrip $rows "release-mixed-256m-l1-${releaseThreads}t" `
-      $releaseMixed 1 $releaseThreads $metadata 1048576 'crc64' $releaseEncodeSamples
+      $releaseMixed 1 $releaseThreads $metadata 1048576 'crc64'
   }
 }
 Invoke-SevenZipBaseline $rows $repeat $metadata
@@ -2067,7 +2137,6 @@ $csvPath = Join-Path $outDir 'lzma2-benchmark.csv'
 $jsonPath = Join-Path $outDir 'lzma2-benchmark.json'
 $samplesPath = Join-Path $outDir 'lzma2-benchmark.samples.csv'
 $summaryPath = Join-Path $outDir 'lzma2-benchmark.summary.json'
-$optimizationPath = Join-Path $ciOutDir 'optimization-plan.md'
 $sampleRows = @($script:BenchmarkSamples)
 
 $rows | Export-Csv -NoTypeInformation -Encoding UTF8 -LiteralPath $csvPath
@@ -2075,10 +2144,8 @@ $rows | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $jsonP
 $sampleRows | Export-Csv -NoTypeInformation -Encoding UTF8 -LiteralPath $samplesPath
 $metadata.corpusCacheRecords = @($script:BenchmarkCorpusRecords)
 Write-BenchmarkSummary $rows $sampleRows $summaryPath $metadata
-Write-OptimizationPlan $rows $optimizationPath $metadata
 
 Write-Host "Wrote $csvPath"
 Write-Host "Wrote $jsonPath"
 Write-Host "Wrote $samplesPath"
 Write-Host "Wrote $summaryPath"
-Write-Host "Wrote $optimizationPath"

@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 . (Join-Path $root 'tests\qa-tools.ps1')
 $script:QAToolConfig = Get-LzmaQAToolsConfig
+$expectedLzmaSdkVersion = Get-LzmaQAToolExpectedVersion $script:QAToolConfig.tools.sevenZip
 $expectedLzmaSdkVersionPattern = [string]$script:QAToolConfig.tools.sevenZip.versionPattern
 $artifacts = Join-Path $root 'artifacts'
 $ForbiddenGraphArtifactPatterns = @(
@@ -21,6 +22,7 @@ $ForbiddenGraphArtifactPatterns = @(
   'artifacts/perf/*.jpg',
   'artifacts/perf/*.jpeg',
   'artifacts/perf/*.webp'
+  'artifacts/ci/*plan*'
 )
 
 function Require-File([string]$RelativePath) {
@@ -871,13 +873,11 @@ if ($ShouldValidatePerformanceArtifacts) {
   $perfCsvPath = Require-File 'artifacts\perf\lzma2-benchmark.csv'
   $perfSamplesPath = Require-File 'artifacts\perf\lzma2-benchmark.samples.csv'
   $perfSummaryPath = Require-File 'artifacts\perf\lzma2-benchmark.summary.json'
-  $perfOptimizationPath = Require-File 'artifacts\ci\optimization-plan.md'
 } else {
   $perfJsonPath = ''
   $perfCsvPath = ''
   $perfSamplesPath = ''
   $perfSummaryPath = ''
-  $perfOptimizationPath = ''
 }
 
 [xml]$junit = Get-Content -LiteralPath $junitPath -Raw
@@ -892,221 +892,57 @@ if ([int]$suite.failures -ne 0 -or [int]$suite.errors -ne 0) {
   throw "JUnit report has failures=$($suite.failures), errors=$($suite.errors)."
 }
 $testCaseNames = @($junit.testsuites.testsuite.testcase | ForEach-Object { $_.name })
-foreach ($requiredTestCase in
-  'XzDecodeAvoidsFullArchiveMemoryLimit',
-  'XzEncodeAvoidsFullSourceMemoryLimit',
-  'XzDecodeRejectsDictionaryOverMemoryLimit',
-  'XzDecodeRejectsMaxDictionaryPropertyOverMemoryLimit',
-  'DictionaryPropertyRejectsAboveMaxStrict',
-  'MultiThreadedRawMemoryLimit',
-  'HashChain4MatchFinderReadMatchesInsertsCurrentPosition',
-  'HashChain5MatchFinderUsesFiveByteMainHash',
-  'HashChain5MatchFinderUsesSdkCrcHashShape',
-  'HashChain5MatchFinderSkipsTailBelowFiveBytesLikeSdk',
-  'HashChain5MatchFinderHonorsDictionaryLimit',
-  'HashChain4MatchFinderUsesDictionaryCyclicChainStorage',
-  'HashChain5MatchFinderUsesDictionaryCyclicChainStorage',
-  'HashChain4SkipRangeMonotonicMatchesClassicInsertRange',
-  'HashChain4SkipRangeMonotonicMarksSkippedPositionsInserted',
-  'HashChain5SkipRangeMonotonicMatchesClassicInsertRange',
-  'HashChain5SkipRangeMonotonicMarksSkippedPositionsInserted',
-  'BinaryTree4SkipRangeMonotonicMatchesClassicInsertRange',
-  'Lzma2CompressedOptionsUseSdkTwoMiBChunkLimit',
-  'BinaryTree4MatchFinderReadMatchesInsertsCurrentPosition',
-  'BinaryTree4MatchFinderUsesDictionaryCyclicSonStorage',
-  'MatchFindersIgnoreOutOfRangePositions',
-  'MatchFinderReadMatchesIsIdempotent',
-  'HashChain4MatchesSdkReferenceTrace',
-  'HashChain5MatchesSdkReferenceTrace',
-  'BinaryTree4MatchesSdkReferenceTrace',
-  'MatchFinderSdkReferenceTraceArtifactIsWritten',
-  'FastParserLookaheadCacheReusesReadMatchesOnce',
-  'RawLzmaStreamEncoderUsesSinkBackedRangeOutput',
-  'RawLzmaStreamEncoderUsesProfileMatchFinder',
-  'RawLzmaStreamProgressReportsCommittedOutput',
-  'RawLzmaStreamFinalCancellationPrecedesRangeFlush',
-  'SdkFacadeLzmaEncoderStreamsEndMarkerPath',
-  'RawLzmaEndMarkerRoundTripsUnknownSize',
-  'RawLzmaEndMarkerRejectsDirtyTail',
-  'RawLzmaEndMarkerInsideLzma2ChunkFails',
-  'RawLzmaInvalidPropsFails',
-  'RawLzma2DecodeReadFailureRaisesTypedReadError',
-  'RawLzma2EncodeReadFailureRaisesTypedReadError',
-  'SdkFacadeLzma2EncoderDoesNotSnapshotFullInput',
-  'SdkFacadeLzma2DecoderDoesNotSnapshotFullInput',
-  'SdkFacadeLzma2EncoderSupportsPartialSeqOutWrites',
-  'SdkFacadeLzma2EncoderPropagatesSeqOutSRes',
-  'RawLzma2TruncatedCopyChunkFails',
-  'RawLzma2InvalidControlFails',
-  'RawLzma2CompressedChunkWithoutPropsFails',
-  'RawLzma2InvalidLcLpPropsFails',
-  'RawLzma2CorruptRangeFlushTailFails',
-  'RawLzma2CorruptExactRangeTailFails',
-  'SevenZipSingleFileRoundTrips',
-  'SevenZipLzmaCoderSingleFileDecodes',
-  'SevenZipEncodedHeaderLzma2SingleFileDecodes',
-  'SevenZipEncodedHeaderLzmaSingleFileDecodes',
-  'SevenZipEncodedHeaderUnsupportedCoderFailsClosed',
-  'SevenZipMultiFolderLzma2ArchiveExtractsAllEntries',
-  'SevenZipMultiFolderLzmaArchiveExtractsAllEntries',
-  'SevenZipMultiFileLzma2EncodeListsAndExtractsAllEntries',
-  'SevenZipMultiFileLzmaEncodeListsAndExtractsAllEntries',
-  'SevenZipMultiFileFailsSingleStreamDecode',
-  'SevenZipSolidLzma2SubstreamsExtractAsSeparateFiles',
-  'SevenZipSolidLzmaSubstreamsExtractAsSeparateFiles',
-  'SevenZipDecodeLeavesSourceAfterArchive',
-  'SevenZipHeaderCrcCorruptionFails',
-  'XzPackedBlockRejectsRawTrailingBytes',
-  'XzBadStreamPaddingFails',
-  'CorruptedSecondXzBlockCheckFails',
-  'CorruptedXzCheckFails',
-  'XzTruncatedFooterFails',
-  'Crc32XzKnownVectorAndSplitUpdate',
-  'Crc64XzKnownVectorAndSplitUpdate',
-  'HashChain4AndBinaryTree4ExposeLowHashMatchThroughFourByteCollision',
-  'HashChain4AndBinaryTree4SkipTailBelowFourBytesLikeSdk',
-  'MtDecodeStreamsReadyUnitsBeforeSlowWorkersFinish',
-  'MtDecodeWriteFailureSignalsWorkersToCancel',
-  'RawLzma2MtDecodeUsesIndependentResetChunks',
-  'RawLzma2MtDecodeFallsBackForSingleIndependentStream',
-  'RawLzma2MtDecodeFallsBackForTinyPackedIndependentUnits',
-  'RawLzma2MtDecodeFallsBackForHighlyExpandedTinyPackedUnits',
-  'RawLzma2MtDecodeCancellationDoesNotWriteOutput',
-  'RawLzma2MtDecodeFallsBackWhenOutputExceedsMemoryLimit',
-  'RawLzma2MtDecodeChecksMemoryLimitBeforePayloadSnapshot',
-  'RawLzma2MtDecodeWriteFailurePropagates',
-  'XzDeltaFilterFailsUnsupported',
-  'XzBcjFilterFailsUnsupported',
-  'XzFilterChainFailsUnsupported',
-  'DecompressAsyncReturnsBeforeProgressCallbackCompletes',
-  'XzMtDecodeUsesIndependentBlocks',
-  'XzMtDecodeDoesNotReadAllPayloadsBeforeFirstOutput',
-  'XzMtDecodeWriteFailurePropagatesAndPreservesDiagnostics',
-  'XzMtDecodeUsesIndexPackedSizeWhenHeaderOmitsIt',
-  'XzMtDecodeUsesIndexUnpackedSizeWhenHeaderOmitsIt',
-  'XzMtDecodeFallsBackForSingleIndexSizedBlockWithoutPackedSize',
-  'XzMtDecodeFallsBackForSingleIndexSizedBlockWithoutUnpackedSize',
-  'XzMtDecodeFallsBackWhenOutputExceedsMemoryLimit',
-  'XzMtDecodeChecksMemoryLimitBeforePayloadSnapshot',
-  'XzMtDecodeUsesNonzeroMemoryLimit',
-  'XzMultiBlockEncodeDiagnosticsAggregatesRawFastPathCounts',
-  'XzMultiBlockEncodeDiagnosticsReportsTuningForEmptyInput',
-  'MixedBenchmarkCorpusRawEncodeCompressesRepeatingStripes',
-  'MixedBenchmarkCorpusRawMtEncodeCompressesRepeatingStripes',
-  'IncompressibleProbeDoesNotCopyCompressibleTail',
-  'PeriodicRawEncodeUsesFastPath',
-  'PeriodicFastPathRejectsChunkedPhaseReset',
-  'PeriodicPhaseResetRawEncodeUsesSubchunkFastPath',
-  'FastLzma2StyleBenchmarkContractIsDocumented',
-  'PerformanceRunnerWritesDataOnlyBenchmarkArtifacts',
-  'PerformanceValidatorEnforcesDataOnlyArtifacts',
-  'PerformanceSummaryRequiresBenchmarkMetadata',
-  'RawLzmaSdkReleaseCorpusFixturesDecode',
-  'RawLzmaEncoderOptInWindowPathRoundTripsAndWiresDriver',
-  'OptimumReplayRejectsUnreachableEndNode',
-  'OptimumReplayRejectsUnreachableIntermediateNode',
-  'OptimumReplayRejectsUnreachablePrev1LiteralNode',
-  'OptimumReplayPathReturnsMatchLiteralRep0Commands',
-  'OptimumReplayRejectsPrev1LiteralRootNonLiteralBackPrev2',
-  'OptimumReplayRejectsPrev1LiteralRootMultiByteLiteralCommand',
-  'OptimumReplayRejectsPathLenMismatchedPosPrev',
-  'OptimumReplayRejectsPathLenMismatchedBackPrev',
-  'OptimumReplayRejectsExtraPathNonRep0BackPrev',
-  'OptimumReplayRejectsExtraPathWithPrev1LiteralFlag',
-  'OptimumReplayRejectsPathLenExtraRep0WithBackPrev2Set',
-  'OptimumReplayRejectsPathLenExtraRep0WithPosPrev2Set',
-  'OptimumReplayRejectsPathLenExtraOneWithNonLiteralBack',
-  'OptimumReplayRejectsPathLenExtraOneWithBackPrev2Set',
-  'OptimumReplayRejectsPathLenExtraOneWithPosPrev2Set',
-  'OptimumReplayRejectsMultiByteLiteralRootCommand',
-  'OptimumReplayRejectsSingleByteMatchRootCommand',
-  'OptimumReplayRejectsIntermediateMultiByteLiteralCommand',
-  'OptimumReplayRejectsPathLenMultiByteLiteralCommand',
-  'OptimumReplayRejectsPathLenSingleByteMatchCommand',
-  'OptimumReplayRejectsUnreachableStartNode',
-  'OptimumSeedCandidatesIncludePreparedStartPrice',
-  'OptimumPrepareNodesSeedsStartStateAndReps',
-  'OptimumSeedCandidatesRejectOverflowingStartPrice',
-  'OptimumSeedMatchCandidatesRejectOverflowingBackDistance',
-  'OptimumSeedMatchCandidatesRejectZeroBackDistance',
-  'OptimumShortRepVsLiteralRejectsOverflowingShortRepPrice',
-  'OptimumRepVsMatchRejectsOverflowingRepPrice',
-  'OptimumRepVsMatchRejectsOverflowingMatchBackDistance',
-  'OptimumRepVsMatchRejectsOneByteNormalMatchLength',
-  'OptimumRepVsMatchRejectsOneByteRepLength',
-  'OptimumRepVsMatchRejectsZeroMatchDistance',
-  'OptimumLiteralThenMatchRejectsOverflowingLookaheadPrice',
-  'OptimumLiteralThenMatchRejectsOverflowingCurrentMatchBackDistance',
-  'OptimumLiteralThenMatchRejectsOverflowingNextMatchBackDistance',
-  'OptimumLiteralThenMatchRejectsOneByteNextMatchLength',
-  'OptimumLiteralThenMatchRejectsOneByteCurrentMatchLength',
-  'OptimumLiteralThenMatchRejectsZeroNextMatchDistance',
-  'OptimumLiteralThenMatchRejectsZeroCurrentMatchDistance',
-  'OptimumLiteralThenRepRejectsOverflowingLookaheadPrice',
-  'OptimumLiteralThenRepRejectsOverflowingCurrentMatchBackDistance',
-  'OptimumLiteralThenRepRejectsOneByteNextRepLength',
-  'OptimumLiteralThenRepRejectsOneByteCurrentMatchLength',
-  'OptimumLiteralThenRepRejectsZeroCurrentMatchDistance',
-  'OptimumMatchLiteralRep0RejectsOverflowingLookaheadPrice',
-  'OptimumMatchLiteralRep0RejectsOverflowingFirstMatchDecisionBackDistance',
-  'OptimumMatchLiteralRep0RejectsOverflowingCurrentMatchDecisionBackDistance',
-  'OptimumMatchLiteralRep0RejectsOneByteFirstMatchLength',
-  'OptimumMatchLiteralRep0RejectsOneByteRepLength',
-  'OptimumMatchLiteralRep0RejectsOneByteCurrentMatchLength',
-  'OptimumMatchLiteralRep0RejectsZeroFirstMatchDistance',
-  'OptimumMatchLiteralRep0RejectsZeroCurrentMatchDistance',
-  'OptimumLiteralCandidateRejectsOverflowingPreviousPrice',
-  'OptimumShortRepCandidateRejectsOverflowingPreviousPrice',
-  'OptimumRepCandidatesRejectOverflowingPreviousPrice',
-  'OptimumMatchCandidatesRejectOverflowingPreviousPrice',
-  'OptimumRelaxMatchCandidatesRejectOverflowingBackDistance',
-  'OptimumRelaxMatchCandidatesRejectZeroBackDistance',
-  'OptimumRelaxCandidatesCarryStateAndRepsAcrossParserNodes',
-  'OptimumWindowReplaysCheaperTwoStepPathOverDirectMatch',
-  'OptimumWindowRelaxesLiteralThenMatchPath',
-  'OptimumWindowUsesReachedNodeStateForLaterProbabilityInputs',
-  'OptimumWindowResolvesRepLensFromReachedNodeReps',
-  'OptimumWindowResolvesLiteralFromReachedNodeContext',
-  'OptimumWindowRelaxesShortRepFromResolvedRepLens',
-  'OptimumWindowRelaxesMatchLiteralRep0ExtraPath',
-  'OptimumMatchLiteralRep0CandidateRejectsOverflowingPreviousPrice',
-  'OptimumMatchLiteralRep0CandidateRejectsOverflowingFirstMatchBackDistance',
-  'OptimumMatchLiteralRep0CandidateRejectsZeroFirstMatchDistance',
-  'LzmaStandaloneRoundTripsKnownSize',
-  'LzmaStandaloneEncodeCanWriteUnknownSizeEndMarker',
-  'LzmaStandaloneDecodesUnknownSizeEndMarker',
-  'LzmaStandaloneEncodeRejectsInputOverMemoryLimit',
-  'LzmaStandaloneDecodeRejectsPackedInputOverMemoryLimit',
-  'LzmaStandaloneRejectsShortHeader',
-  'LzmaStandaloneRejectsInvalidProps',
-  'LzmaStandaloneRejectsTrailingBytesAfterEndMarker',
-  'LzmaStandaloneRejectsKnownSizeTruncation',
-  'LzmaStandaloneRejectsUnpackSizeMismatch',
-  'LzmaStandaloneRejectsUnknownSizeWithoutEndMarker',
-  'LzmaStandaloneEncodeCancellation',
-  'LzmaStandaloneDecodeCancellation',
-  'SdkFacadePropsNormalizeSdkDependencyVectors',
-  'SdkFacadeProgressPreservesCallbackSRes',
-  'SdkFacadeLzmaDecoderLifecycleDecodeToBuf',
-  'SdkFacadeLzmaDecoderLifecycleTruncatedInputNeedsMoreInput',
-  'SdkFacadeLzma2DecoderLifecycleRejectsInvalidProperty',
-  'SdkFacadeLzma2DecoderLifecycleDecodeToBufAndDic',
-  'GitHubWorkflowRunsReleaseCiMode',
-  'CliSafeStoredOutputNameRejectsUnsafeStoredNames',
-  'ReleasePerformanceRequiresSixteenThreadMtEncodeEvidence',
-  'EncoderPathSeedsOptimumNodesWithCurrentStateAndReps',
-  'CorruptXzRegressionFixturesFailWithExpectedErrors') {
+$includedCategories = @()
+$excludedCategories = @()
+foreach ($argument in (ConvertTo-StringList $ciManifest.configuration.dunitxCategoryArgs)) {
+  if ($argument.StartsWith('--include:', [StringComparison]::Ordinal)) {
+    $includedCategories = @($argument.Substring(10).Split(','))
+  } elseif ($argument.StartsWith('--exclude:', [StringComparison]::Ordinal)) {
+    $excludedCategories = @($argument.Substring(10).Split(','))
+  }
+}
+$testDeclarations = Get-Content -LiteralPath (Join-Path $root 'tests\Lzma.Tests.dpr') -Raw
+$declarations = [regex]::Matches($testDeclarations,
+  '(?m)^(?<attributes>(?:[ \t]*\[[^\r\n]*\][ \t]*\r?\n)+)[ \t]*procedure[ \t]+(?<name>\w+)[ \t]*;')
+$expectedTestCaseNames = @()
+foreach ($declaration in $declarations) {
+  $attributes = $declaration.Groups['attributes'].Value
+  if ($attributes -notmatch '\[Test\]') { continue }
+  $name = $declaration.Groups['name'].Value
+  $categoryAttributes = [regex]::Matches($attributes, '\[Category\(''([^'']*)''\)\]')
+  if ($categoryAttributes.Count -ne 1) {
+    throw "Test declaration must use one Category attribute: $name"
+  }
+  $categories = @($categoryAttributes[0].Groups[1].Value.Split(','))
+  $included = $includedCategories.Count -eq 0 -or
+    @($categories | Where-Object { $includedCategories -contains $_ }).Count -gt 0
+  $excluded = @($categories | Where-Object { $excludedCategories -contains $_ }).Count -gt 0
+  if ($included -and -not $excluded) { $expectedTestCaseNames += $name }
+}
+if ($expectedTestCaseNames.Count -eq 0) {
+  throw 'DUnitX category arguments selected no declared tests.'
+}
+foreach ($requiredTestCase in $expectedTestCaseNames) {
   if ($testCaseNames -notcontains $requiredTestCase) {
     throw "JUnit report is missing required test case: $requiredTestCase"
   }
 }
-
+foreach ($actualTestCase in $testCaseNames) {
+  if ($expectedTestCaseNames -notcontains $actualTestCase) {
+    throw "JUnit report contains a test excluded by this tier: $actualTestCase"
+  }
+}
 $matchFinderTrace = Get-Content -LiteralPath $matchFinderTracePath -Raw | ConvertFrom-Json
 if ([int]$matchFinderTrace.schemaVersion -ne 1) {
   throw 'Match-finder SDK trace parity artifact has an unsupported schemaVersion.'
 }
-if ([string]$matchFinderTrace.sdk -notmatch 'LZMA SDK 26\.01') {
-  throw 'Match-finder SDK trace parity artifact is missing the SDK 26.01 source label.'
+$matchFinderReference = Get-Content -LiteralPath (Join-Path $root 'tests\fixtures\match-finder\sdk-reference-traces.json') -Raw | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace([string]$matchFinderReference.sdk) -or
+    [string]$matchFinderTrace.sdk -ne [string]$matchFinderReference.sdk) {
+  throw 'Match-finder SDK trace parity artifact does not match the reference fixture source label.'
+}
+if (@($matchFinderReference.sourceProvenance.verifiedCompatibleSdkVersions) -notcontains $expectedLzmaSdkVersion) {
+  throw "Match-finder reference source identity has not been verified for pinned SDK $expectedLzmaSdkVersion."
 }
 $matchFinderTraceRows = @($matchFinderTrace.traces)
 $requiredMatchFinderTraceIds = @(
@@ -1214,7 +1050,7 @@ if ($compatPath) {
   }
   if ($compat.tools.sevenZip -and $compat.tools.sevenZip.available -and
       $compat.tools.sevenZip.version -notmatch $expectedLzmaSdkVersionPattern) {
-    throw 'Compatibility report must use 7-Zip/LZMA SDK 26.01.'
+    throw "Compatibility report must use 7-Zip/LZMA SDK $expectedLzmaSdkVersion."
   }
   if ($RequireExternalTools -and (-not $compat.tools.xz -or -not $compat.tools.xz.available)) {
     throw 'Compatibility report is missing a working xz-utils tool record.'
@@ -1232,7 +1068,7 @@ if ($compatPath) {
   }
   if ($compat.tools.lzma -and $compat.tools.lzma.available -and
       $compat.tools.lzma.version -notmatch $expectedLzmaSdkVersionPattern) {
-    throw 'Compatibility report must use LZMA SDK 26.01 lzma.exe.'
+    throw "Compatibility report must use LZMA SDK $expectedLzmaSdkVersion lzma.exe."
   }
   if ($RequireExternalTools -and ($compat.cases.status -contains 'skipped')) {
     throw 'Compatibility report contains skipped cases in required external tool mode.'
@@ -1690,13 +1526,12 @@ if ($RequireExternalTools) {
     throw "Performance JSON must include exactly one aligned 7zr SDK encode baseline row for $expectedSdkEncodeInput."
   }
   $sevenEncodeBaseline = $sevenEncodeBaselineRows[0]
-  $sdkComparableCompressionRatioLimit = [double]$sevenEncodeBaseline.compressionRatio * $sdkCompressedSizeRatioGate
 
   $sdkEncodePassLabels = @(
     'meets-100pct-sdk-smoke',
     'meets-100pct-sdk-periodic-fastpath'
   )
-  $sdkEncodeComparisonRows = @($perfRowsArray | Where-Object {
+  $sdkEncodeCandidateRows = @($perfRowsArray | Where-Object {
     $_.tool -eq 'delphi-native' -and
     $_.operation -eq 'encode' -and
     $_.mode -eq 'xz-level1' -and
@@ -1707,9 +1542,24 @@ if ($RequireExternalTools) {
     [int64]$_.dictionary -eq 1048576 -and
     $_.check -eq 'crc32' -and
     [int64]$_.inputBytes -eq [int64]$sevenEncodeBaseline.inputBytes -and
+    $_.inputSha256 -eq $sevenEncodeBaseline.inputSha256 -and
+    $_.container -eq $sevenEncodeBaseline.container -and
+    $_.codec -eq $sevenEncodeBaseline.codec -and
+    [int]$_.lc -eq [int]$sevenEncodeBaseline.lc -and
+    [int]$_.lp -eq [int]$sevenEncodeBaseline.lp -and
+    [int]$_.pb -eq [int]$sevenEncodeBaseline.pb -and
+    [int64]$_.outputBytes -gt 0
+  })
+  if ($sdkEncodeCandidateRows.Count -ne 1 -or [int64]$sevenEncodeBaseline.outputBytes -le 0) {
+    throw 'Performance JSON must include exactly one aligned SDK smoke encode candidate with positive byte counts.'
+  }
+  # compressionRatio is rounded presentation data; a single extra archive byte must fail.
+  if ([int64]$sdkEncodeCandidateRows[0].outputBytes -gt [int64]$sevenEncodeBaseline.outputBytes) {
+    throw 'Aligned SDK smoke encode outputBytes exceeds SDK baseline outputBytes.'
+  }
+  $sdkEncodeComparisonRows = @($sdkEncodeCandidateRows | Where-Object {
     $null -ne $_.compressionRatio -and
     [double]$_.compressionRatio -gt 0 -and
-    [double]$_.compressionRatio -le $sdkComparableCompressionRatioLimit -and
     $_.baselineTool -like '7zr-sdk*encode*' -and
     $_.acceptance -in $sdkEncodePassLabels -and
     (
@@ -2382,9 +2232,6 @@ if ((Get-Item -LiteralPath $perfCsvPath).Length -le 0 -or
     (Get-Item -LiteralPath $perfSummaryPath).Length -le 0) {
   throw 'Performance data-only benchmark artifacts must be non-empty.'
 }
-if ((Get-Item -LiteralPath $perfOptimizationPath).Length -le 0) {
-  throw 'Performance optimization plan artifact must be non-empty.'
-}
 }
 $ciManifest = Get-Content -LiteralPath $ciManifestPath -Raw | ConvertFrom-Json
 if ($null -eq $ciManifest.configuration) {
@@ -2436,13 +2283,13 @@ $dunitxCategoryArgs = ConvertTo-StringList $ciManifest.configuration.dunitxCateg
 switch ([string]$ciManifest.configuration.mode) {
   'inner' {
     if ($dunitxCategoryArgs -notcontains '--include:unit' -or
-        $dunitxCategoryArgs -notcontains '--exclude:container,compat,perf-smoke,perf-release,soak,fuzz') {
+        $dunitxCategoryArgs -notcontains '--exclude:container,compat,perf_smoke,perf_release,soak,fuzz') {
       throw 'CI manifest is missing inner DUnitX category arguments.'
     }
   }
   'quick' {
-    if ($dunitxCategoryArgs -notcontains '--include:unit,container,compat,perf-smoke' -or
-        $dunitxCategoryArgs -notcontains '--exclude:perf-release,soak,fuzz') {
+    if ($dunitxCategoryArgs -notcontains '--include:unit,container,compat,perf_smoke' -or
+        $dunitxCategoryArgs -notcontains '--exclude:perf_release,soak,fuzz') {
       throw 'CI manifest is missing quick DUnitX category arguments.'
     }
   }
@@ -2647,7 +2494,7 @@ if ($ciManifest.tools.sevenZip.available -and $ciManifest.tools.sevenZip.version
 }
 if ($ciManifest.tools.sevenZip.available -and
     $ciManifest.tools.sevenZip.version -notmatch $expectedLzmaSdkVersionPattern) {
-  throw 'CI manifest must use 7-Zip/LZMA SDK 26.01.'
+  throw "CI manifest must use 7-Zip/LZMA SDK $expectedLzmaSdkVersion."
 }
 if ($ciManifest.tools.xz.available -and $ciManifest.tools.xz.version -notmatch 'XZ Utils|xz') {
   throw 'CI manifest has an unexpected xz-utils version record.'
@@ -2657,7 +2504,7 @@ if ($ciManifest.tools.lzma.available -and $ciManifest.tools.lzma.version -notmat
 }
 if ($ciManifest.tools.lzma.available -and
     $ciManifest.tools.lzma.version -notmatch $expectedLzmaSdkVersionPattern) {
-  throw 'CI manifest must use LZMA SDK 26.01 lzma.exe.'
+  throw "CI manifest must use LZMA SDK $expectedLzmaSdkVersion lzma.exe."
 }
 $requiredManifestArtifactPaths = @(
   'artifacts/fixtures/sha256-fixtures.json',

@@ -71,6 +71,20 @@ type
     MatchByte: Byte;
   end;
 
+  // Internal synchronous pricing view. The model is borrowed only until the
+  // current solver call returns; never store it in nodes, replay or caches.
+  PLzmaOptimumLiteralProbs = ^TLzmaLiteralProbs;
+  TLzmaOptimumLiteralView = record
+    LiteralProbs: PLzmaOptimumLiteralProbs;
+    Enabled: Boolean;
+    Value: Byte;
+    UseMatchedLiteral: Boolean;
+    MatchByte: Byte;
+  end;
+
+  TLzmaOptimumLiteralViewResolver = reference to function(const Pos: UInt32;
+    const Node: TLzmaOptimumNode; out LiteralInput: TLzmaOptimumLiteralView): Boolean;
+
   TLzmaOptimumProbInput = record
     IsMatchProb: CLzmaProb;
     IsRepProb: CLzmaProb;
@@ -81,6 +95,31 @@ type
   end;
 
   TLzmaOptimumStateProbInputs = array[0..11] of TLzmaOptimumProbInput;
+
+  TLzmaOptimumModelStateProbs = array[0..High(TLzmaOptimumStateProbInputs)] of CLzmaProb;
+  PLzmaOptimumModelStateProbs = ^TLzmaOptimumModelStateProbs;
+  TLzmaOptimumModelPosStateProbs = array[0..High(TLzmaOptimumStateProbInputs),
+    0..LZMA_NUM_PB_STATES_MAX - 1] of CLzmaProb;
+  PLzmaOptimumModelPosStateProbs = ^TLzmaOptimumModelPosStateProbs;
+
+  // Borrowed only for one synchronous solve. Borrow binds actual owner arrays;
+  // do not mutate those models until the solver returns or retain this view.
+  TLzmaOptimumProbModelView = record
+  private
+    FIsMatch: PLzmaOptimumModelPosStateProbs;
+    FIsRep: PLzmaOptimumModelStateProbs;
+    FIsRepG0: PLzmaOptimumModelStateProbs;
+    FIsRepG1: PLzmaOptimumModelStateProbs;
+    FIsRepG2: PLzmaOptimumModelStateProbs;
+    FIsRep0Long: PLzmaOptimumModelPosStateProbs;
+    FValidPositionCount: UInt32;
+  public
+    class function Borrow(var IsMatch: TLzmaOptimumModelPosStateProbs;
+      var IsRep, IsRepG0, IsRepG1, IsRepG2: TLzmaOptimumModelStateProbs;
+      var IsRep0Long: TLzmaOptimumModelPosStateProbs;
+      const ValidPositionCount: UInt32): TLzmaOptimumProbModelView; static;
+    function Read(const Pos, State, PosState: UInt32): TLzmaOptimumProbInput; inline;
+  end;
 
   TLzmaOptimumLiteralResolver = reference to function(const Pos: UInt32;
     const Node: TLzmaOptimumNode; out LiteralInput: TLzmaOptimumLiteralInput): Boolean;
@@ -99,6 +138,7 @@ type
     FEntries: array[0..7] of TLzmaFastParserMatchCacheEntry;
   public
     procedure Clear;
+    procedure RebasePositions(const DropCount: NativeUInt);
     procedure Store(const RelativePos: NativeUInt; const Matches: TLzmaMatchBuffer;
       const MainMatch: TLzmaMatch);
     function TryTake(const RelativePos: NativeUInt; out Matches: TLzmaMatchBuffer;
@@ -233,6 +273,22 @@ function LzmaOptimumRelaxWindow(var Nodes: array of TLzmaOptimumNode;
   const ProbInputsByPos: array of TLzmaOptimumStateProbInputs;
   const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
   const DistancePrices: TLzmaDistancePriceEncoder): Boolean; overload;
+function LzmaOptimumRelaxWindowView(var Nodes: array of TLzmaOptimumNode;
+  const MatchesByPos: array of TLzmaMatchBuffer;
+  const PosStates: array of UInt32;
+  const LiteralResolver: TLzmaOptimumLiteralViewResolver;
+  const RepLensResolver: TLzmaOptimumRepLensResolver;
+  const ProbInputsByPos: array of TLzmaOptimumStateProbInputs;
+  const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
+  const DistancePrices: TLzmaDistancePriceEncoder): Boolean; overload;
+function LzmaOptimumRelaxWindowView(var Nodes: array of TLzmaOptimumNode;
+  const MatchesByPos: array of TLzmaMatchBuffer;
+  const PosStates: array of UInt32;
+  const LiteralResolver: TLzmaOptimumLiteralViewResolver;
+  const RepLensResolver: TLzmaOptimumRepLensResolver;
+  const ProbModelView: TLzmaOptimumProbModelView;
+  const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
+  const DistancePrices: TLzmaDistancePriceEncoder): Boolean; overload;
 function LzmaOptimumSelectWindowTarget(const Nodes: array of TLzmaOptimumNode;
   const InitialTargetEnd, WindowEnd, BaselinePrice: UInt32;
   out TargetEnd, TargetPrice: UInt32): Boolean;
@@ -292,6 +348,52 @@ begin
     Result := Integer(State)
   else
     Result := 0;
+end;
+
+class function TLzmaOptimumProbModelView.Borrow(
+  var IsMatch: TLzmaOptimumModelPosStateProbs;
+  var IsRep, IsRepG0, IsRepG1, IsRepG2: TLzmaOptimumModelStateProbs;
+  var IsRep0Long: TLzmaOptimumModelPosStateProbs;
+  const ValidPositionCount: UInt32): TLzmaOptimumProbModelView;
+begin
+  Result.FIsMatch := @IsMatch;
+  Result.FIsRep := @IsRep;
+  Result.FIsRepG0 := @IsRepG0;
+  Result.FIsRepG1 := @IsRepG1;
+  Result.FIsRepG2 := @IsRepG2;
+  Result.FIsRep0Long := @IsRep0Long;
+  Result.FValidPositionCount := ValidPositionCount;
+end;
+
+function TLzmaOptimumProbModelView.Read(const Pos, State,
+  PosState: UInt32): TLzmaOptimumProbInput;
+var
+  EffectiveState: Integer;
+begin
+  Result.IsMatchProb := LZMA_PROB_INIT;
+  Result.IsRepProb := LZMA_PROB_INIT;
+  Result.IsRepG0Prob := LZMA_PROB_INIT;
+  Result.IsRepG1Prob := LZMA_PROB_INIT;
+  Result.IsRepG2Prob := LZMA_PROB_INIT;
+  Result.IsRep0LongProb := LZMA_PROB_INIT;
+  // A default view has no sentinel and behaves like an empty legacy array.
+  if (FIsMatch = nil) or (Pos > FValidPositionCount) then
+    Exit;
+  // The old materialized array has a zero cell at WindowEnd, for every state.
+  if Pos = FValidPositionCount then
+  begin
+    FillChar(Result, SizeOf(Result), 0);
+    Exit;
+  end;
+  if PosState >= LZMA_NUM_PB_STATES_MAX then
+    Exit;
+  EffectiveState := LzmaOptimumStateIndex(State);
+  Result.IsMatchProb := FIsMatch^[EffectiveState, Integer(PosState)];
+  Result.IsRepProb := FIsRep^[EffectiveState];
+  Result.IsRepG0Prob := FIsRepG0^[EffectiveState];
+  Result.IsRepG1Prob := FIsRepG1^[EffectiveState];
+  Result.IsRepG2Prob := FIsRepG2^[EffectiveState];
+  Result.IsRep0LongProb := FIsRep0Long^[EffectiveState, Integer(PosState)];
 end;
 
 function LzmaOptimumIsLiteralState(const State: UInt32): Boolean; inline;
@@ -635,6 +737,20 @@ begin
       Exit(True);
     end;
   end;
+end;
+
+procedure TLzmaFastParserMatchCache.RebasePositions(const DropCount: NativeUInt);
+var
+  I: Integer;
+begin
+  for I := Low(FEntries) to High(FEntries) do
+    if FEntries[I].Valid then
+    begin
+      if FEntries[I].Position < DropCount then
+        FEntries[I].Valid := False
+      else
+        Dec(FEntries[I].Position, DropCount);
+    end;
 end;
 
 function TLzmaFastParserMatchCache.Valid: Boolean;
@@ -1425,9 +1541,19 @@ begin
   Result := True;
 end;
 
+function LzmaOptimumLiteralViewOf(
+  const Input: TLzmaOptimumLiteralInput): TLzmaOptimumLiteralView; inline;
+begin
+  Result.LiteralProbs := @Input.LiteralProbs;
+  Result.Enabled := Input.Enabled;
+  Result.Value := Input.Value;
+  Result.UseMatchedLiteral := Input.UseMatchedLiteral;
+  Result.MatchByte := Input.MatchByte;
+end;
+
 function LzmaOptimumRelaxSdkLiteralCandidate(var Nodes: array of TLzmaOptimumNode;
   const Pos: UInt32; const ProbPrices: TLzmaProbPrices;
-  const LiteralInput: TLzmaOptimumLiteralInput; const IsMatchProb: CLzmaProb;
+  const LiteralInput: TLzmaOptimumLiteralView; const IsMatchProb: CLzmaProb;
   out LiteralPrice: UInt32; out NextIsLit: Boolean): Boolean;
 var
   LiteralPrefixPrice64: UInt64;
@@ -1437,7 +1563,8 @@ begin
   LiteralPrice := 0;
   NextIsLit := False;
 
-  if (Length(Nodes) = 0) or (not LiteralInput.Enabled) then
+  if (Length(Nodes) = 0) or (not LiteralInput.Enabled) or
+    (LiteralInput.LiteralProbs = nil) then
     Exit;
   if Pos >= UInt32(Length(Nodes) - 1) then
     Exit;
@@ -1453,7 +1580,7 @@ begin
     Exit;
 
   Result := LzmaOptimumRelaxLiteralCandidate(Nodes, Pos, ProbPrices,
-    LiteralInput.LiteralProbs, IsMatchProb, LiteralInput.Value,
+    LiteralInput.LiteralProbs^, IsMatchProb, LiteralInput.Value,
     LiteralInput.UseMatchedLiteral, LiteralInput.MatchByte, LiteralPrice);
   NextIsLit := Result;
 end;
@@ -1606,7 +1733,7 @@ begin
       LiteralInputsByPos[PosIndex].Enabled then
     begin
       if LzmaOptimumRelaxSdkLiteralCandidate(Nodes, UInt32(PosIndex),
-        ProbPrices, LiteralInputsByPos[PosIndex], IsMatchProb, LiteralPrice,
+        ProbPrices, LzmaOptimumLiteralViewOf(LiteralInputsByPos[PosIndex]), IsMatchProb, LiteralPrice,
         NextIsLit) then
         Result := True;
     end;
@@ -1707,7 +1834,7 @@ begin
       LiteralInputsByPos[PosIndex].Enabled then
     begin
       if LzmaOptimumRelaxSdkLiteralCandidate(Nodes, UInt32(PosIndex),
-        ProbPrices, LiteralInputsByPos[PosIndex], CurrentProbs.IsMatchProb,
+        ProbPrices, LzmaOptimumLiteralViewOf(LiteralInputsByPos[PosIndex]), CurrentProbs.IsMatchProb,
         LiteralPrice, NextIsLit) then
         Result := True;
     end;
@@ -1769,9 +1896,38 @@ function LzmaOptimumRelaxWindow(var Nodes: array of TLzmaOptimumNode;
   const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
   const DistancePrices: TLzmaDistancePriceEncoder): Boolean;
 var
+  LegacyInput: TLzmaOptimumLiteralInput;
+  ViewResolver: TLzmaOptimumLiteralViewResolver;
+begin
+  ViewResolver := nil;
+  if Assigned(LiteralResolver) then
+    ViewResolver :=
+      function(const Pos: UInt32; const Node: TLzmaOptimumNode;
+        out LiteralInput: TLzmaOptimumLiteralView): Boolean
+      begin
+        // Storage belongs to this outer call, not the resolver callback frame.
+        FillChar(LegacyInput, SizeOf(LegacyInput), 0);
+        Result := LiteralResolver(Pos, Node, LegacyInput);
+        LiteralInput := LzmaOptimumLiteralViewOf(LegacyInput);
+      end;
+  Result := LzmaOptimumRelaxWindowView(Nodes, MatchesByPos, PosStates,
+    ViewResolver, RepLensResolver, ProbInputsByPos, ProbPrices,
+    LenPrices, RepLenPrices, DistancePrices);
+end;
+
+function LzmaOptimumRelaxWindowCore(var Nodes: array of TLzmaOptimumNode;
+  const MatchesByPos: array of TLzmaMatchBuffer;
+  const PosStates: array of UInt32;
+  const LiteralResolver: TLzmaOptimumLiteralViewResolver;
+  const RepLensResolver: TLzmaOptimumRepLensResolver;
+  const ProbInputsByPos: array of TLzmaOptimumStateProbInputs;
+  const ProbModelView: TLzmaOptimumProbModelView; const UseProbModelView: Boolean;
+  const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
+  const DistancePrices: TLzmaDistancePriceEncoder): Boolean;
+var
   BestRelaxedPrice: UInt32;
   CurrentProbs: TLzmaOptimumProbInput;
-  LiteralInput: TLzmaOptimumLiteralInput;
+  LiteralInput: TLzmaOptimumLiteralView;
   LiteralPrice: UInt32;
   MatchIndex: Integer;
   MatchStartLen: UInt32;
@@ -1793,6 +1949,8 @@ var
   var
     EffectiveState: UInt32;
   begin
+    if UseProbModelView then
+      Exit(ProbModelView.Read(Pos, State, PosStateAt(Pos)));
     Result.IsMatchProb := LZMA_PROB_INIT;
     Result.IsRepProb := LZMA_PROB_INIT;
     Result.IsRepG0Prob := LZMA_PROB_INIT;
@@ -1822,7 +1980,7 @@ var
 
     FillChar(LiteralInput, SizeOf(LiteralInput), 0);
     if (not LiteralResolver(UInt32(PosIndex), Nodes[PosIndex], LiteralInput)) or
-      (not LiteralInput.Enabled) then
+      (not LiteralInput.Enabled) or (LiteralInput.LiteralProbs = nil) then
       Exit;
     if LiteralInput.MatchByte = LiteralInput.Value then
       Exit;
@@ -1837,7 +1995,7 @@ var
 
     RepProbs := ProbInputAt(RepPos, LiteralNode.State);
     if LzmaOptimumRelaxLiteralRep0Candidate(Nodes, UInt32(PosIndex),
-      ProbPrices, LiteralInput.LiteralProbs, RepLenPrices,
+      ProbPrices, LiteralInput.LiteralProbs^, RepLenPrices,
       CurrentProbs.IsMatchProb, RepProbs.IsMatchProb, RepProbs.IsRepProb,
       RepProbs.IsRepG0Prob, RepProbs.IsRep0LongProb, PosStateAt(RepPos),
       LiteralInput.Value, LiteralInput.UseMatchedLiteral,
@@ -1878,7 +2036,7 @@ var
       LiteralPos := UInt32(PosIndex) + FirstMatch.Length;
       FillChar(LiteralInput, SizeOf(LiteralInput), 0);
       if (not LiteralResolver(LiteralPos, MatchNode, LiteralInput)) or
-        (not LiteralInput.Enabled) then
+        (not LiteralInput.Enabled) or (LiteralInput.LiteralProbs = nil) then
         Continue;
 
       LiteralNode := MatchNode;
@@ -1893,7 +2051,7 @@ var
       LiteralProbs := ProbInputAt(LiteralPos, MatchNode.State);
       RepProbs := ProbInputAt(RepPos, LiteralNode.State);
       if LzmaOptimumRelaxMatchLiteralRep0Candidate(Nodes, UInt32(PosIndex),
-        ProbPrices, LiteralInput.LiteralProbs, LenPrices, RepLenPrices,
+        ProbPrices, LiteralInput.LiteralProbs^, LenPrices, RepLenPrices,
         DistancePrices, CurrentProbs.IsMatchProb, CurrentProbs.IsRepProb,
         LiteralProbs.IsMatchProb, RepProbs.IsMatchProb, RepProbs.IsRepProb,
         RepProbs.IsRepG0Prob, RepProbs.IsRep0LongProb, PosState,
@@ -1935,7 +2093,7 @@ var
       LiteralPos := UInt32(PosIndex) + FirstRepLen;
       FillChar(LiteralInput, SizeOf(LiteralInput), 0);
       if (not LiteralResolver(LiteralPos, RepNode, LiteralInput)) or
-        (not LiteralInput.Enabled) then
+        (not LiteralInput.Enabled) or (LiteralInput.LiteralProbs = nil) then
         Continue;
 
       LiteralNode := RepNode;
@@ -1950,7 +2108,7 @@ var
       LiteralProbs := ProbInputAt(LiteralPos, RepNode.State);
       RepProbs := ProbInputAt(RepPos, LiteralNode.State);
       if LzmaOptimumRelaxRepLiteralRep0Candidate(Nodes, UInt32(PosIndex),
-        ProbPrices, LiteralInput.LiteralProbs, RepLenPrices,
+        ProbPrices, LiteralInput.LiteralProbs^, RepLenPrices,
         CurrentProbs.IsMatchProb, CurrentProbs.IsRepProb,
         CurrentProbs.IsRepG0Prob, CurrentProbs.IsRepG1Prob,
         CurrentProbs.IsRepG2Prob, CurrentProbs.IsRep0LongProb,
@@ -1983,7 +2141,7 @@ begin
     begin
       FillChar(LiteralInput, SizeOf(LiteralInput), 0);
       if LiteralResolver(UInt32(PosIndex), Nodes[PosIndex], LiteralInput) and
-        LiteralInput.Enabled then
+        LiteralInput.Enabled and (LiteralInput.LiteralProbs <> nil) then
       begin
         if LzmaOptimumRelaxSdkLiteralCandidate(Nodes, UInt32(PosIndex),
           ProbPrices, LiteralInput, CurrentProbs.IsMatchProb, LiteralPrice,
@@ -2044,6 +2202,37 @@ begin
       end;
     end;
   end;
+end;
+
+function LzmaOptimumRelaxWindowView(var Nodes: array of TLzmaOptimumNode;
+  const MatchesByPos: array of TLzmaMatchBuffer;
+  const PosStates: array of UInt32;
+  const LiteralResolver: TLzmaOptimumLiteralViewResolver;
+  const RepLensResolver: TLzmaOptimumRepLensResolver;
+  const ProbInputsByPos: array of TLzmaOptimumStateProbInputs;
+  const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
+  const DistancePrices: TLzmaDistancePriceEncoder): Boolean;
+var
+  EmptyModelView: TLzmaOptimumProbModelView;
+begin
+  EmptyModelView := Default(TLzmaOptimumProbModelView);
+  Result := LzmaOptimumRelaxWindowCore(Nodes, MatchesByPos, PosStates,
+    LiteralResolver, RepLensResolver, ProbInputsByPos, EmptyModelView, False,
+    ProbPrices, LenPrices, RepLenPrices, DistancePrices);
+end;
+
+function LzmaOptimumRelaxWindowView(var Nodes: array of TLzmaOptimumNode;
+  const MatchesByPos: array of TLzmaMatchBuffer;
+  const PosStates: array of UInt32;
+  const LiteralResolver: TLzmaOptimumLiteralViewResolver;
+  const RepLensResolver: TLzmaOptimumRepLensResolver;
+  const ProbModelView: TLzmaOptimumProbModelView;
+  const ProbPrices: TLzmaProbPrices; const LenPrices, RepLenPrices: TLzmaLenPriceEncoder;
+  const DistancePrices: TLzmaDistancePriceEncoder): Boolean;
+begin
+  Result := LzmaOptimumRelaxWindowCore(Nodes, MatchesByPos, PosStates,
+    LiteralResolver, RepLensResolver, [], ProbModelView, True,
+    ProbPrices, LenPrices, RepLenPrices, DistancePrices);
 end;
 
 function LzmaOptimumSelectWindowTarget(const Nodes: array of TLzmaOptimumNode;

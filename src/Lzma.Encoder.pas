@@ -1,5 +1,7 @@
 unit Lzma.Encoder;
 
+{$B-} // Match-history bounds guards must precede indexed reads.
+
 interface
 
 uses
@@ -8,6 +10,7 @@ uses
   Lzma.MatchFinder,
   Lzma.RangeCoder,
   Lzma.Types;
+
 
 type
   TLzmaEncoderProfile = record
@@ -25,8 +28,42 @@ type
   end;
 
   TLzmaRawEncoder = class
+  private
+    class function RequiredMemoryCore(const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputCapacity: NativeUInt; const Framed, SdkFinder: Boolean;
+      const HashOutBits: UInt32; const ExpectedDataSize: UInt64): UInt64; static;
+    class function RequiredMemoryForInputCore(const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+      const Framed, SdkFinder: Boolean; const HashOutBits: UInt32;
+      const ExpectedDataSize: UInt64): UInt64; static;
+    class procedure EncodeLzma2StreamCore(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const Progress: TLzma2ProgressEvent; const Diagnostics: PLzma2EncodeDiagnostics;
+      const BufferSize: NativeUInt; const MemoryLimit: UInt64;
+      const UseSdkMtHighHash: Boolean); static;
+    class procedure EncodeStreamCore(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+      const MemoryLimit: UInt64; const UseMatchFinderThread, UseSdkMtHighHash: Boolean;
+      out FullOptimumDecisionCount: UInt64; out ActualThreadCount: Integer;
+      const Progress: TLzma2ProgressEvent; const SdkFinder: Boolean = False;
+      const HashOutBits: UInt32 = 0; const ExpectedDataSize: UInt64 = High(UInt64)); static;
   public
     class function NormalizeProfile(const Level: TLzma2CompressionLevel; const DictionarySize: UInt64): TLzmaEncoderProfile; static;
+    class function EffectiveHistorySize(const DictionarySize: UInt64): NativeUInt; static;
+    class function MaximumLzma2EncodedSize(const InputSize: UInt64): UInt64; static;
+    // Upper bound for owned input/kernel payloads; caller/RTL/allocator overhead is separate.
+    class function RequiredStreamingMemory(const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputCapacity: NativeUInt; const Framed: Boolean): UInt64; static;
+    // Includes every input-window allocation/admission stage for any input up to this size.
+    class function RequiredStreamingMemoryForInput(const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+      const Framed: Boolean): UInt64; static;
+    class function ResolveThreadCount(const Profile: TLzmaEncoderProfile;
+      const RequestedThreadCount: Integer): Integer; static;
+    class function RequiredStreamingMemoryForInputWithThreads(const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+      const RequestedThreadCount: Integer): UInt64; static;
     class function DefaultProperties(const DictionarySize: UInt64): TLzmaProps; static;
     class function WriteProperties(const Props: TLzmaProps): TBytes; static;
     class function EncodeLiteralOnlyChunk(const Data: TBytes; const Offset, Count: NativeUInt;
@@ -40,6 +77,16 @@ type
       const EnableOptimumWindow: Boolean = False;
       const Progress: TLzma2ProgressEvent = nil;
       const FullOptimumDecisionCount: PUInt64 = nil): TBytes; static;
+    class procedure EncodeLzma2Stream(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const Progress: TLzma2ProgressEvent = nil;
+      const Diagnostics: PLzma2EncodeDiagnostics = nil;
+      const BufferSize: NativeUInt = 0; const MemoryLimit: UInt64 = 0); static;
+    // Internal worker entry; scheduling and memory ownership remain with the caller.
+    class procedure EncodeLzma2MtWorkerStream(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const Progress: TLzma2ProgressEvent; const Diagnostics: PLzma2EncodeDiagnostics;
+      const BufferSize: NativeUInt; const MemoryLimit: UInt64); static;
     class function EncodePeriodicChunks(const Data: TBytes; const Offset, Count, ChunkSize: NativeUInt;
       const Props: TLzmaProps; const Period: UInt32; out Chunks: TArray<TBytes>): Boolean; static;
     class function EncodeRepeatedPeriodicUnitChunks(const Data: TBytes; const Offset, Count,
@@ -50,14 +97,54 @@ type
     class procedure Encode(Source: TStream; Destination: TStream; const Profile: TLzmaEncoderProfile;
       const Props: TLzmaProps; const WriteEndMarker: Boolean;
       const Progress: TLzma2ProgressEvent = nil); overload; static;
+    class procedure Encode(Source: TStream; Destination: TStream; const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+      const MemoryLimit: UInt64; out FullOptimumDecisionCount: UInt64;
+      const Progress: TLzma2ProgressEvent = nil); overload; static;
+    class procedure EncodeWithThreads(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+      const MemoryLimit: UInt64; const RequestedThreadCount: Integer;
+      out FullOptimumDecisionCount: UInt64; out ActualThreadCount: Integer;
+      const Progress: TLzma2ProgressEvent = nil); static;
+    class procedure EncodeWithSdkSettings(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+      const MemoryLimit: UInt64; const RequestedThreadCount: Integer;
+      const HashOutBits: UInt32; const ExpectedDataSize: UInt64;
+      out FullOptimumDecisionCount: UInt64; out ActualThreadCount: Integer;
+      const Progress: TLzma2ProgressEvent = nil); static;
+    class function RequiredSdkMemoryForInputWithThreads(const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+      const RequestedThreadCount: Integer; const HashOutBits: UInt32;
+      const ExpectedDataSize: UInt64): UInt64; static;
+{$IFDEF LZMA_MT_QA}
+    // Test-only serial reference: SDK MT hash mode with no producer thread.
+    class procedure EncodeMtReference(Source, Destination: TStream;
+      const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+      const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+      const MemoryLimit: UInt64; out FullOptimumDecisionCount: UInt64;
+      const Progress: TLzma2ProgressEvent = nil); static;
+{$ENDIF}
   end;
 
 implementation
 
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFOPT Q-}
+{$IFOPT R-}
+{$DEFINE LZMA_ENCODER_FLAT_OPTIMUM_FRAME}
+{$ENDIF}
+{$ENDIF}
+{$ENDIF}
+
 uses
+  Lzma.Alloc,
   Lzma.EncoderHeuristics,
   Lzma.Errors,
+  Lzma.MtMatchFinder,
   Lzma.PriceTables,
+  Lzma.Sdk.MatchFinder,
   Lzma.Streams;
 
 type
@@ -83,6 +170,16 @@ type
     kMatchMaxLen = kMatchMinLen + kLenNumSymbolsTotal - 1;
   end;
 
+  TLzmaStatefulFrameLimits = record
+  public const
+    MaxUnpackedSize = NativeUInt(1) shl 21;
+    MaxPackedSize = UInt64(1) shl 16;
+    // SDK 26.05 LzmaEnc.c, kPackReserve and LzmaEnc_CodeOneBlock limits.
+    FullOptimumUnpackSlack = 300;
+    UnpackReserve = NativeUInt(LZMA_FULL_OPTIMUM_NUM_OPTS + FullOptimumUnpackSlack);
+    PackReserve = UInt64(LZMA_FULL_OPTIMUM_NUM_OPTS) * 8;
+  end;
+
   TProbArray = array[0..MaxInt div SizeOf(CLzmaProb) - 1] of CLzmaProb;
   PProbArray = ^TProbArray;
 
@@ -92,6 +189,9 @@ type
   end;
 
   TLzmaRangeEncoder = class
+  private const
+    kStreamBufferCapacity = NativeUInt(1) shl 15;
+    kInitialOutputCapacity = NativeUInt(1) shl 16;
   private
     FLow: UInt64;
     FRange: UInt32;
@@ -118,7 +218,171 @@ type
     procedure EncodeMatchedLiteral(var Probs; const Value, MatchByte: Byte);
     procedure FlushData;
     function ToBytes: TBytes;
+    class function OutputCapacityFor(const OutputBytes: UInt64): NativeUInt; static;
   end;
+
+  PLzmaLiteralProbs = ^TLzmaLiteralProbs;
+
+  TLzmaEncoderModelSnapshot = record
+    IsMatch: array[0..TLzmaEncoderConstants.kNumStates - 1,
+      0..TLzmaEncoderConstants.kNumPosStatesMax - 1] of CLzmaProb;
+    IsRep: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
+    IsRepG0: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
+    IsRepG1: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
+    IsRepG2: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
+    IsRep0Long: array[0..TLzmaEncoderConstants.kNumStates - 1,
+      0..TLzmaEncoderConstants.kNumPosStatesMax - 1] of CLzmaProb;
+    PosSlot: TLzmaPosSlotProbs;
+    PosDecoders: TLzmaPosDecoderProbs;
+    Align: TLzmaAlignProbs;
+    LenEncoder: TLenEncoder;
+    RepLenEncoder: TLenEncoder;
+    Literals: TArray<CLzmaProb>;
+    State: UInt32;
+    Reps: array[0..3] of UInt32;
+  end;
+
+  TLzmaEncoderContext = class
+  private
+    FInitialized: Boolean;
+    FUseSdkMtHighHash: Boolean;
+    FUseSdkFinder: Boolean;
+    FSdkHashOutBits: UInt32;
+    FSdkExpectedDataSize: UInt64;
+    FUseMatchFinderThread: Boolean;
+    FMatchFinderThread: TLzmaMatchFinderPipeline;
+    FWindowBase: UInt64;
+    FThreadProgress: TLzma2ProgressEvent;
+    FOutputSink: TStream;
+    FContinuousRange: Boolean;
+    FFrameStart: NativeUInt;
+    FModelSnapshot: TLzmaEncoderModelSnapshot;
+    IsMatch: TLzmaOptimumModelPosStateProbs;
+    IsRep: TLzmaOptimumModelStateProbs;
+    IsRepG0: TLzmaOptimumModelStateProbs;
+    IsRepG1: TLzmaOptimumModelStateProbs;
+    IsRepG2: TLzmaOptimumModelStateProbs;
+    IsRep0Long: TLzmaOptimumModelPosStateProbs;
+    PosSlot: TLzmaPosSlotProbs;
+    PosDecoders: TLzmaPosDecoderProbs;
+    Align: TLzmaAlignProbs;
+    LenEncoder: TLenEncoder;
+    RepLenEncoder: TLenEncoder;
+    Literals: array of CLzmaProb;
+    GreedyFinder: TLzmaGreedyMatchFinder;
+    Hc4Finder: TLzmaHashChain4MatchFinder;
+    Hc5Finder: TLzmaHashChain5MatchFinder;
+    Bt4Finder: TLzmaBinaryTree4MatchFinder;
+    SdkFinder: TLzmaSdkMatchFinder;
+    Encoder: TLzmaRangeEncoder;
+    Pos: NativeUInt;
+    Processed: UInt64;
+    State: UInt32;
+    Reps: array[0..3] of UInt32;
+    PosState: UInt32;
+    LitState: UInt32;
+    LiteralOffset: NativeUInt;
+    Value: Byte;
+    PrevByte: Byte;
+    MatchByte: Byte;
+    Matches: TLzmaMatchBuffer;
+    EffectiveFastBytes: UInt32;
+    NumPosStates: UInt32;
+    ProbPrices: TLzmaProbPrices;
+    LenPrices: TLzmaLenPriceEncoder;
+    RepLenPrices: TLzmaLenPriceEncoder;
+    DistancePrices: TLzmaDistancePriceEncoder;
+    BestRepIndex: Integer;
+    BestRepLen: UInt32;
+    RepLen: UInt32;
+    BackRes: UInt32;
+    LenRes: UInt32;
+    PbMask: UInt32;
+    LpMask: UInt32;
+    LcBits: UInt32;
+    LcShift: UInt32;
+    PeriodicDistance: UInt32;
+    FullOptimumState: TLzmaFullOptimumState;
+
+    PricedLiteralPrice: UInt32;
+    PricedShortRepPrice: UInt32;
+    InsertedUntil: NativeUInt;
+    MatchCache: TLzmaFastParserMatchCache;
+    NextProgressAt: UInt64;
+    LocalFullOptimumDecisionCount: UInt64;
+  public
+    constructor Create(const OutputSink: TStream = nil);
+    destructor Destroy; override;
+    procedure RebaseWindow(const DropCount, NewCount: NativeUInt);
+    procedure PauseMatchFinder;
+    procedure ResumeMatchFinder(const Count: NativeUInt; const FinalInput: Boolean);
+    procedure SaveModels(var Snapshot: TLzmaEncoderModelSnapshot);
+    procedure RestoreModels(const Snapshot: TLzmaEncoderModelSnapshot);
+    function Encode(const Data: TBytes; const Offset, Count: NativeUInt;
+  const Props: TLzmaProps; const FastBytes: Integer; const CutValue: UInt32;
+  const MatchFinderKind: TLzmaMatchFinderKind; const WriteEndMarker: Boolean;
+  const EnableOptimumWindow: Boolean; const Progress: TLzma2ProgressEvent;
+  const FullOptimumDecisionCount: PUInt64; const BoundedFrame: Boolean = False;
+  const FinalInput: Boolean = True;
+  const FrameUnpackLimit: NativeUInt = TLzmaStatefulFrameLimits.MaxUnpackedSize): TBytes;
+  end;
+
+{$IFDEF LZMA_ENCODER_FLAT_OPTIMUM_FRAME}
+type
+  PEncoderOptimumInputBytes = ^TBytes;
+  TEncoderFullOptimumFrame = record
+    Owner: TLzmaEncoderContext;
+    InputRef: PEncoderOptimumInputBytes;
+    Offset, Count: NativeUInt;
+    Cur, Last, MainLen, NumAvail, NumPairs, BestRep: UInt32;
+    MainMatch: TLzmaMatch;
+    RepLens: TLzmaOptimumRepLens;
+    Model: TLzmaOptimumProbModelView;
+
+
+    function NumAvailAt(const RelativePos: NativeUInt): UInt32;
+    function RepLenAtPos(const RelativePos: NativeUInt; const Distance: UInt32): UInt32;
+    procedure InsertRange(const RelativePos, RangeCount: NativeUInt);
+    procedure EnsureInsertedUntil(const NewInsertedUntil: NativeUInt);
+    procedure MarkInsertedUntil(const NewInsertedUntil: NativeUInt);
+    function ReadMatchDistancesAndInsert(const RelativePos: NativeUInt;
+    var MatchList: TLzmaMatchBuffer): TLzmaMatch;
+    function ReadCurrentMatchDistances(const RelativePos: NativeUInt;
+    var MatchList: TLzmaMatchBuffer): TLzmaMatch;
+    function AvailableAt(const At: UInt32): UInt32;
+    function ProbsAt(const At, AtState: UInt32): TLzmaOptimumProbInput;
+    function RepLength(const At, Distance, Limit: UInt32): UInt32;
+    function LiteralCost(const At, AtState, RepDistance: UInt32): UInt32;
+    function Rep0Price(const At, AtState: UInt32): UInt32;
+    procedure ExtendFrontier(const Target: UInt32);
+    procedure Store(const Target, Price, Len, PathBack, Extra: UInt32;
+      const Source: TLzmaOptimumNode);
+    procedure Relax(const Initial: Boolean);
+    function Run(out Back: UInt32): UInt32;
+  end;
+{$ENDIF}
+
+
+
+  TLzmaEncoderInputWindow = record
+    Source: TStream;
+    Data: TBytes;
+    Count, Capacity, DictionarySize, ReadQuantum: NativeUInt;
+    FinalInput: Boolean;
+    IncrementalInput: Boolean;
+    TotalRead, MaxRetained: UInt64;
+    Progress: TLzma2ProgressEvent;
+    ReportedInput, ReportedOutput: UInt64;
+    procedure Initialize(InputSource: TStream; const Profile: TLzmaEncoderProfile;
+      const Props: TLzmaProps; const InputProgress: TLzma2ProgressEvent = nil;
+      const BufferSize: NativeUInt = 0; const Incremental: Boolean = False;
+      const MemoryLimit: UInt64 = 0; const Framed: Boolean = False;
+      const SdkFinder: Boolean = False; const HashOutBits: UInt32 = 0;
+      const ExpectedDataSize: UInt64 = High(UInt64));
+    procedure Fill;
+    procedure RefillAtBoundary(Context: TLzmaEncoderContext; const CommittedOutput: UInt64 = 0);
+  end;
+
 
 const
   LZMA_STATE_LITERAL_NEXT: array[0..11] of UInt32 = (
@@ -191,29 +455,6 @@ begin
     Result := TLzmaEncoderConstants.kNumLenToPosStates - 1;
 end;
 
-function GetPosSlot(const Dist: UInt32): UInt32;
-var
-  Z: UInt32;
-  V: UInt32;
-begin
-  if Dist < 2 then
-    Exit(Dist);
-  Z := 0;
-  V := Dist;
-  while V > 1 do
-  begin
-    V := V shr 1;
-    Inc(Z);
-  end;
-  Dec(Z);
-  Result := (Z shl 1) + (Dist shr Z);
-end;
-
-function ChangePair(const SmallDistance, BigDistance: UInt32): Boolean;
-begin
-  Result := ((BigDistance - 1) shr 7) > (SmallDistance - 1);
-end;
-
 procedure EncodeLenSymbol(const Encoder: TLzmaRangeEncoder; var LenEncoder: TLenEncoder;
   Symbol, PosState: UInt32);
 var
@@ -262,7 +503,7 @@ begin
   AlignArray := @Align;
   Dist := ActualDistance - 1;
   LenState := GetLenToPosState(Len);
-  Slot := GetPosSlot(Dist);
+  Slot := LzmaGetPosSlot(Dist);
   Encoder.BitTreeEncode(PosSlotArray^[
     LenState * (UInt32(1) shl TLzmaEncoderConstants.kNumPosSlotBits)],
     TLzmaEncoderConstants.kNumPosSlotBits, Slot);
@@ -287,12 +528,270 @@ begin
     Dist and (TLzmaEncoderConstants.kAlignTableSize - 1));
 end;
 
+function LzmaEncoderLiteralProbCount(const Props: TLzmaProps): NativeInt;
+begin
+  if (Props.Lc > 8) or (Props.Lp > 4) then
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA literal properties');
+  Result := (SizeOf(TLzmaLiteralProbs) div SizeOf(CLzmaProb)) shl (Props.Lc + Props.Lp);
+end;
+
+function LzmaEncoderOptimumWindowEnd(const Available: NativeUInt): UInt32;
+begin
+  if Available >= LZMA_FULL_OPTIMUM_NUM_OPTS then
+    Result := LZMA_FULL_OPTIMUM_NUM_OPTS - 1
+  else
+    Result := UInt32(Available);
+end;
+
+class function TLzmaRangeEncoder.OutputCapacityFor(const OutputBytes: UInt64): NativeUInt;
+begin
+  if OutputBytes = 0 then Exit(0);
+  if OutputBytes > UInt64(High(NativeInt)) then
+    RaiseLzmaError(SZ_ERROR_MEM, 'LZMA range output exceeds native TBytes capacity');
+  Result := kInitialOutputCapacity;
+  while UInt64(Result) < OutputBytes do
+  begin
+    if Result > NativeUInt(High(NativeInt)) div 2 then
+      RaiseLzmaError(SZ_ERROR_MEM, 'LZMA range output exceeds native TBytes capacity');
+    Result := Result * 2;
+  end;
+end;
+
+function SdkFinderHashBytes(const Kind: TLzmaMatchFinderKind): UInt32;
+begin
+  case Kind of
+    mfBinaryTree2: Result := 2;
+    mfBinaryTree3: Result := 3;
+    mfHashChain5, mfBinaryTree5: Result := 5;
+  else Result := 4;
+  end;
+end;
+
+function SdkFinderIsBinaryTree(const Kind: TLzmaMatchFinderKind): Boolean;
+begin Result := Kind in [mfBinaryTree2, mfBinaryTree3, mfBinaryTree4, mfBinaryTree5]; end;
+
+class function TLzmaRawEncoder.RequiredStreamingMemory(const Profile: TLzmaEncoderProfile;
+  const Props: TLzmaProps; const InputCapacity: NativeUInt; const Framed: Boolean): UInt64;
+begin Result := RequiredMemoryCore(Profile, Props, InputCapacity, Framed, False, 0, High(UInt64)); end;
+
+class function TLzmaRawEncoder.RequiredMemoryCore(const Profile: TLzmaEncoderProfile;
+  const Props: TLzmaProps; const InputCapacity: NativeUInt; const Framed, SdkFinder: Boolean;
+  const HashOutBits: UInt32; const ExpectedDataSize: UInt64): UInt64;
+var
+  LiteralBytes, Workspace, Decisions, Replay, Cells, WindowEnd: UInt64;
+  RangeCapacity, PayloadBytes, ParserPeak, MaterialPeak: UInt64;
+  FullParser: Boolean;
+begin
+  if (Props.Lc > 8) or (Props.Lp > 4) or (Props.Pb > 4) then
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA encoder properties');
+  if Framed and (Props.Lc + Props.Lp > 4) then
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA2 encoder properties');
+  if InputCapacity > NativeUInt(High(NativeInt)) then
+    RaiseLzmaError(SZ_ERROR_MEM, 'LZMA input exceeds native TBytes capacity');
+  // The framed empty-input route constructs a context but does not enter Encode.
+  if Framed and (InputCapacity = 0) then
+    Exit(TLzmaEncoderContext.InstanceSize);
+  Result := CheckedMemoryAdd(InputCapacity, UInt64(TLzmaEncoderContext.InstanceSize));
+  Result := CheckedMemoryAdd(Result, UInt64(TLzmaRangeEncoder.InstanceSize));
+  if SdkFinder then
+    Result := CheckedMemoryAdd(Result, TLzmaSdkMatchFinder.RequiredMemory(InputCapacity,
+      EffectiveHistorySize(Props.DictionarySize), SdkFinderHashBytes(Profile.MatchFinderKind),
+      SdkFinderIsBinaryTree(Profile.MatchFinderKind), HashOutBits, ExpectedDataSize, True))
+  else
+    Result := CheckedMemoryAdd(Result, LzmaMatchFinderMemoryRequired(InputCapacity,
+      EffectiveHistorySize(Props.DictionarySize), Profile.MatchFinderKind));
+  LiteralBytes := CheckedMemoryMultiply(UInt64(LzmaEncoderLiteralProbCount(Props)), SizeOf(CLzmaProb));
+  Result := CheckedMemoryAdd(Result, LiteralBytes);
+  if Framed then Result := CheckedMemoryAdd(Result, LiteralBytes);
+  Workspace := 0;
+  Decisions := 0;
+  Replay := 0;
+  FullParser := (Profile.ParserMode = lpmSdkProfile) and (Profile.Algorithm <> 0);
+  if FullParser then
+  begin
+    Result := CheckedMemoryAdd(Result,
+      CheckedMemoryMultiply(LZMA_FULL_OPTIMUM_NUM_OPTS, SizeOf(TLzmaOptimumNode)));
+    WindowEnd := LzmaEncoderOptimumWindowEnd(InputCapacity);
+    if WindowEnd >= 2 then
+    begin
+      Cells := CheckedMemoryAdd(WindowEnd, 1);
+      Workspace := CheckedMemoryMultiply(Cells, CheckedMemoryAdd(SizeOf(TLzmaMatchBuffer),
+        CheckedMemoryAdd(SizeOf(UInt32), SizeOf(TLzmaOptimumStateProbInputs))));
+      // Backward's temporary decisions coexist with the new persistent replay.
+      Decisions := CheckedMemoryMultiply(WindowEnd, SizeOf(TLzmaOptimumDecision));
+      Replay := CheckedMemoryMultiply(WindowEnd - 1, SizeOf(TLzmaOptimumDecision));
+    end;
+  end;
+  if not Framed then
+  begin
+    Result := CheckedMemoryAdd(Result, TLzmaRangeEncoder.kStreamBufferCapacity);
+    Result := CheckedMemoryAdd(Result, Workspace);
+    Result := CheckedMemoryAdd(Result, Decisions);
+    Result := CheckedMemoryAdd(Result, Replay);
+    Exit;
+  end;
+  PayloadBytes := TLzmaStatefulFrameLimits.MaxPackedSize;
+  RangeCapacity := TLzmaRangeEncoder.OutputCapacityFor(PayloadBytes);
+  // The previous Payload remains alive while Context.Encode builds its successor.
+  ParserPeak := CheckedMemoryAdd(RangeCapacity, PayloadBytes);
+  ParserPeak := CheckedMemoryAdd(ParserPeak, Workspace);
+  ParserPeak := CheckedMemoryAdd(ParserPeak, Decisions);
+  ParserPeak := CheckedMemoryAdd(ParserPeak, Replay);
+  MaterialPeak := CheckedMemoryAdd(RangeCapacity, CheckedMemoryMultiply(PayloadBytes, 2));
+  MaterialPeak := CheckedMemoryAdd(MaterialPeak, Replay);
+  if MaterialPeak > ParserPeak then ParserPeak := MaterialPeak;
+  Result := CheckedMemoryAdd(Result, ParserPeak);
+end;
+
+function LzmaMaximumRangeOperationsPerSymbol: UInt64;
+var
+  LengthBits, LiteralBits, RepBits, MatchBits, FooterBits: UInt64;
+begin
+  // Literal: IsMatch followed by one byte. Length paths have one/two choices.
+  LiteralBits := 1 + SizeOf(Byte) * 8;
+  LengthBits := 2 + TLzmaEncoderConstants.kLenNumHighBits;
+  if 2 + TLzmaEncoderConstants.kLenNumLowBits > LengthBits then
+    LengthBits := 2 + TLzmaEncoderConstants.kLenNumLowBits;
+  // IsMatch/IsRep, then at most G0/G1/G2 for four rep distances.
+  RepBits := 2 + (SizeOf(TLzmaOptimumReps) div SizeOf(UInt32) - 1) + LengthBits;
+  // Slot 63 has 30 footer bits, split between direct and align coding.
+  FooterBits := (((UInt64(1) shl TLzmaEncoderConstants.kNumPosSlotBits) - 1) shr 1) - 1;
+  MatchBits := 2 + LengthBits + TLzmaEncoderConstants.kNumPosSlotBits + FooterBits;
+  Result := LiteralBits;
+  if RepBits > Result then Result := RepBits;
+  if MatchBits > Result then Result := MatchBits;
+end;
+
+function LzmaMinimumFullFrameUnpacked: UInt64;
+var
+  PackedThreshold, PackedMinimum, UnpackedMinimum, Operations, MinimumFrameLimit: UInt64;
+begin
+  // Before flush, output bytes plus pending cache bytes equals ShiftLow calls.
+  // Every range operation calls ShiftLow at most once; every symbol consumes input.
+  // Explicit frame limits are clamped by CheckedBufferSize (currently 4096).
+  MinimumFrameLimit := CheckedBufferSize(1);
+  if MinimumFrameLimit > TLzmaStatefulFrameLimits.MaxUnpackedSize then
+    MinimumFrameLimit := TLzmaStatefulFrameLimits.MaxUnpackedSize;
+  if (TLzmaStatefulFrameLimits.PackReserve >= TLzmaStatefulFrameLimits.MaxPackedSize) or
+    (TLzmaStatefulFrameLimits.UnpackReserve >= MinimumFrameLimit) then
+    Exit(1);
+  PackedThreshold := TLzmaStatefulFrameLimits.MaxPackedSize - TLzmaStatefulFrameLimits.PackReserve;
+  Operations := LzmaMaximumRangeOperationsPerSymbol;
+  PackedMinimum := PackedThreshold div Operations;
+  if PackedThreshold mod Operations <> 0 then Inc(PackedMinimum);
+  UnpackedMinimum := MinimumFrameLimit - TLzmaStatefulFrameLimits.UnpackReserve;
+  Result := PackedMinimum;
+  if UnpackedMinimum < Result then Result := UnpackedMinimum;
+  if Result = 0 then Result := 1;
+end;
+
+procedure LzmaStreamingInputDimensions(const Props: TLzmaProps; const BufferSize: NativeUInt;
+  out DictionarySize, ReadQuantum, RequestedCapacity: NativeUInt);
+var
+  Dictionary: UInt64;
+begin
+  Dictionary := TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize);
+  if (Dictionary = 0) or
+    (Dictionary > UInt64(High(NativeInt)) - TLzmaStatefulFrameLimits.MaxUnpackedSize -
+      TLzmaStatefulFrameLimits.UnpackReserve) then
+    RaiseLzmaError(SZ_ERROR_PARAM, 'Invalid LZMA encoder input configuration');
+  DictionarySize := NativeUInt(Dictionary);
+  RequestedCapacity := DictionarySize + TLzmaStatefulFrameLimits.MaxUnpackedSize +
+    TLzmaStatefulFrameLimits.UnpackReserve;
+  ReadQuantum := CheckedBufferSize(BufferSize);
+  if ReadQuantum > TLzmaStatefulFrameLimits.MaxUnpackedSize then
+    ReadQuantum := TLzmaStatefulFrameLimits.MaxUnpackedSize;
+  if ReadQuantum > RequestedCapacity then
+    ReadQuantum := RequestedCapacity;
+end;
+
+class function TLzmaRawEncoder.RequiredStreamingMemoryForInput(const Profile: TLzmaEncoderProfile;
+  const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+  const Framed: Boolean): UInt64;
+begin Result := RequiredMemoryForInputCore(Profile, Props, InputUpperBound, BufferSize, Framed, False, 0, High(UInt64)); end;
+
+class function TLzmaRawEncoder.RequiredMemoryForInputCore(const Profile: TLzmaEncoderProfile;
+  const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+  const Framed, SdkFinder: Boolean; const HashOutBits: UInt32;
+  const ExpectedDataSize: UInt64): UInt64;
+var
+  DictionarySize, ReadQuantum, RequestedCapacity, EndCapacity: NativeUInt;
+  Peak: UInt64;
+
+  procedure IncludePeak(const Value: UInt64);
+  begin
+    if Value > Result then Result := Value;
+  end;
+
+begin
+  LzmaStreamingInputDimensions(Props, BufferSize, DictionarySize, ReadQuantum, RequestedCapacity);
+  Result := RequiredMemoryCore(Profile, Props, ReadQuantum, Framed, SdkFinder, HashOutBits, ExpectedDataSize);
+  // EOF before the first quantum: shrinking can temporarily retain the old input array.
+  EndCapacity := ReadQuantum - 1;
+  if InputUpperBound < UInt64(EndCapacity) then EndCapacity := NativeUInt(InputUpperBound);
+  IncludePeak(CheckedMemoryAdd(ReadQuantum,
+    RequiredMemoryCore(Profile, Props, EndCapacity, Framed, SdkFinder, HashOutBits, ExpectedDataSize)));
+  if InputUpperBound > UInt64(ReadQuantum) then
+  begin
+    Peak := RequiredMemoryCore(Profile, Props, RequestedCapacity, Framed, SdkFinder, HashOutBits, ExpectedDataSize);
+    IncludePeak(CheckedMemoryAdd(ReadQuantum, Peak));
+    // Framed prefill can reach EOF after growth and shrink once more before the finder exists.
+    if Framed then
+    begin
+      EndCapacity := RequestedCapacity - 1;
+      if InputUpperBound < UInt64(EndCapacity) then EndCapacity := NativeUInt(InputUpperBound);
+      if EndCapacity > ReadQuantum then
+        IncludePeak(CheckedMemoryAdd(RequestedCapacity,
+          RequiredMemoryCore(Profile, Props, EndCapacity, Framed, SdkFinder, HashOutBits, ExpectedDataSize)));
+    end;
+  end;
+end;
+
+class function TLzmaRawEncoder.ResolveThreadCount(const Profile: TLzmaEncoderProfile;
+  const RequestedThreadCount: Integer): Integer;
+begin
+  if RequestedThreadCount < 1 then
+    RaiseLzmaError(SZ_ERROR_PARAM, 'LZMA thread count must be positive');
+  Result := 1;
+  // SDK enables its MT match finder only for normal BT parsing.
+  if (RequestedThreadCount > 1) and (Profile.ParserMode = lpmSdkProfile) and
+    (Profile.Algorithm <> 0) and (Profile.MatchFinderKind in
+      [mfBinaryTree2, mfBinaryTree3, mfBinaryTree4, mfBinaryTree5]) then
+    Result := 2;
+end;
+
+class function TLzmaRawEncoder.RequiredStreamingMemoryForInputWithThreads(
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+  const RequestedThreadCount: Integer): UInt64;
+begin
+  Result := RequiredStreamingMemoryForInput(Profile, Props, InputUpperBound, BufferSize, False);
+  if ResolveThreadCount(Profile, RequestedThreadCount) = 2 then
+    Result := CheckedMemoryAdd(Result, TLzmaMatchFinderPipeline.RequiredMemory);
+end;
+
+class function TLzmaRawEncoder.MaximumLzma2EncodedSize(const InputSize: UInt64): UInt64;
+var
+  Frames, CopyChunks: UInt64;
+begin
+  if InputSize = 0 then Exit(SizeOf(Byte));
+  Frames := InputSize div LzmaMinimumFullFrameUnpacked;
+  if InputSize mod LzmaMinimumFullFrameUnpacked <> 0 then Inc(Frames);
+  CopyChunks := InputSize div TLzmaStatefulFrameLimits.MaxPackedSize;
+  if InputSize mod TLzmaStatefulFrameLimits.MaxPackedSize <> 0 then Inc(CopyChunks);
+  // For a positive partition, sum ceil(part / C) <= ceil(total / C) + frames - 1.
+  CopyChunks := CheckedMemoryAdd(CopyChunks, Frames - 1);
+  Result := CheckedMemoryAdd(InputSize,
+    CheckedMemoryMultiply(CopyChunks, SizeOf(Byte) + SizeOf(UInt16)));
+  Result := CheckedMemoryAdd(Result, SizeOf(Byte));
+end;
+
 constructor TLzmaRangeEncoder.Create(const OutputStream: TStream);
 begin
   inherited Create;
   FOutputStream := OutputStream;
   if FOutputStream <> nil then
-    SetLength(FStreamBuffer, 1 shl 15);
+    SetLength(FStreamBuffer, kStreamBufferCapacity);
 end;
 
 destructor TLzmaRangeEncoder.Destroy;
@@ -327,7 +826,7 @@ begin
   if FOutputStream <> nil then
   begin
     if Length(FStreamBuffer) = 0 then
-      SetLength(FStreamBuffer, 1 shl 15);
+      SetLength(FStreamBuffer, kStreamBufferCapacity);
     FStreamBuffer[FStreamBufferSize] := B;
     Inc(FStreamBufferSize);
     Inc(FOutputSize);
@@ -340,13 +839,7 @@ begin
     RaiseLzmaError(SZ_ERROR_MEM, 'LZMA range output exceeds native TBytes capacity');
   if NativeUInt(FOutputSize) = NativeUInt(Length(FOutput)) then
   begin
-    NewCapacity := NativeUInt(Length(FOutput));
-    if NewCapacity < 65536 then
-      NewCapacity := 65536
-    else if NewCapacity > NativeUInt(High(NativeInt)) div 2 then
-      RaiseLzmaError(SZ_ERROR_MEM, 'LZMA range output exceeds native TBytes capacity')
-    else
-      NewCapacity := NewCapacity * 2;
+    NewCapacity := OutputCapacityFor(CheckedMemoryAdd(FOutputSize, 1));
     SetLength(FOutput, NativeInt(NewCapacity));
   end;
   FOutput[NativeInt(FOutputSize)] := B;
@@ -408,6 +901,8 @@ begin
 end;
 
 procedure TLzmaRangeEncoder.EncodeDirectBits(const Value, NumBits: UInt32);
+{$IFDEF CPUX64}
+{$IFOPT Q+}
 var
   I: Integer;
 begin
@@ -424,7 +919,56 @@ begin
   end;
 end;
 
+{$ELSE}
+var
+  I: Integer;
+  RangeValue: UInt32;
+  LowValue: UInt64;
+begin
+  RangeValue := FRange;
+  LowValue := FLow;
+  for I := Integer(NumBits) - 1 downto 0 do
+  begin
+    RangeValue := RangeValue shr 1;
+    if ((Value shr UInt32(I)) and 1) <> 0 then
+      LowValue := LowValue + RangeValue;
+    if RangeValue < LZMA_TOP_VALUE then
+    begin
+      RangeValue := RangeValue shl 8;
+      FRange := RangeValue;
+      FLow := LowValue;
+      ShiftLow;
+      RangeValue := FRange;
+      LowValue := FLow;
+    end
+  end;
+  FRange := RangeValue;
+  FLow := LowValue;
+end;
+
+{$ENDIF}
+
+{$ELSE}
+var
+  I: Integer;
+begin
+  for I := Integer(NumBits) - 1 downto 0 do
+  begin
+    FRange := FRange shr 1;
+    if ((Value shr UInt32(I)) and 1) <> 0 then
+      FLow := FLow + FRange;
+    if FRange < LZMA_TOP_VALUE then
+    begin
+      FRange := FRange shl 8;
+      ShiftLow;
+    end
+  end;
+end;
+
+{$ENDIF}
 procedure TLzmaRangeEncoder.BitTreeEncode(var Probs; const NumBits, Symbol: UInt32);
+{$IFDEF CPUX64}
+{$IFOPT Q+}
 var
   P: PProbArray;
   M: UInt32;
@@ -441,7 +985,77 @@ begin
   end;
 end;
 
+{$ELSE}
+type
+  PLiteralProb = ^CLzmaProb;
+var
+  P: PProbArray;
+  M: UInt32;
+  BitIndex: Integer;
+  Bit: UInt32;
+  Prob: PLiteralProb;
+  Bound, RangeValue: UInt32;
+  LowValue: UInt64;
+begin
+  P := @Probs;
+  M := 1;
+  RangeValue := FRange;
+  LowValue := FLow;
+  for BitIndex := Integer(NumBits) - 1 downto 0 do
+  begin
+    Bit := (Symbol shr UInt32(BitIndex)) and 1;
+    Prob := @P^[M];
+    Bound := (RangeValue shr LZMA_NUM_BIT_MODEL_TOTAL_BITS) * UInt32(Prob^);
+    if Bit = 0 then
+    begin
+      RangeValue := Bound;
+      Prob^ := LzmaProbUpdate0(Prob^);
+    end
+    else
+    begin
+      LowValue := LowValue + Bound;
+      RangeValue := RangeValue - Bound;
+      Prob^ := LzmaProbUpdate1(Prob^);
+    end;
+    if RangeValue < LZMA_TOP_VALUE then
+    begin
+      RangeValue := RangeValue shl 8;
+      // Output callbacks and failures must observe the complete current state.
+      FRange := RangeValue;
+      FLow := LowValue;
+      ShiftLow;
+      RangeValue := FRange;
+      LowValue := FLow;
+    end;
+    M := (M shl 1) or Bit;
+  end;
+  FRange := RangeValue;
+  FLow := LowValue;
+end;
+
+{$ENDIF}
+
+{$ELSE}
+var
+  P: PProbArray;
+  M: UInt32;
+  BitIndex: Integer;
+  Bit: UInt32;
+begin
+  P := @Probs;
+  M := 1;
+  for BitIndex := Integer(NumBits) - 1 downto 0 do
+  begin
+    Bit := (Symbol shr UInt32(BitIndex)) and 1;
+    EncodeBit(P^[M], Bit);
+    M := (M shl 1) or Bit;
+  end;
+end;
+
+{$ENDIF}
 procedure TLzmaRangeEncoder.BitTreeReverseEncode(var Probs; const NumBits, Symbol: UInt32);
+{$IFDEF CPUX64}
+{$IFOPT Q+}
 var
   P: PProbArray;
   I: UInt32;
@@ -458,7 +1072,77 @@ begin
   end;
 end;
 
+{$ELSE}
+type
+  PLiteralProb = ^CLzmaProb;
+var
+  P: PProbArray;
+  I: UInt32;
+  M: UInt32;
+  Bit: UInt32;
+  Prob: PLiteralProb;
+  Bound, RangeValue: UInt32;
+  LowValue: UInt64;
+begin
+  P := @Probs;
+  M := 1;
+  RangeValue := FRange;
+  LowValue := FLow;
+  for I := 0 to NumBits - 1 do
+  begin
+    Bit := (Symbol shr I) and 1;
+    Prob := @P^[M];
+    Bound := (RangeValue shr LZMA_NUM_BIT_MODEL_TOTAL_BITS) * UInt32(Prob^);
+    if Bit = 0 then
+    begin
+      RangeValue := Bound;
+      Prob^ := LzmaProbUpdate0(Prob^);
+    end
+    else
+    begin
+      LowValue := LowValue + Bound;
+      RangeValue := RangeValue - Bound;
+      Prob^ := LzmaProbUpdate1(Prob^);
+    end;
+    if RangeValue < LZMA_TOP_VALUE then
+    begin
+      RangeValue := RangeValue shl 8;
+      // Output callbacks and failures must observe the complete current state.
+      FRange := RangeValue;
+      FLow := LowValue;
+      ShiftLow;
+      RangeValue := FRange;
+      LowValue := FLow;
+    end;
+    M := (M shl 1) or Bit;
+  end;
+  FRange := RangeValue;
+  FLow := LowValue;
+end;
+
+{$ENDIF}
+
+{$ELSE}
+var
+  P: PProbArray;
+  I: UInt32;
+  M: UInt32;
+  Bit: UInt32;
+begin
+  P := @Probs;
+  M := 1;
+  for I := 0 to NumBits - 1 do
+  begin
+    Bit := (Symbol shr I) and 1;
+    EncodeBit(P^[M], Bit);
+    M := (M shl 1) or Bit;
+  end;
+end;
+
+{$ENDIF}
 procedure TLzmaRangeEncoder.EncodeLiteral(var Probs; const Value: Byte);
+{$IFDEF CPUX64}
+{$IFOPT Q+}
 var
   P: PProbArray;
   Symbol: UInt32;
@@ -473,7 +1157,71 @@ begin
   until Symbol >= $10000;
 end;
 
+{$ELSE}
+type
+  PLiteralProb = ^CLzmaProb;
+var
+  P: PProbArray;
+  Prob: PLiteralProb;
+  Symbol, Bit, Bound, RangeValue: UInt32;
+  LowValue: UInt64;
+begin
+  P := @Probs;
+  Symbol := UInt32(Value) or $100;
+  RangeValue := FRange;
+  LowValue := FLow;
+  repeat
+    Bit := (Symbol shr 7) and 1;
+    Prob := @P^[Symbol shr 8];
+    Bound := (RangeValue shr LZMA_NUM_BIT_MODEL_TOTAL_BITS) * UInt32(Prob^);
+    if Bit = 0 then
+    begin
+      RangeValue := Bound;
+      Prob^ := LzmaProbUpdate0(Prob^);
+    end
+    else
+    begin
+      LowValue := LowValue + Bound;
+      RangeValue := RangeValue - Bound;
+      Prob^ := LzmaProbUpdate1(Prob^);
+    end;
+    if RangeValue < LZMA_TOP_VALUE then
+    begin
+      RangeValue := RangeValue shl 8;
+      // Output callbacks and failures must observe the complete current state.
+      FRange := RangeValue;
+      FLow := LowValue;
+      ShiftLow;
+      RangeValue := FRange;
+      LowValue := FLow;
+    end;
+    Symbol := Symbol shl 1;
+  until Symbol >= $10000;
+  FRange := RangeValue;
+  FLow := LowValue;
+end;
+
+{$ENDIF}
+
+{$ELSE}
+var
+  P: PProbArray;
+  Symbol: UInt32;
+  Bit: UInt32;
+begin
+  P := @Probs;
+  Symbol := UInt32(Value) or $100;
+  repeat
+    Bit := (Symbol shr 7) and 1;
+    EncodeBit(P^[Symbol shr 8], Bit);
+    Symbol := Symbol shl 1;
+  until Symbol >= $10000;
+end;
+
+{$ENDIF}
 procedure TLzmaRangeEncoder.EncodeMatchedLiteral(var Probs; const Value, MatchByte: Byte);
+{$IFDEF CPUX64}
+{$IFOPT Q+}
 var
   P: PProbArray;
   Symbol: UInt32;
@@ -496,6 +1244,86 @@ begin
   until Symbol >= $10000;
 end;
 
+{$ELSE}
+type
+  PLiteralProb = ^CLzmaProb;
+var
+  P: PProbArray;
+  Symbol: UInt32;
+  Match: UInt32;
+  MatchBit: UInt32;
+  Bit: UInt32;
+  Offset: UInt32;
+  Prob: PLiteralProb;
+  Bound, RangeValue: UInt32;
+  LowValue: UInt64;
+begin
+  P := @Probs;
+  Symbol := UInt32(Value) or $100;
+  Match := UInt32(MatchByte);
+  Offset := $100;
+  RangeValue := FRange;
+  LowValue := FLow;
+  repeat
+    Match := Match shl 1;
+    MatchBit := Match and Offset;
+    Bit := (Symbol shr 7) and 1;
+    Prob := @P^[Offset + MatchBit + (Symbol shr 8)];
+    Bound := (RangeValue shr LZMA_NUM_BIT_MODEL_TOTAL_BITS) * UInt32(Prob^);
+    if Bit = 0 then
+    begin
+      RangeValue := Bound;
+      Prob^ := LzmaProbUpdate0(Prob^);
+    end
+    else
+    begin
+      LowValue := LowValue + Bound;
+      RangeValue := RangeValue - Bound;
+      Prob^ := LzmaProbUpdate1(Prob^);
+    end;
+    if RangeValue < LZMA_TOP_VALUE then
+    begin
+      RangeValue := RangeValue shl 8;
+      // Output callbacks and failures must observe the complete current state.
+      FRange := RangeValue;
+      FLow := LowValue;
+      ShiftLow;
+      RangeValue := FRange;
+      LowValue := FLow;
+    end;
+    Symbol := Symbol shl 1;
+    Offset := Offset and not (Match xor Symbol);
+  until Symbol >= $10000;
+  FRange := RangeValue;
+  FLow := LowValue;
+end;
+
+{$ENDIF}
+
+{$ELSE}
+var
+  P: PProbArray;
+  Symbol: UInt32;
+  Match: UInt32;
+  MatchBit: UInt32;
+  Bit: UInt32;
+  Offset: UInt32;
+begin
+  P := @Probs;
+  Symbol := UInt32(Value) or $100;
+  Match := UInt32(MatchByte);
+  Offset := $100;
+  repeat
+    Match := Match shl 1;
+    MatchBit := Match and Offset;
+    Bit := (Symbol shr 7) and 1;
+    EncodeBit(P^[Offset + MatchBit + (Symbol shr 8)], Bit);
+    Symbol := Symbol shl 1;
+    Offset := Offset and not (Match xor Symbol);
+  until Symbol >= $10000;
+end;
+
+{$ENDIF}
 procedure TLzmaRangeEncoder.FlushData;
 var
   I: Integer;
@@ -583,6 +1411,16 @@ begin
   Result := LzmaPropsEncode(Aligned);
 end;
 
+class function TLzmaRawEncoder.EffectiveHistorySize(const DictionarySize: UInt64): NativeUInt;
+const
+  kLzmaMaxHistorySize = UInt64(15) shl 28;
+begin
+  if DictionarySize > kLzmaMaxHistorySize then
+    Result := NativeUInt(kLzmaMaxHistorySize)
+  else
+    Result := NativeUInt(DictionarySize);
+end;
+
 class function TLzmaRawEncoder.DefaultProperties(const DictionarySize: UInt64): TLzmaProps;
 begin
   Result.Lc := 3;
@@ -636,11 +1474,13 @@ begin
     RaiseLzmaError(SZ_ERROR_INPUT_EOF, 'Invalid LZMA encoder chunk offset');
   if Count > NativeUInt(Length(Data)) - Offset then
     RaiseLzmaError(SZ_ERROR_INPUT_EOF, 'Truncated LZMA encoder chunk');
+{$IF SizeOf(NativeUInt) > SizeOf(UInt32)}
   if Count > NativeUInt(High(UInt32)) then
     RaiseLzmaError(SZ_ERROR_PARAM, 'Literal-only LZMA chunk is too large');
+{$ENDIF}
 
   InitProbArray(IsMatch, kNumStates * kNumPosStatesMax);
-  SetLength(Literals, $300 shl (Props.Lc + Props.Lp));
+  SetLength(Literals, LzmaEncoderLiteralProbCount(Props));
   InitProbArray(Literals[0], Length(Literals));
   PbMask := (UInt32(1) shl Props.Pb) - 1;
   LpMask := (UInt32(1) shl Props.Lp) - 1;
@@ -859,7 +1699,7 @@ begin
   InitProbArray(Align, TLzmaEncoderConstants.kAlignTableSize);
   InitLenEncoder(LenEncoder);
   InitLenEncoder(RepLenEncoder);
-  SetLength(Literals, $300 shl (Props.Lc + Props.Lp));
+  SetLength(Literals, LzmaEncoderLiteralProbCount(Props));
   if Length(Literals) <> 0 then
     InitProbArray(Literals[0], Length(Literals));
   PbMask := (UInt32(1) shl Props.Pb) - 1;
@@ -913,75 +1753,722 @@ begin
   Result := True;
 end;
 
-class function TLzmaRawEncoder.EncodeGreedyChunk(const Data: TBytes; const Offset, Count: NativeUInt;
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+type
+  PLzmaOptimumStoreContext56 = ^TLzmaOptimumStoreContext56;
+  TLzmaOptimumStoreContext56 = record
+    Price, Len, PathBack, Extra: UInt32;
+    Destination, SourceNode: Pointer;
+  end;
+
+procedure LzmaStoreOptimumNode56(const Context: PLzmaOptimumStoreContext56);
+asm
+        .PARAMS 0
+        MOV     RAX,[RCX].TLzmaOptimumStoreContext56.Destination
+        MOV     RDX,[RCX].TLzmaOptimumStoreContext56.SourceNode
+        MOVDQU  XMM0,[RCX]
+        MOV     R8D,[RCX].TLzmaOptimumStoreContext56.PathBack
+        MOV     R9D,[RCX].TLzmaOptimumStoreContext56.Extra
+        MOV     R10D,[RDX].TLzmaOptimumNode.State
+        MOVDQU  XMM1,[RDX].TLzmaOptimumNode.Reps
+        CMP     R8D,LZMA_OPTIMUM_BACK_LITERAL
+        JE      @@literal
+        CMP     R9D,1
+        JE      @@literal_rep
+        CMP     R8D,4
+        JAE     @@normal_match
+        TEST    R8D,R8D
+        JZ      @@rep_state
+        CMP     R8D,1
+        JE      @@rep_one
+        CMP     R8D,2
+        JE      @@rep_two
+        PSHUFD  XMM1,XMM1,$93
+        JMP     @@rep_state
+@@rep_one:
+        PSHUFD  XMM1,XMM1,$E1
+        JMP     @@rep_state
+@@rep_two:
+        PSHUFD  XMM1,XMM1,$D2
+@@rep_state:
+        MOV     R11D,[RCX].TLzmaOptimumStoreContext56.Len
+        CMP     R11D,1
+        JE      @@short_rep
+        LEA     RDX,LZMA_STATE_REP_NEXT
+        MOV     R10D,[RDX+R10*4]
+        JMP     @@extra_state
+@@short_rep:
+        LEA     RDX,LZMA_STATE_SHORT_REP_NEXT
+        MOV     R10D,[RDX+R10*4]
+        JMP     @@extra_state
+@@normal_match:
+        PSLLDQ  XMM1,4
+        LEA     R11D,[R8-3]
+        MOVD    XMM2,R11D
+        POR     XMM1,XMM2
+        LEA     RDX,LZMA_STATE_MATCH_NEXT
+        MOV     R10D,[RDX+R10*4]
+@@extra_state:
+        CMP     R9D,1
+        JBE     @@commit
+        LEA     RDX,LZMA_STATE_LITERAL_NEXT
+        MOV     R10D,[RDX+R10*4]
+        LEA     RDX,LZMA_STATE_REP_NEXT
+        MOV     R10D,[RDX+R10*4]
+        JMP     @@commit
+@@literal:
+        LEA     RDX,LZMA_STATE_LITERAL_NEXT
+        MOV     R10D,[RDX+R10*4]
+        JMP     @@commit
+@@literal_rep:
+        LEA     RDX,LZMA_STATE_LITERAL_NEXT
+        MOV     R10D,[RDX+R10*4]
+        LEA     RDX,LZMA_STATE_REP_NEXT
+        MOV     R10D,[RDX+R10*4]
+@@commit:
+        // Context inputs, source state and all four reps were captured before
+        // the first target write. Source/destination overlap keeps old staging.
+        MOVD    R11D,XMM0
+        MOV     [RAX].TLzmaOptimumNode.Price,R11D
+        MOV     [RAX].TLzmaOptimumNode.State,R10D
+        MOVDQU  [RAX].TLzmaOptimumNode.Reps,XMM1
+        PSRLDQ  XMM0,4
+        MOVQ    QWORD PTR [RAX].TLzmaOptimumNode.PathLen,XMM0
+        PSRLDQ  XMM0,8
+        MOVD    [RAX].TLzmaOptimumNode.Extra,XMM0
+        PXOR    XMM2,XMM2
+        LEA     RDX,[RAX].TLzmaOptimumNode.PosPrev
+        MOVDQU  [RDX],XMM2
+        MOV     DWORD PTR [RAX].TLzmaOptimumNode.BackPrev2,0
+end;
+{$ENDIF}
+
+
+{$IFDEF LZMA_ENCODER_FLAT_OPTIMUM_FRAME}
+function TEncoderFullOptimumFrame.NumAvailAt(const RelativePos: NativeUInt): UInt32;
+  begin
+    Result := TLzmaEncoderConstants.kMatchMaxLen;
+    if Count - RelativePos < NativeUInt(Result) then
+      Result := UInt32(Count - RelativePos);
+  end;
+
+
+
+function TEncoderFullOptimumFrame.RepLenAtPos(const RelativePos: NativeUInt; const Distance: UInt32): UInt32;
+  var
+    Left: NativeUInt;
+    MaxLen: UInt32;
+    Right: NativeUInt;
+  begin
+    Result := 0;
+    if (Distance = 0) or (RelativePos > Count) or (NativeUInt(Distance) > RelativePos) then
+      Exit;
+    MaxLen := NumAvailAt(RelativePos);
+    if MaxLen > TLzmaEncoderConstants.kMatchMaxLen then
+      MaxLen := TLzmaEncoderConstants.kMatchMaxLen;
+    if MaxLen = 0 then
+      Exit;
+
+    Left := Offset + RelativePos;
+    Right := Left - NativeUInt(Distance);
+    if InputRef^[Left] <> InputRef^[Right] then
+      Exit;
+    Result := 1;
+    if MaxLen = 1 then
+      Exit;
+
+    if InputRef^[Left + 1] <> InputRef^[Right + 1] then
+      Exit;
+    Result := 2 + LzmaCountMatchingBytes(InputRef^, Left + 2, Right + 2, MaxLen - 2);
+  end;
+
+
+procedure TEncoderFullOptimumFrame.InsertRange(const RelativePos, RangeCount: NativeUInt);
+  begin
+    if Owner.FMatchFinderThread <> nil then
+      Owner.FMatchFinderThread.AdvanceTo(Owner.FWindowBase + RelativePos + RangeCount)
+    else if Owner.SdkFinder <> nil then
+      Owner.SdkFinder.InsertRange(RelativePos, RangeCount)
+    else if Owner.Bt4Finder <> nil then
+      Owner.Bt4Finder.InsertRange(RelativePos, RangeCount)
+    else if Owner.Hc5Finder <> nil then
+      Owner.Hc5Finder.SkipRangeMonotonic(RelativePos, RangeCount)
+    else if Owner.Hc4Finder <> nil then
+      Owner.Hc4Finder.InsertRange(RelativePos, RangeCount)
+    else
+      Owner.GreedyFinder.InsertRange(RelativePos, RangeCount);
+  end;
+
+
+procedure TEncoderFullOptimumFrame.EnsureInsertedUntil(const NewInsertedUntil: NativeUInt);
+  var
+    Target: NativeUInt;
+  begin
+    Target := NewInsertedUntil;
+    if Target > Count then
+      Target := Count;
+    if Target <= Owner.InsertedUntil then
+      Exit;
+
+    if (Owner.SdkFinder = nil) and (Owner.Bt4Finder = nil) and (Owner.Hc5Finder = nil) and (Owner.Hc4Finder = nil) and
+      (Owner.GreedyFinder = nil) then
+    begin
+      Owner.InsertedUntil := Target;
+      Exit;
+    end;
+
+    InsertRange(Owner.InsertedUntil, Target - Owner.InsertedUntil);
+    Owner.InsertedUntil := Target;
+  end;
+
+
+procedure TEncoderFullOptimumFrame.MarkInsertedUntil(const NewInsertedUntil: NativeUInt);
+  var
+    Target: NativeUInt;
+  begin
+    Target := NewInsertedUntil;
+    if Target > Count then
+      Target := Count;
+    if Owner.InsertedUntil < Target then
+      Owner.InsertedUntil := Target;
+  end;
+
+
+function TEncoderFullOptimumFrame.ReadMatchDistancesAndInsert(const RelativePos: NativeUInt;
+    var MatchList: TLzmaMatchBuffer): TLzmaMatch;
+  var
+    AvailableLen: UInt32;
+    CurrentTail: NativeUInt;
+  begin
+    EnsureInsertedUntil(RelativePos);
+    if Owner.FMatchFinderThread <> nil then
+      Owner.FMatchFinderThread.ReadAt(Owner.FWindowBase + RelativePos, MatchList)
+    else if Owner.SdkFinder <> nil then
+      Owner.SdkFinder.ReadMatchPairs(RelativePos, MatchList)
+    else if Owner.Bt4Finder <> nil then
+      Owner.Bt4Finder.ReadMatchPairs(RelativePos, MatchList)
+    else if Owner.Hc5Finder <> nil then
+      Owner.Hc5Finder.ReadMatchPairs(RelativePos, MatchList)
+    else if Owner.Hc4Finder <> nil then
+      Owner.Hc4Finder.ReadMatchPairs(RelativePos, MatchList)
+    else
+      Owner.GreedyFinder.ReadMatchPairs(RelativePos, MatchList);
+    MarkInsertedUntil(RelativePos + 1);
+
+    if MatchList.Count = 0 then
+    begin
+      Result.Length := 0;
+      Result.Distance := 0;
+    end
+    else
+    begin
+      Result := MatchList.Last;
+      // Both engine parsers retain raw fb-capped pairs and a separate main match.
+      if Result.Length = Owner.EffectiveFastBytes then
+      begin
+        AvailableLen := NumAvailAt(RelativePos);
+        if Result.Length < AvailableLen then
+        begin
+          CurrentTail := Offset + RelativePos + NativeUInt(Result.Length);
+          Result.Length := Result.Length + LzmaCountMatchingBytes(InputRef^, CurrentTail,
+            CurrentTail - NativeUInt(Result.Distance), AvailableLen - Result.Length);
+        end;
+      end;
+    end;
+    if Owner.FullOptimumState.Enabled then
+    begin
+      AvailableLen := NumAvailAt(RelativePos);
+      if Owner.FullOptimumState.AdditionalOffset < High(UInt32) then
+        Inc(Owner.FullOptimumState.AdditionalOffset);
+      Owner.FullOptimumState.NumAvail := AvailableLen;
+      Owner.FullOptimumState.NumPairs := UInt32(MatchList.Count) * 2;
+      Owner.FullOptimumState.LongestMatchLen := Result.Length;
+      // This state belongs to the encoder; only active cached pairs are read.
+      Owner.FullOptimumState.CachedMatches.CopyPairsFrom(MatchList);
+      Owner.FullOptimumState.CachedMainMatch := Result;
+    end;
+  end;
+
+
+function TEncoderFullOptimumFrame.ReadCurrentMatchDistances(const RelativePos: NativeUInt;
+    var MatchList: TLzmaMatchBuffer): TLzmaMatch;
+  begin
+    if Owner.MatchCache.TryTake(RelativePos, MatchList, Result) then
+      Exit;
+    Result := ReadMatchDistancesAndInsert(RelativePos, MatchList);
+  end;
+
+
+function TEncoderFullOptimumFrame.AvailableAt(const At: UInt32): UInt32;
+    var
+      Remaining: NativeUInt;
+    begin
+      Result := LZMA_FULL_OPTIMUM_NUM_OPTS - 1 - At;
+      Remaining := Count - (Owner.Pos + NativeUInt(At));
+      if Remaining < NativeUInt(Result) then
+        Result := UInt32(Remaining);
+    end;
+
+
+function TEncoderFullOptimumFrame.ProbsAt(const At, AtState: UInt32): TLzmaOptimumProbInput;
+    begin
+      Result := Model.Read(At, AtState, (Owner.Processed + At) and Owner.PbMask);
+    end;
+
+
+function TEncoderFullOptimumFrame.RepLength(const At, Distance, Limit: UInt32): UInt32;
+    begin
+      Result := RepLenAtPos(Owner.Pos + NativeUInt(At), Distance);
+      if Result > Limit then
+        Result := Limit;
+      if Result < TLzmaEncoderConstants.kMatchMinLen then
+        Result := 0;
+    end;
+
+
+function TEncoderFullOptimumFrame.LiteralCost(const At, AtState, RepDistance: UInt32): UInt32;
+    var
+      Relative, LiteralOffset: NativeUInt;
+      Previous, Value, MatchValue: Byte;
+      LiteralState: UInt32;
+      View: TLzmaOptimumLiteralView;
+    begin
+      Relative := Owner.Pos + NativeUInt(At);
+      if Relative = 0 then
+        Previous := 0
+      else
+        Previous := InputRef^[Offset + Relative - 1];
+      Value := InputRef^[Offset + Relative];
+      LiteralState := (((Owner.Processed + At) and Owner.LpMask) shl Owner.LcBits) +
+        (UInt32(Previous) shr Owner.LcShift);
+      LiteralOffset := NativeUInt(LiteralState) * LZMA_LITERAL_PROB_COUNT;
+      View := Default(TLzmaOptimumLiteralView);
+      View.LiteralProbs := PLzmaOptimumLiteralProbs(@Owner.Literals[LiteralOffset]);
+      View.Enabled := True;
+      View.Value := Value;
+      View.UseMatchedLiteral := AtState >= TLzmaEncoderConstants.kNumLitStates;
+      if View.UseMatchedLiteral then
+      begin
+        if (RepDistance = 0) or (NativeUInt(RepDistance) > Relative) then
+          RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid online optimum literal history');
+        MatchValue := InputRef^[Offset + Relative - NativeUInt(RepDistance)];
+        View.MatchByte := MatchValue;
+        Result := LzmaMatchedLiteralPrice(View.LiteralProbs^, Value, MatchValue, Owner.ProbPrices);
+      end
+      else
+        Result := LzmaLiteralPrice(View.LiteralProbs^, Value, Owner.ProbPrices);
+    end;
+
+
+function TEncoderFullOptimumFrame.Rep0Price(const At, AtState: UInt32): UInt32;
+    var
+      Prob: TLzmaOptimumProbInput;
+    begin
+      Prob := ProbsAt(At, AtState);
+      Result := LzmaRepMatchPrefixPrice(Owner.ProbPrices, Prob.IsMatchProb, Prob.IsRepProb) +
+        LzmaRep0LongPrice(Owner.ProbPrices, Prob.IsRepG0Prob, Prob.IsRep0LongProb);
+    end;
+
+
+procedure TEncoderFullOptimumFrame.ExtendFrontier(const Target: UInt32);
+    begin
+      if Target > Last then
+        Last := Target;
+    end;
+
+
+procedure TEncoderFullOptimumFrame.Store(const Target, Price, Len, PathBack, Extra: UInt32;
+      const Source: TLzmaOptimumNode);
+    var
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+      NativeContext: TLzmaOptimumStoreContext56;
+{$ENDIF}
+      Node: TLzmaOptimumNode;
+      Index: Integer;
+      Distance: UInt32;
+    begin
+      if Price >= Owner.FullOptimumState.Nodes[Integer(Target)].Price then
+        Exit;
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+      if Source.State < UInt32(Length(LZMA_STATE_LITERAL_NEXT)) then
+      begin
+        NativeContext.Price := Price;
+        NativeContext.Len := Len;
+        NativeContext.PathBack := PathBack;
+        NativeContext.Extra := Extra;
+        NativeContext.Destination := @Owner.FullOptimumState.Nodes[Integer(Target)];
+        NativeContext.SourceNode := @Source;
+        LzmaStoreOptimumNode56(@NativeContext);
+        Exit;
+      end;
+{$ENDIF}
+      Node := Default(TLzmaOptimumNode);
+      Node.Price := Price;
+      Node.PathLen := Len;
+      Node.PathBack := PathBack;
+      Node.Extra := Extra;
+      Node.Reps := Source.Reps;
+      if PathBack = LZMA_OPTIMUM_BACK_LITERAL then
+        Node.State := LZMA_STATE_LITERAL_NEXT[Source.State]
+      else if (Extra = 1) then
+      begin
+        // Literal + rep0 preserves the source repetition ordering.
+        Node.State := LZMA_STATE_REP_NEXT[LZMA_STATE_LITERAL_NEXT[Source.State]];
+      end
+      else
+      begin
+        if PathBack < 4 then
+        begin
+          Distance := Source.Reps[Integer(PathBack)];
+          for Index := Integer(PathBack) downto 1 do
+            Node.Reps[Index] := Source.Reps[Index - 1];
+          Node.Reps[0] := Distance;
+          if Len = 1 then
+            Node.State := LZMA_STATE_SHORT_REP_NEXT[Source.State]
+          else
+            Node.State := LZMA_STATE_REP_NEXT[Source.State];
+        end
+        else
+        begin
+          Node.Reps[0] := PathBack - 3;
+          Node.Reps[1] := Source.Reps[0];
+          Node.Reps[2] := Source.Reps[1];
+          Node.Reps[3] := Source.Reps[2];
+          Node.State := LZMA_STATE_MATCH_NEXT[Source.State];
+        end;
+        if Extra > 1 then
+          Node.State := LZMA_STATE_REP_NEXT[LZMA_STATE_LITERAL_NEXT[Node.State]];
+      end;
+      Owner.FullOptimumState.Nodes[Integer(Target)] := Node;
+    end;
+
+
+procedure TEncoderFullOptimumFrame.Relax(const Initial: Boolean);
+    var
+      Node: TLzmaOptimumNode;
+      Prob, LiteralProb: TLzmaOptimumProbInput;
+      FullAvailable, Available, PosState, MatchPrice, RepPrice, LitPrice: UInt32;
+      Price, CandidatePrice, Len, Len2, StartLen, RepIndex, FirstState: UInt32;
+      Tail, Target, Distance, PairIndex, NextPos, NextState: UInt32;
+      CurrentByte, MatchByte: Byte;
+      HasRep0, NextIsLit: Boolean;
+    begin
+      Node := Owner.FullOptimumState.Nodes[Integer(Cur)];
+      Prob := ProbsAt(Cur, Node.State);
+      PosState := (Owner.Processed + Cur) and Owner.PbMask;
+      FullAvailable := AvailableAt(Cur);
+      Available := FullAvailable;
+      if Available > Owner.EffectiveFastBytes then
+        Available := Owner.EffectiveFastBytes;
+      CurrentByte := InputRef^[Offset + Owner.Pos + NativeUInt(Cur)];
+      HasRep0 := (Node.Reps[0] <> 0) and
+        (NativeUInt(Node.Reps[0]) <= Owner.Pos + NativeUInt(Cur));
+      MatchByte := 0;
+      if HasRep0 then
+        MatchByte := InputRef^[Offset + Owner.Pos + NativeUInt(Cur) - NativeUInt(Node.Reps[0])];
+      MatchPrice := Node.Price + LzmaBitPrice(Owner.ProbPrices, Prob.IsMatchProb, 1);
+      RepPrice := MatchPrice + LzmaBitPrice(Owner.ProbPrices, Prob.IsRepProb, 1);
+      LitPrice := Node.Price + LzmaBitPrice(Owner.ProbPrices, Prob.IsMatchProb, 0);
+      NextIsLit := False;
+      if (not Initial) and
+        (((Owner.FullOptimumState.Nodes[Integer(Cur + 1)].Price <> High(UInt32)) and
+          HasRep0 and (MatchByte = CurrentByte)) or
+         (LitPrice > Owner.FullOptimumState.Nodes[Integer(Cur + 1)].Price)) then
+        LitPrice := 0
+      else
+      begin
+        Inc(LitPrice, LiteralCost(Cur, Node.State, Node.Reps[0]));
+        if LitPrice < Owner.FullOptimumState.Nodes[Integer(Cur + 1)].Price then
+        begin
+          Store(Cur + 1, LitPrice, 1, LZMA_OPTIMUM_BACK_LITERAL, 0, Node);
+          NextIsLit := True;
+        end;
+      end;
+
+      // Initial short rep has its own SDK condition. Interior short reps require
+      // literal state and preserve the SDK next-node/tie suppression rules.
+      if HasRep0 and (MatchByte = CurrentByte) and
+        ((Initial and (RepLens[0] = 0)) or
+         ((not Initial) and (Node.State < TLzmaEncoderConstants.kNumLitStates) and
+          (RepPrice < Owner.FullOptimumState.Nodes[Integer(Cur + 1)].Price) and
+          ((Owner.FullOptimumState.Nodes[Integer(Cur + 1)].PathLen < 2) or
+           (Owner.FullOptimumState.Nodes[Integer(Cur + 1)].PathBack <> 0)))) then
+      begin
+        Price := RepPrice + LzmaShortRepPrice(Owner.ProbPrices,
+          Prob.IsRepG0Prob, Prob.IsRep0LongProb);
+        if Price < Owner.FullOptimumState.Nodes[Integer(Cur + 1)].Price then
+        begin
+          Store(Cur + 1, Price, 1, 0, 0, Node);
+          NextIsLit := False;
+        end;
+      end;
+      if FullAvailable < 2 then
+        Exit;
+
+      if (not Initial) and (not NextIsLit) and (LitPrice <> 0) and HasRep0 and
+        (MatchByte <> CurrentByte) and (FullAvailable > 2) then
+      begin
+        Tail := RepLength(Cur + 1, Node.Reps[0], FullAvailable - 1);
+        if Tail > Owner.EffectiveFastBytes then
+          Tail := Owner.EffectiveFastBytes;
+        if Tail >= 2 then
+        begin
+          Target := Cur + 1 + Tail;
+          ExtendFrontier(Target);
+          NextState := LZMA_STATE_LITERAL_NEXT[Node.State];
+          Price := LitPrice + Rep0Price(Cur + 1, NextState) +
+            LzmaLenPrice(Owner.RepLenPrices, (Owner.Processed + Cur + 1) and Owner.PbMask, Tail);
+          Store(Target, Price, Tail, 0, 1, Node);
+        end;
+      end;
+
+      StartLen := TLzmaEncoderConstants.kMatchMinLen;
+      for RepIndex := 0 to 3 do
+      begin
+        if Initial then
+          Len := RepLens[Integer(RepIndex)]
+        else
+          Len := RepLength(Cur, Node.Reps[Integer(RepIndex)], Available);
+        if Len < 2 then
+          Continue;
+        ExtendFrontier(Cur + Len);
+        Price := RepPrice + LzmaPureRepPrice(Owner.ProbPrices, Prob.IsRepG0Prob,
+          Prob.IsRepG1Prob, Prob.IsRepG2Prob, Prob.IsRep0LongProb, RepIndex);
+        Len2 := Len;
+        repeat
+          CandidatePrice := Price + LzmaLenPrice(Owner.RepLenPrices, PosState, Len2);
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFOPT Q-}
+          if CandidatePrice < Owner.FullOptimumState.Nodes[Integer(Cur + Len2)].Price then
+{$ENDIF}
+{$ENDIF}
+            Store(Cur + Len2, CandidatePrice, Len2, RepIndex, 0, Node);
+          Dec(Len2);
+        until Len2 < 2;
+        if RepIndex = 0 then
+          StartLen := Len + 1;
+
+        if Initial or (FullAvailable <= Len + 2) then
+          Continue;
+        Tail := RepLength(Cur + Len + 1, Node.Reps[Integer(RepIndex)],
+          FullAvailable - Len - 1);
+        if Tail > Owner.EffectiveFastBytes then
+          Tail := Owner.EffectiveFastBytes;
+        if Tail < 2 then
+          Continue;
+        Target := Cur + Len + 1 + Tail;
+        ExtendFrontier(Target);
+        FirstState := LZMA_STATE_REP_NEXT[Node.State];
+        LiteralProb := ProbsAt(Cur + Len, FirstState);
+        CandidatePrice := Price + LzmaLenPrice(Owner.RepLenPrices, PosState, Len) +
+          LzmaBitPrice(Owner.ProbPrices, LiteralProb.IsMatchProb, 0) +
+          LiteralCost(Cur + Len, FirstState, Node.Reps[Integer(RepIndex)]);
+        NextPos := Cur + Len + 1;
+        NextState := LZMA_STATE_LITERAL_NEXT[FirstState];
+        Inc(CandidatePrice, Rep0Price(NextPos, NextState) +
+          LzmaLenPrice(Owner.RepLenPrices, (Owner.Processed + NextPos) and Owner.PbMask, Tail));
+        Store(Target, CandidatePrice, Tail, RepIndex, Len + 1, Node);
+      end;
+
+      // Preserve SDK match-length traversal and extra-path ordering at each
+      // actual pair boundary, rather than a separate extras-before-matches pass.
+      if MainLen > Available then
+      begin
+        MainLen := Available;
+        // SDK clips the first covering pair and excludes all later pairs.
+        // Keeping Count would introduce duplicate clipped length boundaries.
+        PairIndex := 0;
+        while MainLen > Owner.Matches.Items[Integer(PairIndex)].Length do
+          Inc(PairIndex);
+        Owner.Matches.Items[Integer(PairIndex)].Length := MainLen;
+        Owner.Matches.Count := Integer(PairIndex) + 1;
+      end;
+      if MainLen < StartLen then
+        Exit;
+      ExtendFrontier(Cur + MainLen);
+      Price := MatchPrice + LzmaBitPrice(Owner.ProbPrices, Prob.IsRepProb, 0);
+      PairIndex := 0;
+      while StartLen > Owner.Matches.Items[Integer(PairIndex)].Length do
+        Inc(PairIndex);
+      Len := StartLen;
+      repeat
+        Distance := Owner.Matches.Items[Integer(PairIndex)].Distance;
+        CandidatePrice := Price + LzmaLenPrice(Owner.LenPrices, PosState, Len) +
+          LzmaMatchDistancePrice(Owner.DistancePrices, Len, Distance);
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFOPT Q-}
+        if CandidatePrice < Owner.FullOptimumState.Nodes[Integer(Cur + Len)].Price then
+{$ENDIF}
+{$ENDIF}
+          Store(Cur + Len, CandidatePrice, Len, Distance + 3, 0, Node);
+        if Len = Owner.Matches.Items[Integer(PairIndex)].Length then
+        begin
+          if (not Initial) and (FullAvailable > Len + 2) then
+          begin
+            Tail := RepLength(Cur + Len + 1, Distance, FullAvailable - Len - 1);
+            if Tail > Owner.EffectiveFastBytes then
+              Tail := Owner.EffectiveFastBytes;
+            if Tail >= 2 then
+            begin
+              Target := Cur + Len + 1 + Tail;
+              ExtendFrontier(Target);
+              FirstState := LZMA_STATE_MATCH_NEXT[Node.State];
+              LiteralProb := ProbsAt(Cur + Len, FirstState);
+              Inc(CandidatePrice, LzmaBitPrice(Owner.ProbPrices, LiteralProb.IsMatchProb, 0) +
+                LiteralCost(Cur + Len, FirstState, Distance));
+              NextPos := Cur + Len + 1;
+              NextState := LZMA_STATE_LITERAL_NEXT[FirstState];
+              Inc(CandidatePrice, Rep0Price(NextPos, NextState) +
+                LzmaLenPrice(Owner.RepLenPrices, (Owner.Processed + NextPos) and Owner.PbMask, Tail));
+              Store(Target, CandidatePrice, Tail, Distance + 3, Len + 1, Node);
+            end;
+          end;
+          Inc(PairIndex);
+          if PairIndex = UInt32(Owner.Matches.Count) then
+            Break;
+        end;
+        Inc(Len);
+      until False;
+    end;
+
+
+function TEncoderFullOptimumFrame.Run(out Back: UInt32): UInt32;
+  var
+    I, J: UInt32;
+  begin
+    Back := LZMA_OPTIMUM_BACK_LITERAL;
+    if LzmaFullOptimumTryReplay(Owner.FullOptimumState, Result, Back) then
+    begin
+      Inc(Owner.LocalFullOptimumDecisionCount);
+      Exit;
+    end;
+    Result := 1;
+    if LzmaFullOptimumBeginDecision(Owner.FullOptimumState, NumAvail, NumPairs, MainLen) then
+      MainMatch := ReadCurrentMatchDistances(Owner.Pos, Owner.Matches)
+    else if not LzmaFullOptimumLoadCachedMatches(Owner.FullOptimumState, Owner.Matches, MainMatch) then
+      RaiseLzmaError(SZ_ERROR_FAIL, 'Missing retained online optimum match');
+    NumAvail := NumAvailAt(Owner.Pos);
+    if NumAvail < TLzmaEncoderConstants.kMatchMinLen then
+    begin
+      Owner.FullOptimumState.BackRes := Back;
+      Exit;
+    end;
+    MainLen := MainMatch.Length;
+    BestRep := 0;
+    FillChar(RepLens, SizeOf(RepLens), 0);
+    for I := 0 to 3 do
+    begin
+      RepLens[Integer(I)] := RepLength(0, Owner.Reps[I], NumAvail);
+      if RepLens[Integer(I)] > RepLens[Integer(BestRep)] then
+        BestRep := I;
+      if RepLens[Integer(I)] = TLzmaEncoderConstants.kMatchMaxLen then
+        Break;
+    end;
+    if RepLens[Integer(BestRep)] >= Owner.EffectiveFastBytes then
+    begin
+      Back := BestRep;
+      Result := RepLens[Integer(BestRep)];
+      EnsureInsertedUntil(Owner.Pos + NativeUInt(Result));
+      LzmaFullOptimumMovePos(Owner.FullOptimumState, Result - 1);
+      Owner.FullOptimumState.BackRes := Back;
+      Exit;
+    end;
+    if MainLen >= Owner.EffectiveFastBytes then
+    begin
+      Back := MainMatch.Distance + 3;
+      Result := MainLen;
+      EnsureInsertedUntil(Owner.Pos + NativeUInt(Result));
+      LzmaFullOptimumMovePos(Owner.FullOptimumState, Result - 1);
+      Owner.FullOptimumState.BackRes := Back;
+      Exit;
+    end;
+
+    Last := MainLen;
+    if Last < RepLens[Integer(BestRep)] then
+      Last := RepLens[Integer(BestRep)];
+    if (Last < 2) and
+      ((Owner.Reps[0] = 0) or (NativeUInt(Owner.Reps[0]) > Owner.Pos) or
+       (InputRef^[Offset + Owner.Pos] <> InputRef^[Offset + Owner.Pos - NativeUInt(Owner.Reps[0])])) then
+    begin
+      Owner.FullOptimumState.BackRes := Back;
+      Exit;
+    end;
+    // Init/reset already allocates these 2048 nodes. Previous solves clear only
+    // touched prices after Backward, preserving the SDK amortized work bound.
+    if Length(Owner.FullOptimumState.Nodes) <> LZMA_FULL_OPTIMUM_NUM_OPTS then
+      RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid online optimum node capacity');
+    Owner.FullOptimumState.Nodes[0] := Default(TLzmaOptimumNode);
+    Owner.FullOptimumState.Nodes[0].Price := 0;
+    Owner.FullOptimumState.Nodes[0].State := Owner.State;
+    for I := 0 to 3 do
+      Owner.FullOptimumState.Nodes[0].Reps[Integer(I)] := Owner.Reps[I];
+    Model := TLzmaOptimumProbModelView.Borrow(Owner.IsMatch, Owner.IsRep, Owner.IsRepG0,
+      Owner.IsRepG1, Owner.IsRepG2, Owner.IsRep0Long, LZMA_FULL_OPTIMUM_NUM_OPTS);
+    Cur := 0;
+    Relax(True);
+    if Last < 2 then
+    begin
+      Back := Owner.FullOptimumState.Nodes[1].PathBack;
+      Owner.FullOptimumState.Nodes[1].Price := High(UInt32);
+      Owner.FullOptimumState.BackRes := Back;
+      Exit(1);
+    end;
+    repeat
+      Inc(Cur);
+      if Cur = Last then
+        Break;
+      if Cur >= LZMA_FULL_OPTIMUM_NUM_OPTS - 64 then
+      begin
+        I := Cur;
+        for J := Cur + 1 to Last do
+          if Owner.FullOptimumState.Nodes[Integer(I)].Price >=
+            Owner.FullOptimumState.Nodes[Integer(J)].Price then
+            I := J;
+        if I <> Cur then
+        begin
+          EnsureInsertedUntil(Owner.Pos + NativeUInt(I));
+          LzmaFullOptimumMovePos(Owner.FullOptimumState, I - Cur);
+        end;
+        Cur := I;
+        Break;
+      end;
+      MainMatch := ReadMatchDistancesAndInsert(Owner.Pos + NativeUInt(Cur), Owner.Matches);
+      MainLen := MainMatch.Length;
+      // The just-read query remains cached at AdditionalOffset=cur+1. Replay
+      // covers only cur bytes; after commit the retained query has offset1.
+      if MainLen >= Owner.EffectiveFastBytes then
+        Break;
+      Relax(False);
+    until False;
+    if not LzmaFullOptimumBackward(Owner.FullOptimumState, Cur, Result, Back) then
+      RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid online optimum backward path');
+    for I := 1 to Last do
+      Owner.FullOptimumState.Nodes[Integer(I)].Price := High(UInt32);
+    Inc(Owner.LocalFullOptimumDecisionCount);
+    Owner.FullOptimumState.BackRes := Back;
+  end;
+
+
+{$ENDIF}
+
+function TLzmaEncoderContext.Encode(const Data: TBytes; const Offset, Count: NativeUInt;
   const Props: TLzmaProps; const FastBytes: Integer; const CutValue: UInt32;
   const MatchFinderKind: TLzmaMatchFinderKind; const WriteEndMarker: Boolean;
   const EnableOptimumWindow: Boolean; const Progress: TLzma2ProgressEvent;
-  const FullOptimumDecisionCount: PUInt64): TBytes;
+  const FullOptimumDecisionCount: PUInt64; const BoundedFrame, FinalInput: Boolean;
+  const FrameUnpackLimit: NativeUInt): TBytes;
 const
   kProgressInterval = UInt64(1) shl 20;
+  kMaxFramePackSize = TLzmaStatefulFrameLimits.MaxPackedSize;
+  kFrameUnpackReserve = TLzmaStatefulFrameLimits.UnpackReserve;
+  kFramePackReserve = TLzmaStatefulFrameLimits.PackReserve;
 var
-  IsMatch: array[0..TLzmaEncoderConstants.kNumStates - 1,
-    0..TLzmaEncoderConstants.kNumPosStatesMax - 1] of CLzmaProb;
-  IsRep: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRepG0: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRepG1: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRepG2: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRep0Long: array[0..TLzmaEncoderConstants.kNumStates - 1,
-    0..TLzmaEncoderConstants.kNumPosStatesMax - 1] of CLzmaProb;
-  PosSlot: TLzmaPosSlotProbs;
-  PosDecoders: TLzmaPosDecoderProbs;
-  Align: TLzmaAlignProbs;
-  LenEncoder: TLenEncoder;
-  RepLenEncoder: TLenEncoder;
-  Literals: array of CLzmaProb;
-  GreedyFinder: TLzmaGreedyMatchFinder;
-  Hc4Finder: TLzmaHashChain4MatchFinder;
-  Hc5Finder: TLzmaHashChain5MatchFinder;
-  Bt4Finder: TLzmaBinaryTree4MatchFinder;
-  Encoder: TLzmaRangeEncoder;
-  Pos: NativeUInt;
-  Processed: UInt32;
-  State: UInt32;
-  Reps: array[0..3] of UInt32;
-  PosState: UInt32;
-  LitState: UInt32;
-  LiteralOffset: NativeUInt;
-  Value: Byte;
-  PrevByte: Byte;
-  MatchByte: Byte;
-  Matches: TLzmaMatchBuffer;
-  EffectiveFastBytes: UInt32;
-  NumPosStates: UInt32;
-  ProbPrices: TLzmaProbPrices;
-  LenPrices: TLzmaLenPriceEncoder;
-  RepLenPrices: TLzmaLenPriceEncoder;
-  DistancePrices: TLzmaDistancePriceEncoder;
-  BestRepIndex: Integer;
-  BestRepLen: UInt32;
-  RepLen: UInt32;
-  BackRes: UInt32;
-  LenRes: UInt32;
-  PbMask: UInt32;
-  LpMask: UInt32;
-  LcBits: UInt32;
-  LcShift: UInt32;
-  PeriodicDistance: UInt32;
-  FullOptimumState: TLzmaFullOptimumState;
-
-type
-  PLzmaLiteralProbs = ^TLzmaLiteralProbs;
-
-var
-  PricedLiteralPrice: UInt32;
-  PricedShortRepPrice: UInt32;
-  InsertedUntil: NativeUInt;
-  MatchCache: TLzmaFastParserMatchCache;
-  NextProgressAt: UInt64;
-  LocalFullOptimumDecisionCount: UInt64;
-  OptimumReplayCount: UInt32;
-  OptimumReplayIndex: UInt32;
-  OptimumReplayQueue: TArray<TLzmaOptimumDecision>;
+{$IFDEF LZMA_ENCODER_FLAT_OPTIMUM_FRAME}
+  FullFrame: TEncoderFullOptimumFrame;
+{$ENDIF}
+  InitialDecisionCount: UInt64;
+  ContinuingSession: Boolean;
+  FinderInputCount: NativeUInt;
 
   procedure MaybeReportProgress;
   var
@@ -992,7 +2479,7 @@ var
     Processed64 := Processed;
     if Processed64 < NextProgressAt then
       Exit;
-    ReportProgress(Progress, Processed64, 0);
+    ReportProgress(Progress, Processed64, Encoder.FCommittedOutputSize);
     repeat
       Inc(NextProgressAt, kProgressInterval);
     until NextProgressAt > Processed64;
@@ -1008,7 +2495,11 @@ var
   begin
     Period := 0;
     Result := False;
+{$IF SizeOf(NativeUInt) > SizeOf(UInt32)}
+    if (Count < kMinPeriodicFastPathSize) or (Count > NativeUInt(High(UInt32))) then
+{$ELSE}
     if Count < kMinPeriodicFastPathSize then
+{$ENDIF}
       Exit;
 
     for Candidate := 1 to kMaxPeriodicDistance do
@@ -1028,90 +2519,11 @@ var
 
   function NumAvailAt(const RelativePos: NativeUInt): UInt32;
   begin
-    Result := UInt32(Count - RelativePos);
-    if Result > TLzmaEncoderConstants.kMatchMaxLen then
-      Result := TLzmaEncoderConstants.kMatchMaxLen;
+    Result := TLzmaEncoderConstants.kMatchMaxLen;
+    if Count - RelativePos < NativeUInt(Result) then
+      Result := UInt32(Count - RelativePos);
   end;
 
-  procedure ClearOptimumReplayQueue;
-  begin
-    OptimumReplayCount := 0;
-    OptimumReplayIndex := 0;
-    SetLength(OptimumReplayQueue, 0);
-  end;
-
-  function IsOptimumReplayDecisionUsable(
-    const Decision: TLzmaOptimumDecision): Boolean;
-  begin
-    Result := False;
-    if (Decision.Len = 0) or (Decision.Len > NumAvailAt(Pos)) then
-      Exit;
-    if Decision.Back = LZMA_OPTIMUM_BACK_LITERAL then
-      Result := Decision.Len = 1
-    else if Decision.Len = 1 then
-      Result := Decision.Back = 0
-    else
-      Result := True;
-  end;
-
-  function TryPopOptimumReplayDecision(out Len, Back: UInt32): Boolean;
-  var
-    Decision: TLzmaOptimumDecision;
-  begin
-    Result := False;
-    if OptimumReplayIndex >= OptimumReplayCount then
-      Exit;
-
-    Decision := OptimumReplayQueue[Integer(OptimumReplayIndex)];
-    if not IsOptimumReplayDecisionUsable(Decision) then
-    begin
-      ClearOptimumReplayQueue;
-      Exit;
-    end;
-
-    Len := Decision.Len;
-    Back := Decision.Back;
-    Inc(OptimumReplayIndex);
-    if OptimumReplayIndex >= OptimumReplayCount then
-      ClearOptimumReplayQueue;
-    Result := True;
-  end;
-
-  function QueueOptimumReplayPath(const Nodes: array of TLzmaOptimumNode;
-    const EndPos: UInt32; out FirstLen, FirstBack: UInt32): Boolean;
-  var
-    BackwardState: TLzmaOptimumBackwardState;
-    DecisionCount: UInt32;
-    Decisions: TArray<TLzmaOptimumDecision>;
-    Index: UInt32;
-  begin
-    Result := False;
-    FirstLen := 0;
-    FirstBack := LZMA_OPTIMUM_BACK_LITERAL;
-    ClearOptimumReplayQueue;
-
-    SetLength(Decisions, Integer(EndPos));
-    if not LzmaOptimumReplaySdkBackward(Nodes, EndPos, Decisions, DecisionCount,
-      BackwardState) then
-      Exit;
-    if (DecisionCount = 0) or not IsOptimumReplayDecisionUsable(Decisions[0]) then
-      Exit;
-    if BackwardState.QueueCount <> DecisionCount - 1 then
-      Exit;
-
-    FirstLen := Decisions[0].Len;
-    FirstBack := Decisions[0].Back;
-    if DecisionCount > 1 then
-    begin
-      SetLength(OptimumReplayQueue, Integer(DecisionCount - 1));
-      for Index := 1 to DecisionCount - 1 do
-        OptimumReplayQueue[Integer(Index - 1)] := Decisions[Integer(Index)];
-      OptimumReplayCount := DecisionCount - 1;
-      OptimumReplayIndex := 0;
-    end;
-
-    Result := True;
-  end;
 
   function RepLenAtPos(const RelativePos: NativeUInt; const Distance: UInt32): UInt32;
   var
@@ -1148,7 +2560,11 @@ var
 
   procedure InsertRange(const RelativePos, RangeCount: NativeUInt);
   begin
-    if Bt4Finder <> nil then
+    if FMatchFinderThread <> nil then
+      FMatchFinderThread.AdvanceTo(FWindowBase + RelativePos + RangeCount)
+    else if SdkFinder <> nil then
+      SdkFinder.InsertRange(RelativePos, RangeCount)
+    else if Bt4Finder <> nil then
       Bt4Finder.InsertRange(RelativePos, RangeCount)
     else if Hc5Finder <> nil then
       Hc5Finder.SkipRangeMonotonic(RelativePos, RangeCount)
@@ -1168,7 +2584,7 @@ var
     if Target <= InsertedUntil then
       Exit;
 
-    if (Bt4Finder = nil) and (Hc5Finder = nil) and (Hc4Finder = nil) and
+    if (SdkFinder = nil) and (Bt4Finder = nil) and (Hc5Finder = nil) and (Hc4Finder = nil) and
       (GreedyFinder = nil) then
     begin
       InsertedUntil := Target;
@@ -1190,37 +2606,25 @@ var
       InsertedUntil := Target;
   end;
 
-  function ReadMatchDistances(const RelativePos: NativeUInt; var MatchList: TLzmaMatchBuffer): TLzmaMatch;
-  begin
-    if Bt4Finder <> nil then
-      Bt4Finder.GetMatches(RelativePos, MatchList)
-    else if Hc5Finder <> nil then
-      Hc5Finder.GetMatches(RelativePos, MatchList)
-    else if Hc4Finder <> nil then
-      Hc4Finder.GetMatches(RelativePos, MatchList)
-    else
-      GreedyFinder.GetMatches(RelativePos, MatchList);
-    if MatchList.Count = 0 then
-    begin
-      Result.Length := 0;
-      Result.Distance := 0;
-    end
-    else
-      Result := MatchList.Last;
-  end;
-
   function ReadMatchDistancesAndInsert(const RelativePos: NativeUInt;
     var MatchList: TLzmaMatchBuffer): TLzmaMatch;
+  var
+    AvailableLen: UInt32;
+    CurrentTail: NativeUInt;
   begin
     EnsureInsertedUntil(RelativePos);
-    if Bt4Finder <> nil then
-      Bt4Finder.ReadMatches(RelativePos, MatchList)
+    if FMatchFinderThread <> nil then
+      FMatchFinderThread.ReadAt(FWindowBase + RelativePos, MatchList)
+    else if SdkFinder <> nil then
+      SdkFinder.ReadMatchPairs(RelativePos, MatchList)
+    else if Bt4Finder <> nil then
+      Bt4Finder.ReadMatchPairs(RelativePos, MatchList)
     else if Hc5Finder <> nil then
-      Hc5Finder.ReadMatches(RelativePos, MatchList)
+      Hc5Finder.ReadMatchPairs(RelativePos, MatchList)
     else if Hc4Finder <> nil then
-      Hc4Finder.ReadMatches(RelativePos, MatchList)
+      Hc4Finder.ReadMatchPairs(RelativePos, MatchList)
     else
-      GreedyFinder.ReadMatches(RelativePos, MatchList);
+      GreedyFinder.ReadMatchPairs(RelativePos, MatchList);
     MarkInsertedUntil(RelativePos + 1);
 
     if MatchList.Count = 0 then
@@ -1229,10 +2633,32 @@ var
       Result.Distance := 0;
     end
     else
+    begin
       Result := MatchList.Last;
+      // Both engine parsers retain raw fb-capped pairs and a separate main match.
+      if Result.Length = EffectiveFastBytes then
+      begin
+        AvailableLen := NumAvailAt(RelativePos);
+        if Result.Length < AvailableLen then
+        begin
+          CurrentTail := Offset + RelativePos + NativeUInt(Result.Length);
+          Result.Length := Result.Length + LzmaCountMatchingBytes(Data, CurrentTail,
+            CurrentTail - NativeUInt(Result.Distance), AvailableLen - Result.Length);
+        end;
+      end;
+    end;
     if FullOptimumState.Enabled then
-      LzmaFullOptimumNoteReadMatchDistances(FullOptimumState,
-        NumAvailAt(RelativePos), MatchList, Result);
+    begin
+      AvailableLen := NumAvailAt(RelativePos);
+      if FullOptimumState.AdditionalOffset < High(UInt32) then
+        Inc(FullOptimumState.AdditionalOffset);
+      FullOptimumState.NumAvail := AvailableLen;
+      FullOptimumState.NumPairs := UInt32(MatchList.Count) * 2;
+      FullOptimumState.LongestMatchLen := Result.Length;
+      // This state belongs to the encoder; only active cached pairs are read.
+      FullOptimumState.CachedMatches.CopyPairsFrom(MatchList);
+      FullOptimumState.CachedMainMatch := Result;
+    end;
   end;
 
   function ReadCurrentMatchDistances(const RelativePos: NativeUInt;
@@ -1259,34 +2685,6 @@ var
     begin
       if MatchList.Items[MatchIndex].Length > MaxLen then
         MatchList.Items[MatchIndex].Length := MaxLen;
-    end;
-  end;
-
-  procedure ShortenMainMatch(var MainMatch: TLzmaMatch; const MatchList: TLzmaMatchBuffer);
-  var
-    PairIndex: Integer;
-    Candidate: TLzmaMatch;
-  begin
-    if MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen then
-      Exit;
-
-    PairIndex := MatchList.Count - 1;
-    while PairIndex > 0 do
-    begin
-      Candidate := MatchList.Items[PairIndex - 1];
-      if MainMatch.Length <> Candidate.Length + 1 then
-        Break;
-      if not ChangePair(Candidate.Distance, MainMatch.Distance) then
-        Break;
-      MainMatch := Candidate;
-      Dec(PairIndex);
-    end;
-
-    if (MainMatch.Length = TLzmaEncoderConstants.kMatchMinLen) and
-      (MainMatch.Distance - 1 >= $80) then
-    begin
-      MainMatch.Length := 0;
-      MainMatch.Distance := 0;
     end;
   end;
 
@@ -1341,650 +2739,23 @@ var
     LzmaUpdateDistancePriceEncoder(DistancePrices, PosSlot, PosDecoders, Align, ProbPrices);
   end;
 
-  function PreferRepOverMainByPrice(const MainMatch: TLzmaMatch): Boolean;
-  var
-    MatchCandidates: TLzmaMatchBuffer;
-    MatchNodes: array of TLzmaOptimumNode;
-    MatchPrice: UInt32;
-    MaxCandidateLen: UInt32;
-    PricePosState: UInt32;
-    RepLens: array[0..3] of UInt32;
-    RepNodes: array of TLzmaOptimumNode;
-    RepPrice: UInt32;
-    ReplayBack: UInt32;
-    ReplayLen: UInt32;
-  begin
-    Result := False;
-    if (BestRepIndex < 0) or (BestRepLen < TLzmaEncoderConstants.kMatchMinLen) or
-      (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) then
-      Exit;
-    if BestRepIndex > High(RepLens) then
-      Exit;
-
-    RefreshOptimumPriceTables;
-    PricePosState := Processed and PbMask;
-    MaxCandidateLen := MainMatch.Length;
-    if BestRepLen > MaxCandidateLen then
-      MaxCandidateLen := BestRepLen;
-
-    SetLength(RepNodes, Integer(MaxCandidateLen) + 1);
-    SetLength(MatchNodes, Integer(MaxCandidateLen) + 1);
-    LzmaOptimumPrepareNodes(RepNodes, 0, State, Reps);
-    LzmaOptimumPrepareNodes(MatchNodes, 0, State, Reps);
-
-    FillChar(RepLens, SizeOf(RepLens), 0);
-    RepLens[BestRepIndex] := BestRepLen;
-    if not LzmaOptimumRelaxRepCandidates(RepNodes, 0, RepLens, ProbPrices,
-      RepLenPrices, IsMatch[State][PricePosState], IsRep[State], IsRepG0[State],
-      IsRepG1[State], IsRepG2[State], IsRep0Long[State][PricePosState],
-      PricePosState, RepPrice) then
-      Exit;
-    RepPrice := RepNodes[Integer(BestRepLen)].Price;
-    if RepPrice = High(UInt32) then
-      Exit;
-
-    MatchCandidates.Clear;
-    MatchCandidates.Add(MainMatch.Length, MainMatch.Distance);
-    if not LzmaOptimumRelaxMatchCandidates(MatchNodes, 0, MatchCandidates,
-      ProbPrices, LenPrices, DistancePrices, IsMatch[State][PricePosState],
-      IsRep[State], PricePosState, MainMatch.Length, MainMatch.Length,
-      MatchPrice) then
-      Exit;
-    MatchPrice := MatchNodes[Integer(MainMatch.Length)].Price;
-    if MatchPrice = High(UInt32) then
-      Exit;
-
-    if RepPrice <= MatchPrice then
-    begin
-      Result := LzmaOptimumReplayFirstDecision(RepNodes, BestRepLen, ReplayLen,
-        ReplayBack) and (ReplayLen = BestRepLen) and
-        (ReplayBack = UInt32(BestRepIndex));
-      Exit;
-    end;
-
-    LzmaOptimumReplayFirstDecision(MatchNodes, MainMatch.Length, ReplayLen, ReplayBack);
-  end;
-
-  function PreferLiteralThenNextMatchByPrice(const MainMatch, NextMatch: TLzmaMatch): Boolean;
-  var
-    CurrentByte: Byte;
-    LiteralEnd: UInt32;
-    LiteralThenMatchPrice: UInt32;
-    MainMatchCandidates: TLzmaMatchBuffer;
-    MainNodes: array of TLzmaOptimumNode;
-    MatchCandidates: TLzmaMatchBuffer;
-    MatchByteForLiteral: Byte;
-    MatchNodes: array of TLzmaOptimumNode;
-    MatchPrice: UInt32;
-    NextPosState: UInt32;
-    NextState: UInt32;
-    PriceLitState: UInt32;
-    PriceLiteralOffset: NativeUInt;
-    PricePosState: UInt32;
-    PricePrevByte: Byte;
-    ReplayBack: UInt32;
-    ReplayLen: UInt32;
-    UseMatchedLiteral: Boolean;
-  begin
-    Result := False;
-    if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or
-      (NextMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or
-      (MainMatch.Length > EffectiveFastBytes) or (NextMatch.Length > EffectiveFastBytes) or
-      (Pos + 1 >= Count) then
-      Exit;
-
-    RefreshOptimumPriceTables;
-    CurrentByte := Data[Offset + Pos];
-    if Pos = 0 then
-      PricePrevByte := 0
-    else
-      PricePrevByte := Data[Offset + Pos - 1];
-
-    PriceLitState := ((Processed and LpMask) shl LcBits) +
-      (UInt32(PricePrevByte) shr LcShift);
-    PriceLiteralOffset := NativeUInt(PriceLitState) * LZMA_LITERAL_PROB_COUNT;
-    PricePosState := Processed and PbMask;
-    NextPosState := (Processed + 1) and PbMask;
-    NextState := LZMA_STATE_LITERAL_NEXT[State];
-    UseMatchedLiteral := (State >= TLzmaEncoderConstants.kNumLitStates) and (Reps[0] <= Pos);
-    if UseMatchedLiteral then
-      MatchByteForLiteral := Data[Offset + Pos - Reps[0]]
-    else
-      MatchByteForLiteral := 0;
-
-    SetLength(MainNodes, Integer(MainMatch.Length) + 1);
-    LzmaOptimumPrepareNodes(MainNodes, 0, State, Reps);
-    MainMatchCandidates.Clear;
-    MainMatchCandidates.Add(MainMatch.Length, MainMatch.Distance);
-    if not LzmaOptimumRelaxMatchCandidates(MainNodes, 0, MainMatchCandidates,
-      ProbPrices, LenPrices, DistancePrices, IsMatch[State][PricePosState],
-      IsRep[State], PricePosState, MainMatch.Length, MainMatch.Length,
-      MatchPrice) then
-      Exit;
-    MatchPrice := MainNodes[Integer(MainMatch.Length)].Price;
-    if MatchPrice = High(UInt32) then
-      Exit;
-
-    LiteralEnd := 1 + NextMatch.Length;
-    SetLength(MatchNodes, Integer(LiteralEnd) + 1);
-    LzmaOptimumPrepareNodes(MatchNodes, 0, State, Reps);
-
-    if not LzmaOptimumRelaxLiteralCandidate(MatchNodes, 0, ProbPrices,
-      PLzmaLiteralProbs(@Literals[PriceLiteralOffset])^, IsMatch[State][PricePosState],
-      CurrentByte, UseMatchedLiteral, MatchByteForLiteral, LiteralThenMatchPrice) then
-      Exit;
-
-    MatchCandidates.Clear;
-    MatchCandidates.Add(NextMatch.Length, NextMatch.Distance);
-    if not LzmaOptimumRelaxMatchCandidates(MatchNodes, 1, MatchCandidates,
-      ProbPrices, LenPrices, DistancePrices, IsMatch[NextState][NextPosState],
-      IsRep[NextState], NextPosState, NextMatch.Length, NextMatch.Length,
-      LiteralThenMatchPrice) then
-      Exit;
-    LiteralThenMatchPrice := MatchNodes[Integer(LiteralEnd)].Price;
-    if LiteralThenMatchPrice = High(UInt32) then
-      Exit;
-
-    if LiteralThenMatchPrice < MatchPrice then
-      Result := LzmaOptimumReplayFirstDecision(MatchNodes, LiteralEnd, ReplayLen,
-        ReplayBack) and (ReplayLen = 1) and (ReplayBack = LZMA_OPTIMUM_BACK_LITERAL);
-  end;
-
-  function PreferLiteralThenNextRepByPrice(const MainMatch: TLzmaMatch;
-    const NextRepIndex, NextRepLen: UInt32): Boolean;
-  var
-    CurrentByte: Byte;
-    LiteralEnd: UInt32;
-    LiteralThenRepPrice: UInt32;
-    MainMatchCandidates: TLzmaMatchBuffer;
-    MainNodes: array of TLzmaOptimumNode;
-    MatchByteForLiteral: Byte;
-    MatchPrice: UInt32;
-    NextPosState: UInt32;
-    NextState: UInt32;
-    PriceLitState: UInt32;
-    PriceLiteralOffset: NativeUInt;
-    PricePosState: UInt32;
-    PricePrevByte: Byte;
-    RepLens: array[0..3] of UInt32;
-    RepNodes: array of TLzmaOptimumNode;
-    ReplayBack: UInt32;
-    ReplayLen: UInt32;
-    UseMatchedLiteral: Boolean;
-  begin
-    Result := False;
-    if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or
-      (NextRepLen < TLzmaEncoderConstants.kMatchMinLen) or
-      (MainMatch.Length > EffectiveFastBytes) or (NextRepLen > EffectiveFastBytes) or
-      (Pos + 1 >= Count) then
-      Exit;
-    if NextRepIndex > UInt32(High(RepLens)) then
-      Exit;
-
-    RefreshOptimumPriceTables;
-    CurrentByte := Data[Offset + Pos];
-    if Pos = 0 then
-      PricePrevByte := 0
-    else
-      PricePrevByte := Data[Offset + Pos - 1];
-
-    PriceLitState := ((Processed and LpMask) shl LcBits) +
-      (UInt32(PricePrevByte) shr LcShift);
-    PriceLiteralOffset := NativeUInt(PriceLitState) * LZMA_LITERAL_PROB_COUNT;
-    PricePosState := Processed and PbMask;
-    NextPosState := (Processed + 1) and PbMask;
-    NextState := LZMA_STATE_LITERAL_NEXT[State];
-    UseMatchedLiteral := (State >= TLzmaEncoderConstants.kNumLitStates) and (Reps[0] <= Pos);
-    if UseMatchedLiteral then
-      MatchByteForLiteral := Data[Offset + Pos - Reps[0]]
-    else
-      MatchByteForLiteral := 0;
-
-    SetLength(MainNodes, Integer(MainMatch.Length) + 1);
-    LzmaOptimumPrepareNodes(MainNodes, 0, State, Reps);
-    MainMatchCandidates.Clear;
-    MainMatchCandidates.Add(MainMatch.Length, MainMatch.Distance);
-    if not LzmaOptimumRelaxMatchCandidates(MainNodes, 0, MainMatchCandidates,
-      ProbPrices, LenPrices, DistancePrices, IsMatch[State][PricePosState],
-      IsRep[State], PricePosState, MainMatch.Length, MainMatch.Length,
-      MatchPrice) then
-      Exit;
-    MatchPrice := MainNodes[Integer(MainMatch.Length)].Price;
-    if MatchPrice = High(UInt32) then
-      Exit;
-
-    LiteralEnd := 1 + NextRepLen;
-    SetLength(RepNodes, Integer(LiteralEnd) + 1);
-    LzmaOptimumPrepareNodes(RepNodes, 0, State, Reps);
-
-    if not LzmaOptimumRelaxLiteralCandidate(RepNodes, 0, ProbPrices,
-      PLzmaLiteralProbs(@Literals[PriceLiteralOffset])^, IsMatch[State][PricePosState],
-      CurrentByte, UseMatchedLiteral, MatchByteForLiteral, LiteralThenRepPrice) then
-      Exit;
-
-    FillChar(RepLens, SizeOf(RepLens), 0);
-    RepLens[NextRepIndex] := NextRepLen;
-    if not LzmaOptimumRelaxRepCandidates(RepNodes, 1, RepLens, ProbPrices,
-      RepLenPrices, IsMatch[NextState][NextPosState], IsRep[NextState],
-      IsRepG0[NextState], IsRepG1[NextState], IsRepG2[NextState],
-      IsRep0Long[NextState][NextPosState], NextPosState, LiteralThenRepPrice) then
-      Exit;
-    LiteralThenRepPrice := RepNodes[Integer(LiteralEnd)].Price;
-    if LiteralThenRepPrice = High(UInt32) then
-      Exit;
-
-    if LiteralThenRepPrice < MatchPrice then
-      Result := LzmaOptimumReplayFirstDecision(RepNodes, LiteralEnd, ReplayLen,
-        ReplayBack) and (ReplayLen = 1) and (ReplayBack = LZMA_OPTIMUM_BACK_LITERAL);
-  end;
-
-  function PreferMatchLiteralRep0ByPrice(var MainMatch: TLzmaMatch;
-    const MatchList: TLzmaMatchBuffer): Boolean;
-  var
-    BestCandidate: TLzmaMatch;
-    BestPrice: UInt32;
-    Candidate: TLzmaMatch;
-    CandidateEnd: UInt32;
-    CandidateIndex: Integer;
-    CandidatePathPrice: UInt32;
-    CurrentMatchPrice: UInt32;
-    LiteralByte: Byte;
-    LiteralMatchByte: Byte;
-    LiteralPos: NativeUInt;
-    LiteralPosState: UInt32;
-    LiteralState: UInt32;
-    MatchPosState: UInt32;
-    MatchState: UInt32;
-    Nodes: array of TLzmaOptimumNode;
-    PriceLiteralOffset: NativeUInt;
-    PriceLitState: UInt32;
-    PricePrevByte: Byte;
-    ReplayBack: UInt32;
-    ReplayLen: UInt32;
-    RepLenAfterLiteral: UInt32;
-    RepPosState: UInt32;
-    UseMatchedLiteral: Boolean;
-
-    function PriceCurrentMatchByRelax(const CurrentMatch: TLzmaMatch;
-      const CurrentState, CurrentPosState: UInt32): UInt32;
-    var
-      MatchCandidates: TLzmaMatchBuffer;
-      MatchNodes: array of TLzmaOptimumNode;
-      RelaxedPrice: UInt32;
-    begin
-      Result := High(UInt32);
-      if CurrentMatch.Length < TLzmaEncoderConstants.kMatchMinLen then
-        Exit;
-
-      SetLength(MatchNodes, Integer(CurrentMatch.Length) + 1);
-      LzmaOptimumPrepareNodes(MatchNodes, 0, CurrentState, Reps);
-
-      MatchCandidates.Clear;
-      MatchCandidates.Add(CurrentMatch.Length, CurrentMatch.Distance);
-      if LzmaOptimumRelaxMatchCandidates(MatchNodes, 0, MatchCandidates,
-        ProbPrices, LenPrices, DistancePrices, IsMatch[CurrentState][CurrentPosState],
-        IsRep[CurrentState], CurrentPosState, CurrentMatch.Length, CurrentMatch.Length,
-        RelaxedPrice) then
-        Result := MatchNodes[Integer(CurrentMatch.Length)].Price;
-    end;
-
-  begin
-    Result := False;
-    if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or (MatchList.Count <= 1) then
-      Exit;
-
-    RefreshOptimumPriceTables;
-    BestPrice := High(UInt32);
-    BestCandidate.Length := 0;
-    BestCandidate.Distance := 0;
-    MatchPosState := Processed and PbMask;
-    MatchState := LZMA_STATE_MATCH_NEXT[State];
-    LiteralState := LZMA_STATE_LITERAL_NEXT[MatchState];
-
-    for CandidateIndex := 0 to MatchList.Count - 1 do
-    begin
-      Candidate := MatchList.Items[CandidateIndex];
-      if (Candidate.Length < TLzmaEncoderConstants.kMatchMinLen) or
-        (Candidate.Length >= MainMatch.Length) or (Candidate.Length > EffectiveFastBytes) then
-        Continue;
-
-      LiteralPos := Pos + Candidate.Length;
-      if (LiteralPos + 1 >= Count) or (Candidate.Distance = 0) or (Candidate.Distance > LiteralPos) then
-        Continue;
-
-      RepLenAfterLiteral := RepLenAtPos(LiteralPos + 1, Candidate.Distance);
-      if (RepLenAfterLiteral < TLzmaEncoderConstants.kMatchMinLen) or
-        (RepLenAfterLiteral > EffectiveFastBytes) then
-        Continue;
-
-      LiteralByte := Data[Offset + LiteralPos];
-      PricePrevByte := Data[Offset + LiteralPos - 1];
-      PriceLitState := (((Processed + Candidate.Length) and LpMask) shl LcBits) +
-        (UInt32(PricePrevByte) shr LcShift);
-      PriceLiteralOffset := NativeUInt(PriceLitState) * LZMA_LITERAL_PROB_COUNT;
-      LiteralPosState := (Processed + Candidate.Length) and PbMask;
-      RepPosState := (Processed + Candidate.Length + 1) and PbMask;
-      UseMatchedLiteral := MatchState >= TLzmaEncoderConstants.kNumLitStates;
-      if UseMatchedLiteral then
-        LiteralMatchByte := Data[Offset + LiteralPos - Candidate.Distance]
-      else
-        LiteralMatchByte := 0;
-
-      CurrentMatchPrice := PriceCurrentMatchByRelax(MainMatch, State, MatchPosState);
-      if CurrentMatchPrice = High(UInt32) then
-        Continue;
-
-      CandidateEnd := Candidate.Length + 1 + RepLenAfterLiteral;
-      SetLength(Nodes, Integer(CandidateEnd) + 1);
-      LzmaOptimumPrepareNodes(Nodes, 0, State, Reps);
-      Nodes[Integer(CandidateEnd)].Price := CurrentMatchPrice;
-
-      if LzmaOptimumRelaxMatchLiteralRep0Candidate(Nodes, 0, ProbPrices,
-        PLzmaLiteralProbs(@Literals[PriceLiteralOffset])^, LenPrices, RepLenPrices,
-        DistancePrices, IsMatch[State][MatchPosState], IsRep[State],
-        IsMatch[MatchState][LiteralPosState], IsMatch[LiteralState][RepPosState],
-        IsRep[LiteralState], IsRepG0[LiteralState], IsRep0Long[LiteralState][RepPosState],
-        MatchPosState, LiteralPosState, RepPosState, LiteralByte, UseMatchedLiteral,
-        LiteralMatchByte, Candidate.Length, Candidate.Distance, RepLenAfterLiteral,
-        CandidatePathPrice) and
-        LzmaOptimumReplayFirstDecision(Nodes, CandidateEnd, ReplayLen, ReplayBack) and
-        (ReplayBack >= 3) and (ReplayLen >= TLzmaEncoderConstants.kMatchMinLen) and
-        (CandidatePathPrice < BestPrice) then
-      begin
-        BestPrice := CandidatePathPrice;
-        BestCandidate.Length := ReplayLen;
-        BestCandidate.Distance := ReplayBack - 3;
-      end;
-    end;
-
-    if BestCandidate.Length <> 0 then
-    begin
-      MainMatch := BestCandidate;
-      Result := True;
-    end;
-  end;
-
-  function PreferLiteralLookahead(const MainMatch: TLzmaMatch): Boolean;
-  var
-    NextMatch: TLzmaMatch;
-    I: Integer;
-    LookaheadRepLen: UInt32;
-  begin
-    Result := False;
-    if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or
-      (NumAvailAt(Pos) <= TLzmaEncoderConstants.kMatchMinLen) or (Pos + 1 >= Count) then
-      Exit;
-
-    NextMatch := ReadLookaheadMatch(Pos + 1);
-    if NextMatch.Length >= TLzmaEncoderConstants.kMatchMinLen then
-    begin
-      if PreferLiteralThenNextMatchByPrice(MainMatch, NextMatch) then
-        Exit(True);
-    end;
-
-    for I := 0 to 3 do
-    begin
-      LookaheadRepLen := RepLenAtPos(Pos + 1, Reps[I]);
-      if PreferLiteralThenNextRepByPrice(MainMatch, UInt32(I), LookaheadRepLen) then
-        Exit(True);
-    end;
-  end;
-
-  function GetOptimumWindowLimit: UInt32;
-  begin
-    Result := LZMA_FULL_OPTIMUM_NUM_OPTS - 1;
-  end;
-
-  function TryGetOptimumWindowDecision(const MainMatch: TLzmaMatch;
-    out WindowLen, WindowBack: UInt32): Boolean;
-  var
-    BaselineCandidates: TLzmaMatchBuffer;
-    BaselineNodes: TArray<TLzmaOptimumNode>;
-    BaselineRepLens: TLzmaOptimumRepLens;
-    BestBaselinePrice: UInt32;
-    BaselinePrice: UInt32;
-    LiteralResolver: TLzmaOptimumLiteralResolver;
-    LookaheadMatch: TLzmaMatch;
-    MatchesByPos: TArray<TLzmaMatchBuffer>;
-    Nodes: TArray<TLzmaOptimumNode>;
-    PosIndex: Integer;
-    PosStates: TArray<UInt32>;
-    ProbInputsByPos: TArray<TLzmaOptimumStateProbInputs>;
-    ProbState: Integer;
-    RelativePos: NativeUInt;
-    RepBaselineNodes: TArray<TLzmaOptimumNode>;
-    RepBaselinePrice: UInt32;
-    RepResolver: TLzmaOptimumRepLensResolver;
-    InitialTargetEnd: UInt32;
-    OptimumWindowLimit: UInt32;
-    ReplayBack: UInt32;
-    ReplayLen: UInt32;
-    TargetEnd: UInt32;
-    WindowEnd: UInt32;
-    WindowPrice: UInt32;
-  begin
-    Result := False;
-    WindowLen := 0;
-    WindowBack := LZMA_OPTIMUM_BACK_LITERAL;
-
-    OptimumWindowLimit := GetOptimumWindowLimit;
-    if (not EnableOptimumWindow) or
-      (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or
-      (MainMatch.Length >= EffectiveFastBytes) then
-      Exit;
-
-    InitialTargetEnd := MainMatch.Length;
-    WindowEnd := OptimumWindowLimit;
-    if WindowEnd > NumAvailAt(Pos) then
-      WindowEnd := NumAvailAt(Pos);
-    if InitialTargetEnd > WindowEnd then
-      Exit;
-
-    RefreshOptimumPriceTables;
-
-    SetLength(BaselineNodes, Integer(InitialTargetEnd) + 1);
-    LzmaOptimumPrepareNodes(BaselineNodes, 0, State, Reps);
-    BaselineCandidates.Clear;
-    BaselineCandidates.Add(MainMatch.Length, MainMatch.Distance);
-    if not LzmaOptimumRelaxMatchCandidates(BaselineNodes, 0, BaselineCandidates,
-      ProbPrices, LenPrices, DistancePrices, IsMatch[State][Processed and PbMask],
-      IsRep[State], Processed and PbMask, MainMatch.Length, MainMatch.Length,
-      BaselinePrice) then
-      Exit;
-    BaselinePrice := BaselineNodes[Integer(InitialTargetEnd)].Price;
-    if BaselinePrice = High(UInt32) then
-      Exit;
-    BestBaselinePrice := BaselinePrice;
-
-    if (BestRepIndex >= 0) and
-      (BestRepIndex <= High(BaselineRepLens)) and
-      (BestRepLen >= TLzmaEncoderConstants.kMatchMinLen) then
-    begin
-      FillChar(BaselineRepLens, SizeOf(BaselineRepLens), 0);
-      BaselineRepLens[BestRepIndex] := BestRepLen;
-      SetLength(RepBaselineNodes, Integer(BestRepLen) + 1);
-      LzmaOptimumPrepareNodes(RepBaselineNodes, 0, State, Reps);
-      if LzmaOptimumRelaxRepCandidates(RepBaselineNodes, 0,
-        BaselineRepLens, ProbPrices, RepLenPrices,
-        IsMatch[State][Processed and PbMask], IsRep[State], IsRepG0[State],
-        IsRepG1[State], IsRepG2[State], IsRep0Long[State][Processed and PbMask],
-        Processed and PbMask, RepBaselinePrice) then
-      begin
-        RepBaselinePrice := RepBaselineNodes[Integer(BestRepLen)].Price;
-        if RepBaselinePrice < BestBaselinePrice then
-          BestBaselinePrice := RepBaselinePrice;
-      end;
-    end;
-
-    SetLength(Nodes, Integer(WindowEnd) + 1);
-    SetLength(MatchesByPos, Integer(WindowEnd) + 1);
-    SetLength(PosStates, Integer(WindowEnd) + 1);
-    SetLength(ProbInputsByPos, Integer(WindowEnd) + 1);
-    LzmaOptimumPrepareNodes(Nodes, 0, State, Reps);
-
-    for PosIndex := 0 to Integer(WindowEnd) - 1 do
-    begin
-      RelativePos := Pos + NativeUInt(PosIndex);
-      PosStates[PosIndex] := (Processed + UInt32(PosIndex)) and PbMask;
-
-      for ProbState := 0 to TLzmaEncoderConstants.kNumStates - 1 do
-      begin
-        ProbInputsByPos[PosIndex][ProbState].IsMatchProb :=
-          IsMatch[ProbState][PosStates[PosIndex]];
-        ProbInputsByPos[PosIndex][ProbState].IsRepProb := IsRep[ProbState];
-        ProbInputsByPos[PosIndex][ProbState].IsRepG0Prob := IsRepG0[ProbState];
-        ProbInputsByPos[PosIndex][ProbState].IsRepG1Prob := IsRepG1[ProbState];
-        ProbInputsByPos[PosIndex][ProbState].IsRepG2Prob := IsRepG2[ProbState];
-        ProbInputsByPos[PosIndex][ProbState].IsRep0LongProb :=
-          IsRep0Long[ProbState][PosStates[PosIndex]];
-      end;
-
-      if PosIndex = 0 then
-      begin
-        MatchesByPos[PosIndex] := Matches;
-        ClampMatchBufferLengths(MatchesByPos[PosIndex], EffectiveFastBytes);
-      end
-      else
-      begin
-        LookaheadMatch := ReadMatchDistancesAndInsert(RelativePos, MatchesByPos[PosIndex]);
-        ClampMatchBufferLengths(MatchesByPos[PosIndex], EffectiveFastBytes);
-        if LookaheadMatch.Length > EffectiveFastBytes then
-          LookaheadMatch.Length := EffectiveFastBytes;
-        MatchCache.Store(RelativePos, MatchesByPos[PosIndex], LookaheadMatch);
-      end;
-    end;
-
-    LiteralResolver :=
-      function(const WindowPos: UInt32; const Node: TLzmaOptimumNode;
-        out LiteralInput: TLzmaOptimumLiteralInput): Boolean
-      var
-        MatchByteForLiteral: Byte;
-        PriceLitState: UInt32;
-        PriceLiteralOffset: NativeUInt;
-        PricePrevByte: Byte;
-        LiteralRelativePos: NativeUInt;
-        UseMatchedLiteral: Boolean;
-      begin
-        FillChar(LiteralInput, SizeOf(LiteralInput), 0);
-        LiteralRelativePos := Pos + NativeUInt(WindowPos);
-        Result := LiteralRelativePos < Count;
-        if not Result then
-          Exit;
-
-        if LiteralRelativePos = 0 then
-          PricePrevByte := 0
-        else
-          PricePrevByte := Data[Offset + LiteralRelativePos - 1];
-        PriceLitState := (((Processed + WindowPos) and LpMask) shl LcBits) +
-          (UInt32(PricePrevByte) shr LcShift);
-        PriceLiteralOffset := NativeUInt(PriceLitState) * LZMA_LITERAL_PROB_COUNT;
-        UseMatchedLiteral := (Node.State >= TLzmaEncoderConstants.kNumLitStates) and
-          (Node.Reps[0] > 0) and (NativeUInt(Node.Reps[0]) <= LiteralRelativePos);
-        if UseMatchedLiteral then
-          MatchByteForLiteral := Data[Offset + LiteralRelativePos - NativeUInt(Node.Reps[0])]
-        else
-          MatchByteForLiteral := 0;
-
-        LiteralInput.Enabled := True;
-        LiteralInput.LiteralProbs :=
-          PLzmaLiteralProbs(@Literals[PriceLiteralOffset])^;
-        LiteralInput.Value := Data[Offset + LiteralRelativePos];
-        LiteralInput.UseMatchedLiteral := UseMatchedLiteral;
-        LiteralInput.MatchByte := MatchByteForLiteral;
-      end;
-
-    RepResolver :=
-      procedure(const WindowPos: UInt32; const NodeReps: TLzmaOptimumReps;
-        out RepLens: TLzmaOptimumRepLens)
-      var
-        Left: NativeUInt;
-        MaxLen: UInt32;
-        RepDistance: UInt32;
-        RepIndex: Integer;
-        RepRelativePos: NativeUInt;
-        Right: NativeUInt;
-      begin
-        FillChar(RepLens, SizeOf(RepLens), 0);
-        RepRelativePos := Pos + NativeUInt(WindowPos);
-        for RepIndex := Low(NodeReps) to High(NodeReps) do
-        begin
-          RepDistance := NodeReps[RepIndex];
-          if (RepDistance = 0) or (RepRelativePos > Count) or
-            (NativeUInt(RepDistance) > RepRelativePos) then
-            Continue;
-
-          MaxLen := UInt32(Count - RepRelativePos);
-          if MaxLen > TLzmaEncoderConstants.kMatchMaxLen then
-            MaxLen := TLzmaEncoderConstants.kMatchMaxLen;
-          if MaxLen = 0 then
-            Continue;
-
-          Left := Offset + RepRelativePos;
-          Right := Left - NativeUInt(RepDistance);
-          if Data[Left] <> Data[Right] then
-            Continue;
-          RepLens[RepIndex] := 1;
-          if MaxLen = 1 then
-            Continue;
-
-          if Data[Left + 1] <> Data[Right + 1] then
-            Continue;
-          RepLens[RepIndex] := 2 + LzmaCountMatchingBytes(Data, Left + 2,
-            Right + 2, MaxLen - 2);
-          if RepLens[RepIndex] > EffectiveFastBytes then
-            RepLens[RepIndex] := EffectiveFastBytes;
-        end;
-      end;
-
-    if not LzmaOptimumRelaxWindow(Nodes, MatchesByPos, PosStates,
-      LiteralResolver, RepResolver, ProbInputsByPos, ProbPrices, LenPrices,
-      RepLenPrices, DistancePrices) then
-      Exit;
-
-    if not LzmaOptimumSelectWindowTarget(Nodes, InitialTargetEnd, WindowEnd,
-      BestBaselinePrice, TargetEnd, WindowPrice) then
-      Exit;
-    if (TargetEnd > EffectiveFastBytes) and (Nodes[Integer(TargetEnd)].Extra = 0) then
-      Exit;
-
-    if not QueueOptimumReplayPath(Nodes, TargetEnd, ReplayLen, ReplayBack) then
-      Exit;
-    if ReplayBack = LZMA_OPTIMUM_BACK_LITERAL then
-    begin
-      ClearOptimumReplayQueue;
-      Exit;
-    end;
-    if ReplayLen <= MainMatch.Length then
-    begin
-      ClearOptimumReplayQueue;
-      Exit;
-    end;
-
-    WindowLen := ReplayLen;
-    WindowBack := ReplayBack;
-    Result := WindowLen > 0;
-  end;
-
   function GetOptimumFast(out Back: UInt32): UInt32;
   const
     MARK_LIT = UInt32($FFFFFFFF);
   var
-    MainMatch: TLzmaMatch;
-    NumAvail: UInt32;
-    I: UInt32;
-    WindowBack: UInt32;
-    WindowLen: UInt32;
+    MainMatch, Candidate, NextMatch: TLzmaMatch;
+    MainLen, MainDist, NumAvail, I, CandidateDist, NewDist: UInt32;
+    PairIndex: Integer;
   begin
-    Back := MARK_LIT;
-    Result := 1;
-    if TryPopOptimumReplayDecision(Result, Back) then
-      Exit;
-
+    // SDK 26.05 LzmaEnc.c GetOptimumFast; distances below are SDK zero-based.
+    MainMatch := ReadCurrentMatchDistances(Pos, Matches);
+    MainLen := MainMatch.Length;
     NumAvail := NumAvailAt(Pos);
-    if NumAvail < TLzmaEncoderConstants.kMatchMinLen then
-      Exit;
+    Back := MARK_LIT;
+    if NumAvail < 2 then
+      Exit(1);
 
-    BestRepIndex := -1;
+    BestRepIndex := 0;
     BestRepLen := 0;
     for I := 0 to 3 do
     begin
@@ -1996,445 +2767,525 @@ var
       end;
       if RepLen > BestRepLen then
       begin
-        BestRepLen := RepLen;
         BestRepIndex := Integer(I);
+        BestRepLen := RepLen;
       end;
     end;
 
-    MainMatch := ReadCurrentMatchDistances(Pos, Matches);
-    if MainMatch.Length >= EffectiveFastBytes then
+    if MainLen >= EffectiveFastBytes then
     begin
       Back := MainMatch.Distance + 3;
-      Exit(MainMatch.Length);
+      Exit(MainLen);
     end;
 
-    ShortenMainMatch(MainMatch, Matches);
-    if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) or
-      (NumAvail <= TLzmaEncoderConstants.kMatchMinLen) then
+    MainDist := 0;
+    if MainLen >= 2 then
     begin
-      if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) and
-        (BestRepLen >= TLzmaEncoderConstants.kMatchMinLen) and (BestRepIndex >= 0) then
+      MainDist := MainMatch.Distance - 1;
+      PairIndex := Matches.Count - 1;
+      while PairIndex > 0 do
       begin
-        Back := UInt32(BestRepIndex);
-        Exit(BestRepLen);
+        Candidate := Matches.Items[PairIndex - 1];
+        if MainLen <> Candidate.Length + 1 then
+          Break;
+        CandidateDist := Candidate.Distance - 1;
+        if not ((MainDist shr 7) > CandidateDist) then
+          Break;
+        Dec(PairIndex);
+        Dec(MainLen);
+        MainDist := CandidateDist;
       end;
-
-      if (BestRepLen = 1) and (BestRepIndex = 0) then
-      begin
-        if PreferShortRepOverLiteralByPrice then
-        begin
-          Back := 0;
-          Exit(1);
-        end;
-      end;
-      Exit(1);
+      if (MainLen = 2) and (MainDist >= $80) then
+        MainLen := 1;
     end;
 
-    if TryGetOptimumWindowDecision(MainMatch, WindowLen, WindowBack) then
-    begin
-      Back := WindowBack;
-      Exit(WindowLen);
-    end;
-
-    if PreferLiteralLookahead(MainMatch) then
-      Exit(1);
-
-    PreferMatchLiteralRep0ByPrice(MainMatch, Matches);
-
-    if PreferRepOverMainByPrice(MainMatch) then
+    if (BestRepLen >= 2) and
+      ((BestRepLen + 1 >= MainLen) or
+       ((BestRepLen + 2 >= MainLen) and (MainDist >= UInt32(1) shl 9)) or
+       ((BestRepLen + 3 >= MainLen) and (MainDist >= UInt32(1) shl 15))) then
     begin
       Back := UInt32(BestRepIndex);
       Exit(BestRepLen);
     end;
 
-    Back := MainMatch.Distance + 3;
-    Result := MainMatch.Length;
+    if (MainLen < 2) or (NumAvail <= 2) then
+      Exit(1);
+
+    NextMatch := ReadLookaheadMatch(Pos + 1);
+    if NextMatch.Length >= 2 then
+    begin
+      NewDist := NextMatch.Distance - 1;
+      if ((NextMatch.Length >= MainLen) and (NewDist < MainDist)) or
+        ((NextMatch.Length = MainLen + 1) and not ((NewDist shr 7) > MainDist)) or
+        (NextMatch.Length > MainLen + 1) or
+        ((NextMatch.Length + 1 >= MainLen) and (MainLen >= 3) and
+         ((MainDist shr 7) > NewDist)) then
+        Exit(1);
+    end;
+
+    for I := 0 to 3 do
+    begin
+      RepLen := RepLenAtPos(Pos + 1, Reps[I]);
+      if (RepLen >= 2) and (RepLen >= MainLen - 1) then
+        Exit(1);
+    end;
+
+    Back := MainDist + 4;
+    Result := MainLen;
   end;
 
+{$IFDEF LZMA_ENCODER_FLAT_OPTIMUM_FRAME}
   function GetOptimumFull(out Back: UInt32): UInt32;
-  const
-    MARK_LIT = UInt32($FFFFFFFF);
+  begin
+    Result := FullFrame.Run(Back);
+  end;
+{$ELSE}
+  function GetOptimumFull(out Back: UInt32): UInt32;
   var
-    MainLen: UInt32;
-    NumAvail: UInt32;
-    NumPairs: UInt32;
+    Cur, Last, MainLen, NumAvail, NumPairs, BestRep, I, J: UInt32;
     MainMatch: TLzmaMatch;
-    NeedsFreshRead: Boolean;
+    RepLens: TLzmaOptimumRepLens;
+    Model: TLzmaOptimumProbModelView;
 
-    function TryBuildFullOptimumPath(out PathLen, PathBack: UInt32): Boolean;
+    function AvailableAt(const At: UInt32): UInt32;
     var
-      LiteralResolver: TLzmaOptimumLiteralResolver;
-      LookaheadMatch: TLzmaMatch;
-      MatchesByPos: TArray<TLzmaMatchBuffer>;
-      PosIndex: Integer;
-      PosStates: TArray<UInt32>;
-      ProbInputsByPos: TArray<TLzmaOptimumStateProbInputs>;
-      ProbState: Integer;
-      RelativePos: NativeUInt;
-      RepResolver: TLzmaOptimumRepLensResolver;
-      TargetEnd: UInt32;
-      WindowEnd: UInt32;
-
-      function SelectReplayTarget(const MaxTarget: UInt32): UInt32;
-      var
-        Candidate: UInt32;
-        Node: TLzmaOptimumNode;
-      begin
-        Result := 0;
-        if Length(FullOptimumState.Nodes) <= 1 then
-          Exit;
-
-        Candidate := MaxTarget;
-        if Candidate >= UInt32(Length(FullOptimumState.Nodes)) then
-          Candidate := UInt32(Length(FullOptimumState.Nodes) - 1);
-        while Candidate > 1 do
-        begin
-          Node := FullOptimumState.Nodes[Integer(Candidate)];
-          if (Node.Price <> High(UInt32)) and (Node.Extra = 0) and
-            ((Node.PathBack <> LZMA_OPTIMUM_BACK_LITERAL) or
-             (Node.PathLen > 1) or Node.Prev1IsLiteral) then
-            Exit(Candidate);
-          Dec(Candidate);
-        end;
-
-        if FullOptimumState.Nodes[1].Price <> High(UInt32) then
-          Result := 1;
-      end;
-
-      function ReplayPathIsValid(const FirstLen, FirstBack: UInt32): Boolean;
-      var
-        Decision: TLzmaOptimumDecision;
-        DecisionIndex: UInt32;
-        Distance: UInt32;
-        RepIndex: Integer;
-        SimPos: NativeUInt;
-        SimReps: array[0..3] of UInt32;
-
-        procedure MoveSimRepToFront(const Index: Integer);
-        var
-          I: Integer;
-          Value: UInt32;
-        begin
-          if Index <= 0 then
-            Exit;
-          Value := SimReps[Index];
-          for I := Index downto 1 do
-            SimReps[I] := SimReps[I - 1];
-          SimReps[0] := Value;
-        end;
-
-        function AcceptDecision(const DecisionLen, DecisionBack: UInt32): Boolean;
-        var
-          Left: NativeUInt;
-          Right: NativeUInt;
-        begin
-          Result := False;
-          if (DecisionLen = 0) or (SimPos + NativeUInt(DecisionLen) > Count) then
-            Exit;
-          if DecisionBack = LZMA_OPTIMUM_BACK_LITERAL then
-          begin
-            Result := DecisionLen = 1;
-            if Result then
-              Inc(SimPos);
-            Exit;
-          end;
-
-          if DecisionBack < 4 then
-          begin
-            RepIndex := Integer(DecisionBack);
-            Distance := SimReps[RepIndex];
-            if (Distance = 0) or (NativeUInt(Distance) > SimPos) then
-              Exit;
-            Left := Offset + SimPos;
-            Right := Left - NativeUInt(Distance);
-            if LzmaCountMatchingBytes(Data, Left, Right, DecisionLen) <> DecisionLen then
-              Exit;
-            MoveSimRepToFront(RepIndex);
-            Inc(SimPos, DecisionLen);
-            Exit(True);
-          end;
-
-          Distance := DecisionBack - 3;
-          if (Distance = 0) or (NativeUInt(Distance) > SimPos) then
-            Exit;
-          Left := Offset + SimPos;
-          Right := Left - NativeUInt(Distance);
-          if LzmaCountMatchingBytes(Data, Left, Right, DecisionLen) <> DecisionLen then
-            Exit;
-          SimReps[3] := SimReps[2];
-          SimReps[2] := SimReps[1];
-          SimReps[1] := SimReps[0];
-          SimReps[0] := Distance;
-          Inc(SimPos, DecisionLen);
-          Result := True;
-        end;
-
-      begin
-        SimPos := Pos;
-        for RepIndex := 0 to 3 do
-          SimReps[RepIndex] := Reps[RepIndex];
-        Result := AcceptDecision(FirstLen, FirstBack);
-        if not Result then
-          Exit;
-        if FullOptimumState.ReplayCount = 0 then
-          Exit;
-
-        for DecisionIndex := 0 to FullOptimumState.ReplayCount - 1 do
-        begin
-          Decision := FullOptimumState.ReplayDecisions[Integer(DecisionIndex)];
-          if not AcceptDecision(Decision.Len, Decision.Back) then
-            Exit(False);
-        end;
-      end;
-
-      procedure ClearFullReplay;
-      begin
-        FullOptimumState.OptCur := 0;
-        FullOptimumState.OptEnd := 0;
-        FullOptimumState.ReplayIndex := 0;
-        FullOptimumState.ReplayCount := 0;
-        SetLength(FullOptimumState.ReplayDecisions, 0);
-      end;
-
+      Remaining: NativeUInt;
     begin
-      Result := False;
-      PathLen := 1;
-      PathBack := MARK_LIT;
+      Result := LZMA_FULL_OPTIMUM_NUM_OPTS - 1 - At;
+      Remaining := Count - (Pos + NativeUInt(At));
+      if Remaining < NativeUInt(Result) then
+        Result := UInt32(Remaining);
+    end;
 
-      WindowEnd := NumAvail;
-      if WindowEnd >= LZMA_FULL_OPTIMUM_NUM_OPTS then
-        WindowEnd := LZMA_FULL_OPTIMUM_NUM_OPTS - 1;
-      if WindowEnd > GetOptimumWindowLimit then
-        WindowEnd := GetOptimumWindowLimit;
-      if WindowEnd = 0 then
-        Exit;
+    function ProbsAt(const At, AtState: UInt32): TLzmaOptimumProbInput;
+    begin
+      Result := Model.Read(At, AtState, (Processed + At) and PbMask);
+    end;
 
-      SetLength(FullOptimumState.Nodes, Integer(WindowEnd) + 1);
-      SetLength(MatchesByPos, Integer(WindowEnd) + 1);
-      SetLength(PosStates, Integer(WindowEnd) + 1);
-      SetLength(ProbInputsByPos, Integer(WindowEnd) + 1);
-      LzmaOptimumPrepareNodes(FullOptimumState.Nodes, 0, State, Reps);
+    function RepLength(const At, Distance, Limit: UInt32): UInt32;
+    begin
+      Result := RepLenAtPos(Pos + NativeUInt(At), Distance);
+      if Result > Limit then
+        Result := Limit;
+      if Result < TLzmaEncoderConstants.kMatchMinLen then
+        Result := 0;
+    end;
 
-      for PosIndex := 0 to Integer(WindowEnd) - 1 do
+    function LiteralCost(const At, AtState, RepDistance: UInt32): UInt32;
+    var
+      Relative, LiteralOffset: NativeUInt;
+      Previous, Value, MatchValue: Byte;
+      LiteralState: UInt32;
+      View: TLzmaOptimumLiteralView;
+    begin
+      Relative := Pos + NativeUInt(At);
+      if Relative = 0 then
+        Previous := 0
+      else
+        Previous := Data[Offset + Relative - 1];
+      Value := Data[Offset + Relative];
+      LiteralState := (((Processed + At) and LpMask) shl LcBits) +
+        (UInt32(Previous) shr LcShift);
+      LiteralOffset := NativeUInt(LiteralState) * LZMA_LITERAL_PROB_COUNT;
+      View := Default(TLzmaOptimumLiteralView);
+      View.LiteralProbs := PLzmaOptimumLiteralProbs(@Literals[LiteralOffset]);
+      View.Enabled := True;
+      View.Value := Value;
+      View.UseMatchedLiteral := AtState >= TLzmaEncoderConstants.kNumLitStates;
+      if View.UseMatchedLiteral then
       begin
-        RelativePos := Pos + NativeUInt(PosIndex);
-        PosStates[PosIndex] := (Processed + UInt32(PosIndex)) and PbMask;
+        if (RepDistance = 0) or (NativeUInt(RepDistance) > Relative) then
+          RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid online optimum literal history');
+        MatchValue := Data[Offset + Relative - NativeUInt(RepDistance)];
+        View.MatchByte := MatchValue;
+        Result := LzmaMatchedLiteralPrice(View.LiteralProbs^, Value, MatchValue, ProbPrices);
+      end
+      else
+        Result := LzmaLiteralPrice(View.LiteralProbs^, Value, ProbPrices);
+    end;
 
-        for ProbState := 0 to TLzmaEncoderConstants.kNumStates - 1 do
-        begin
-          ProbInputsByPos[PosIndex][ProbState].IsMatchProb :=
-            IsMatch[ProbState][PosStates[PosIndex]];
-          ProbInputsByPos[PosIndex][ProbState].IsRepProb := IsRep[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRepG0Prob := IsRepG0[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRepG1Prob := IsRepG1[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRepG2Prob := IsRepG2[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRep0LongProb :=
-            IsRep0Long[ProbState][PosStates[PosIndex]];
-        end;
+    function Rep0Price(const At, AtState: UInt32): UInt32;
+    var
+      Prob: TLzmaOptimumProbInput;
+    begin
+      Prob := ProbsAt(At, AtState);
+      Result := LzmaRepMatchPrefixPrice(ProbPrices, Prob.IsMatchProb, Prob.IsRepProb) +
+        LzmaRep0LongPrice(ProbPrices, Prob.IsRepG0Prob, Prob.IsRep0LongProb);
+    end;
 
-        if PosIndex = 0 then
+    procedure ExtendFrontier(const Target: UInt32);
+    begin
+      if Target > Last then
+        Last := Target;
+    end;
+
+    procedure Store(const Target, Price, Len, PathBack, Extra: UInt32;
+      const Source: TLzmaOptimumNode);
+    var
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+      NativeContext: TLzmaOptimumStoreContext56;
+{$ENDIF}
+      Node: TLzmaOptimumNode;
+      Index: Integer;
+      Distance: UInt32;
+    begin
+      if Price >= FullOptimumState.Nodes[Integer(Target)].Price then
+        Exit;
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+      if Source.State < UInt32(Length(LZMA_STATE_LITERAL_NEXT)) then
+      begin
+        NativeContext.Price := Price;
+        NativeContext.Len := Len;
+        NativeContext.PathBack := PathBack;
+        NativeContext.Extra := Extra;
+        NativeContext.Destination := @FullOptimumState.Nodes[Integer(Target)];
+        NativeContext.SourceNode := @Source;
+        LzmaStoreOptimumNode56(@NativeContext);
+        Exit;
+      end;
+{$ENDIF}
+      Node := Default(TLzmaOptimumNode);
+      Node.Price := Price;
+      Node.PathLen := Len;
+      Node.PathBack := PathBack;
+      Node.Extra := Extra;
+      Node.Reps := Source.Reps;
+      if PathBack = LZMA_OPTIMUM_BACK_LITERAL then
+        Node.State := LZMA_STATE_LITERAL_NEXT[Source.State]
+      else if (Extra = 1) then
+      begin
+        // Literal + rep0 preserves the source repetition ordering.
+        Node.State := LZMA_STATE_REP_NEXT[LZMA_STATE_LITERAL_NEXT[Source.State]];
+      end
+      else
+      begin
+        if PathBack < 4 then
         begin
-          MatchesByPos[PosIndex] := Matches;
-          ClampMatchBufferLengths(MatchesByPos[PosIndex], EffectiveFastBytes);
+          Distance := Source.Reps[Integer(PathBack)];
+          for Index := Integer(PathBack) downto 1 do
+            Node.Reps[Index] := Source.Reps[Index - 1];
+          Node.Reps[0] := Distance;
+          if Len = 1 then
+            Node.State := LZMA_STATE_SHORT_REP_NEXT[Source.State]
+          else
+            Node.State := LZMA_STATE_REP_NEXT[Source.State];
         end
         else
         begin
-          LookaheadMatch := ReadMatchDistancesAndInsert(RelativePos,
-            MatchesByPos[PosIndex]);
-          ClampMatchBufferLengths(MatchesByPos[PosIndex], EffectiveFastBytes);
-          if LookaheadMatch.Length > EffectiveFastBytes then
-            LookaheadMatch.Length := EffectiveFastBytes;
+          Node.Reps[0] := PathBack - 3;
+          Node.Reps[1] := Source.Reps[0];
+          Node.Reps[2] := Source.Reps[1];
+          Node.Reps[3] := Source.Reps[2];
+          Node.State := LZMA_STATE_MATCH_NEXT[Source.State];
+        end;
+        if Extra > 1 then
+          Node.State := LZMA_STATE_REP_NEXT[LZMA_STATE_LITERAL_NEXT[Node.State]];
+      end;
+      FullOptimumState.Nodes[Integer(Target)] := Node;
+    end;
+
+    procedure Relax(const Initial: Boolean);
+    var
+      Node: TLzmaOptimumNode;
+      Prob, LiteralProb: TLzmaOptimumProbInput;
+      FullAvailable, Available, PosState, MatchPrice, RepPrice, LitPrice: UInt32;
+      Price, CandidatePrice, Len, Len2, StartLen, RepIndex, FirstState: UInt32;
+      Tail, Target, Distance, PairIndex, NextPos, NextState: UInt32;
+      CurrentByte, MatchByte: Byte;
+      HasRep0, NextIsLit: Boolean;
+    begin
+      Node := FullOptimumState.Nodes[Integer(Cur)];
+      Prob := ProbsAt(Cur, Node.State);
+      PosState := (Processed + Cur) and PbMask;
+      FullAvailable := AvailableAt(Cur);
+      Available := FullAvailable;
+      if Available > EffectiveFastBytes then
+        Available := EffectiveFastBytes;
+      CurrentByte := Data[Offset + Pos + NativeUInt(Cur)];
+      HasRep0 := (Node.Reps[0] <> 0) and
+        (NativeUInt(Node.Reps[0]) <= Pos + NativeUInt(Cur));
+      MatchByte := 0;
+      if HasRep0 then
+        MatchByte := Data[Offset + Pos + NativeUInt(Cur) - NativeUInt(Node.Reps[0])];
+      MatchPrice := Node.Price + LzmaBitPrice(ProbPrices, Prob.IsMatchProb, 1);
+      RepPrice := MatchPrice + LzmaBitPrice(ProbPrices, Prob.IsRepProb, 1);
+      LitPrice := Node.Price + LzmaBitPrice(ProbPrices, Prob.IsMatchProb, 0);
+      NextIsLit := False;
+      if (not Initial) and
+        (((FullOptimumState.Nodes[Integer(Cur + 1)].Price <> High(UInt32)) and
+          HasRep0 and (MatchByte = CurrentByte)) or
+         (LitPrice > FullOptimumState.Nodes[Integer(Cur + 1)].Price)) then
+        LitPrice := 0
+      else
+      begin
+        Inc(LitPrice, LiteralCost(Cur, Node.State, Node.Reps[0]));
+        if LitPrice < FullOptimumState.Nodes[Integer(Cur + 1)].Price then
+        begin
+          Store(Cur + 1, LitPrice, 1, LZMA_OPTIMUM_BACK_LITERAL, 0, Node);
+          NextIsLit := True;
         end;
       end;
 
-      LiteralResolver :=
-        function(const WindowPos: UInt32; const Node: TLzmaOptimumNode;
-          out LiteralInput: TLzmaOptimumLiteralInput): Boolean
-        var
-          MatchByteForLiteral: Byte;
-          PriceLitState: UInt32;
-          PriceLiteralOffset: NativeUInt;
-          PricePrevByte: Byte;
-          LiteralRelativePos: NativeUInt;
-          UseMatchedLiteral: Boolean;
+      // Initial short rep has its own SDK condition. Interior short reps require
+      // literal state and preserve the SDK next-node/tie suppression rules.
+      if HasRep0 and (MatchByte = CurrentByte) and
+        ((Initial and (RepLens[0] = 0)) or
+         ((not Initial) and (Node.State < TLzmaEncoderConstants.kNumLitStates) and
+          (RepPrice < FullOptimumState.Nodes[Integer(Cur + 1)].Price) and
+          ((FullOptimumState.Nodes[Integer(Cur + 1)].PathLen < 2) or
+           (FullOptimumState.Nodes[Integer(Cur + 1)].PathBack <> 0)))) then
+      begin
+        Price := RepPrice + LzmaShortRepPrice(ProbPrices,
+          Prob.IsRepG0Prob, Prob.IsRep0LongProb);
+        if Price < FullOptimumState.Nodes[Integer(Cur + 1)].Price then
         begin
-          FillChar(LiteralInput, SizeOf(LiteralInput), 0);
-          LiteralRelativePos := Pos + NativeUInt(WindowPos);
-          Result := LiteralRelativePos < Count;
-          if not Result then
-            Exit;
-
-          if LiteralRelativePos = 0 then
-            PricePrevByte := 0
-          else
-            PricePrevByte := Data[Offset + LiteralRelativePos - 1];
-          PriceLitState := (((Processed + WindowPos) and LpMask) shl LcBits) +
-            (UInt32(PricePrevByte) shr LcShift);
-          PriceLiteralOffset := NativeUInt(PriceLitState) * LZMA_LITERAL_PROB_COUNT;
-          UseMatchedLiteral := (Node.State >= TLzmaEncoderConstants.kNumLitStates) and
-            (Node.Reps[0] > 0) and (NativeUInt(Node.Reps[0]) <= LiteralRelativePos);
-          if UseMatchedLiteral then
-            MatchByteForLiteral := Data[Offset + LiteralRelativePos - NativeUInt(Node.Reps[0])]
-          else
-            MatchByteForLiteral := 0;
-
-          LiteralInput.Enabled := True;
-          LiteralInput.LiteralProbs :=
-            PLzmaLiteralProbs(@Literals[PriceLiteralOffset])^;
-          LiteralInput.Value := Data[Offset + LiteralRelativePos];
-          LiteralInput.UseMatchedLiteral := UseMatchedLiteral;
-          LiteralInput.MatchByte := MatchByteForLiteral;
+          Store(Cur + 1, Price, 1, 0, 0, Node);
+          NextIsLit := False;
         end;
-
-      RepResolver :=
-        procedure(const WindowPos: UInt32; const NodeReps: TLzmaOptimumReps;
-          out RepLens: TLzmaOptimumRepLens)
-        var
-          Left: NativeUInt;
-          MaxLen: UInt32;
-          RepDistance: UInt32;
-          RepIndex: Integer;
-          RepRelativePos: NativeUInt;
-          Right: NativeUInt;
-        begin
-          FillChar(RepLens, SizeOf(RepLens), 0);
-          RepRelativePos := Pos + NativeUInt(WindowPos);
-          for RepIndex := Low(NodeReps) to High(NodeReps) do
-          begin
-            RepDistance := NodeReps[RepIndex];
-            if (RepDistance = 0) or (RepRelativePos > Count) or
-              (NativeUInt(RepDistance) > RepRelativePos) then
-              Continue;
-
-            MaxLen := UInt32(Count - RepRelativePos);
-            if MaxLen > TLzmaEncoderConstants.kMatchMaxLen then
-              MaxLen := TLzmaEncoderConstants.kMatchMaxLen;
-            if MaxLen > EffectiveFastBytes then
-              MaxLen := EffectiveFastBytes;
-            if MaxLen = 0 then
-              Continue;
-
-            Left := Offset + RepRelativePos;
-            Right := Left - NativeUInt(RepDistance);
-            if Data[Left] <> Data[Right] then
-              Continue;
-            RepLens[RepIndex] := 1;
-            if MaxLen = 1 then
-              Continue;
-
-            if Data[Left + 1] <> Data[Right + 1] then
-              Continue;
-            RepLens[RepIndex] := 2 + LzmaCountMatchingBytes(Data, Left + 2,
-              Right + 2, MaxLen - 2);
-          end;
-        end;
-
-      if not LzmaOptimumRelaxWindow(FullOptimumState.Nodes, MatchesByPos,
-        PosStates, LiteralResolver, RepResolver, ProbInputsByPos, ProbPrices,
-        LenPrices, RepLenPrices, DistancePrices) then
+      end;
+      if FullAvailable < 2 then
         Exit;
 
-      TargetEnd := SelectReplayTarget(WindowEnd);
-      while TargetEnd <> 0 do
+      if (not Initial) and (not NextIsLit) and (LitPrice <> 0) and HasRep0 and
+        (MatchByte <> CurrentByte) and (FullAvailable > 2) then
       begin
-        if LzmaFullOptimumBackward(FullOptimumState, TargetEnd,
-          PathLen, PathBack) and ReplayPathIsValid(PathLen, PathBack) then
+        Tail := RepLength(Cur + 1, Node.Reps[0], FullAvailable - 1);
+        if Tail > EffectiveFastBytes then
+          Tail := EffectiveFastBytes;
+        if Tail >= 2 then
         begin
-          FullOptimumState.AdditionalOffset := TargetEnd;
-          Exit(True);
+          Target := Cur + 1 + Tail;
+          ExtendFrontier(Target);
+          NextState := LZMA_STATE_LITERAL_NEXT[Node.State];
+          Price := LitPrice + Rep0Price(Cur + 1, NextState) +
+            LzmaLenPrice(RepLenPrices, (Processed + Cur + 1) and PbMask, Tail);
+          Store(Target, Price, Tail, 0, 1, Node);
         end;
-
-        ClearFullReplay;
-        FullOptimumState.Nodes[Integer(TargetEnd)].Price := High(UInt32);
-        if TargetEnd = 1 then
-          Break;
-        TargetEnd := SelectReplayTarget(TargetEnd - 1);
       end;
+
+      StartLen := TLzmaEncoderConstants.kMatchMinLen;
+      for RepIndex := 0 to 3 do
+      begin
+        if Initial then
+          Len := RepLens[Integer(RepIndex)]
+        else
+          Len := RepLength(Cur, Node.Reps[Integer(RepIndex)], Available);
+        if Len < 2 then
+          Continue;
+        ExtendFrontier(Cur + Len);
+        Price := RepPrice + LzmaPureRepPrice(ProbPrices, Prob.IsRepG0Prob,
+          Prob.IsRepG1Prob, Prob.IsRepG2Prob, Prob.IsRep0LongProb, RepIndex);
+        Len2 := Len;
+        repeat
+          CandidatePrice := Price + LzmaLenPrice(RepLenPrices, PosState, Len2);
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFOPT Q-}
+          if CandidatePrice < FullOptimumState.Nodes[Integer(Cur + Len2)].Price then
+{$ENDIF}
+{$ENDIF}
+            Store(Cur + Len2, CandidatePrice, Len2, RepIndex, 0, Node);
+          Dec(Len2);
+        until Len2 < 2;
+        if RepIndex = 0 then
+          StartLen := Len + 1;
+
+        if Initial or (FullAvailable <= Len + 2) then
+          Continue;
+        Tail := RepLength(Cur + Len + 1, Node.Reps[Integer(RepIndex)],
+          FullAvailable - Len - 1);
+        if Tail > EffectiveFastBytes then
+          Tail := EffectiveFastBytes;
+        if Tail < 2 then
+          Continue;
+        Target := Cur + Len + 1 + Tail;
+        ExtendFrontier(Target);
+        FirstState := LZMA_STATE_REP_NEXT[Node.State];
+        LiteralProb := ProbsAt(Cur + Len, FirstState);
+        CandidatePrice := Price + LzmaLenPrice(RepLenPrices, PosState, Len) +
+          LzmaBitPrice(ProbPrices, LiteralProb.IsMatchProb, 0) +
+          LiteralCost(Cur + Len, FirstState, Node.Reps[Integer(RepIndex)]);
+        NextPos := Cur + Len + 1;
+        NextState := LZMA_STATE_LITERAL_NEXT[FirstState];
+        Inc(CandidatePrice, Rep0Price(NextPos, NextState) +
+          LzmaLenPrice(RepLenPrices, (Processed + NextPos) and PbMask, Tail));
+        Store(Target, CandidatePrice, Tail, RepIndex, Len + 1, Node);
+      end;
+
+      // Preserve SDK match-length traversal and extra-path ordering at each
+      // actual pair boundary, rather than a separate extras-before-matches pass.
+      if MainLen > Available then
+      begin
+        MainLen := Available;
+        // SDK clips the first covering pair and excludes all later pairs.
+        // Keeping Count would introduce duplicate clipped length boundaries.
+        PairIndex := 0;
+        while MainLen > Matches.Items[Integer(PairIndex)].Length do
+          Inc(PairIndex);
+        Matches.Items[Integer(PairIndex)].Length := MainLen;
+        Matches.Count := Integer(PairIndex) + 1;
+      end;
+      if MainLen < StartLen then
+        Exit;
+      ExtendFrontier(Cur + MainLen);
+      Price := MatchPrice + LzmaBitPrice(ProbPrices, Prob.IsRepProb, 0);
+      PairIndex := 0;
+      while StartLen > Matches.Items[Integer(PairIndex)].Length do
+        Inc(PairIndex);
+      Len := StartLen;
+      repeat
+        Distance := Matches.Items[Integer(PairIndex)].Distance;
+        CandidatePrice := Price + LzmaLenPrice(LenPrices, PosState, Len) +
+          LzmaMatchDistancePrice(DistancePrices, Len, Distance);
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFOPT Q-}
+        if CandidatePrice < FullOptimumState.Nodes[Integer(Cur + Len)].Price then
+{$ENDIF}
+{$ENDIF}
+          Store(Cur + Len, CandidatePrice, Len, Distance + 3, 0, Node);
+        if Len = Matches.Items[Integer(PairIndex)].Length then
+        begin
+          if (not Initial) and (FullAvailable > Len + 2) then
+          begin
+            Tail := RepLength(Cur + Len + 1, Distance, FullAvailable - Len - 1);
+            if Tail > EffectiveFastBytes then
+              Tail := EffectiveFastBytes;
+            if Tail >= 2 then
+            begin
+              Target := Cur + Len + 1 + Tail;
+              ExtendFrontier(Target);
+              FirstState := LZMA_STATE_MATCH_NEXT[Node.State];
+              LiteralProb := ProbsAt(Cur + Len, FirstState);
+              Inc(CandidatePrice, LzmaBitPrice(ProbPrices, LiteralProb.IsMatchProb, 0) +
+                LiteralCost(Cur + Len, FirstState, Distance));
+              NextPos := Cur + Len + 1;
+              NextState := LZMA_STATE_LITERAL_NEXT[FirstState];
+              Inc(CandidatePrice, Rep0Price(NextPos, NextState) +
+                LzmaLenPrice(RepLenPrices, (Processed + NextPos) and PbMask, Tail));
+              Store(Target, CandidatePrice, Tail, Distance + 3, Len + 1, Node);
+            end;
+          end;
+          Inc(PairIndex);
+          if PairIndex = UInt32(Matches.Count) then
+            Break;
+        end;
+        Inc(Len);
+      until False;
     end;
 
   begin
-    Back := MARK_LIT;
-    Result := 1;
-
+    Back := LZMA_OPTIMUM_BACK_LITERAL;
     if LzmaFullOptimumTryReplay(FullOptimumState, Result, Back) then
     begin
       Inc(LocalFullOptimumDecisionCount);
       Exit;
     end;
-
-    NeedsFreshRead := LzmaFullOptimumBeginDecision(FullOptimumState,
-      NumAvail, NumPairs, MainLen);
-    if NeedsFreshRead then
+    Result := 1;
+    if LzmaFullOptimumBeginDecision(FullOptimumState, NumAvail, NumPairs, MainLen) then
       MainMatch := ReadCurrentMatchDistances(Pos, Matches)
-    else if not LzmaFullOptimumLoadCachedMatches(FullOptimumState, Matches,
-      MainMatch) then
-    begin
-      Matches.Clear;
-      MainMatch.Length := MainLen;
-      MainMatch.Distance := 0;
-    end;
+    else if not LzmaFullOptimumLoadCachedMatches(FullOptimumState, Matches, MainMatch) then
+      RaiseLzmaError(SZ_ERROR_FAIL, 'Missing retained online optimum match');
     NumAvail := NumAvailAt(Pos);
     if NumAvail < TLzmaEncoderConstants.kMatchMinLen then
     begin
       FullOptimumState.BackRes := Back;
       Exit;
     end;
-
-    BestRepIndex := -1;
-    BestRepLen := 0;
-    for NumPairs := 0 to 3 do
+    MainLen := MainMatch.Length;
+    BestRep := 0;
+    FillChar(RepLens, SizeOf(RepLens), 0);
+    for I := 0 to 3 do
     begin
-      RepLen := RepLenAt(Reps[NumPairs]);
-      if RepLen >= EffectiveFastBytes then
-      begin
-        Back := NumPairs;
-        Result := RepLen;
-        if Result > 1 then
-          LzmaFullOptimumMovePos(FullOptimumState, Result - 1);
-        FullOptimumState.BackRes := Back;
-        Exit;
-      end;
-      if RepLen > BestRepLen then
-      begin
-        BestRepLen := RepLen;
-        BestRepIndex := Integer(NumPairs);
-      end;
+      RepLens[Integer(I)] := RepLength(0, Reps[I], NumAvail);
+      if RepLens[Integer(I)] > RepLens[Integer(BestRep)] then
+        BestRep := I;
+      if RepLens[Integer(I)] = TLzmaEncoderConstants.kMatchMaxLen then
+        Break;
     end;
-
-    if MainMatch.Length >= EffectiveFastBytes then
+    if RepLens[Integer(BestRep)] >= EffectiveFastBytes then
+    begin
+      Back := BestRep;
+      Result := RepLens[Integer(BestRep)];
+      EnsureInsertedUntil(Pos + NativeUInt(Result));
+      LzmaFullOptimumMovePos(FullOptimumState, Result - 1);
+      FullOptimumState.BackRes := Back;
+      Exit;
+    end;
+    if MainLen >= EffectiveFastBytes then
     begin
       Back := MainMatch.Distance + 3;
-      Result := MainMatch.Length;
-      if Result > 1 then
-        LzmaFullOptimumMovePos(FullOptimumState, Result - 1);
+      Result := MainLen;
+      EnsureInsertedUntil(Pos + NativeUInt(Result));
+      LzmaFullOptimumMovePos(FullOptimumState, Result - 1);
       FullOptimumState.BackRes := Back;
       Exit;
     end;
 
-    if (MainMatch.Length < TLzmaEncoderConstants.kMatchMinLen) and
-      (BestRepLen < TLzmaEncoderConstants.kMatchMinLen) then
+    Last := MainLen;
+    if Last < RepLens[Integer(BestRep)] then
+      Last := RepLens[Integer(BestRep)];
+    if (Last < 2) and
+      ((Reps[0] = 0) or (NativeUInt(Reps[0]) > Pos) or
+       (Data[Offset + Pos] <> Data[Offset + Pos - NativeUInt(Reps[0])])) then
     begin
-      if (BestRepLen = 1) and (BestRepIndex = 0) and
-        PreferShortRepOverLiteralByPrice then
-      begin
-        Back := 0;
-        FullOptimumState.BackRes := Back;
-        Exit(1);
-      end;
+      FullOptimumState.BackRes := Back;
+      Exit;
+    end;
+    // Init/reset already allocates these 2048 nodes. Previous solves clear only
+    // touched prices after Backward, preserving the SDK amortized work bound.
+    if Length(FullOptimumState.Nodes) <> LZMA_FULL_OPTIMUM_NUM_OPTS then
+      RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid online optimum node capacity');
+    FullOptimumState.Nodes[0] := Default(TLzmaOptimumNode);
+    FullOptimumState.Nodes[0].Price := 0;
+    FullOptimumState.Nodes[0].State := State;
+    for I := 0 to 3 do
+      FullOptimumState.Nodes[0].Reps[Integer(I)] := Reps[I];
+    Model := TLzmaOptimumProbModelView.Borrow(IsMatch, IsRep, IsRepG0,
+      IsRepG1, IsRepG2, IsRep0Long, LZMA_FULL_OPTIMUM_NUM_OPTS);
+    Cur := 0;
+    Relax(True);
+    if Last < 2 then
+    begin
+      Back := FullOptimumState.Nodes[1].PathBack;
+      FullOptimumState.Nodes[1].Price := High(UInt32);
       FullOptimumState.BackRes := Back;
       Exit(1);
     end;
-
-    if TryBuildFullOptimumPath(Result, Back) then
-    begin
-      Inc(LocalFullOptimumDecisionCount);
-      FullOptimumState.BackRes := Back;
-      Exit;
-    end;
-
+    repeat
+      Inc(Cur);
+      if Cur = Last then
+        Break;
+      if Cur >= LZMA_FULL_OPTIMUM_NUM_OPTS - 64 then
+      begin
+        I := Cur;
+        for J := Cur + 1 to Last do
+          if FullOptimumState.Nodes[Integer(I)].Price >=
+            FullOptimumState.Nodes[Integer(J)].Price then
+            I := J;
+        if I <> Cur then
+        begin
+          EnsureInsertedUntil(Pos + NativeUInt(I));
+          LzmaFullOptimumMovePos(FullOptimumState, I - Cur);
+        end;
+        Cur := I;
+        Break;
+      end;
+      MainMatch := ReadMatchDistancesAndInsert(Pos + NativeUInt(Cur), Matches);
+      MainLen := MainMatch.Length;
+      // The just-read query remains cached at AdditionalOffset=cur+1. Replay
+      // covers only cur bytes; after commit the retained query has offset1.
+      if MainLen >= EffectiveFastBytes then
+        Break;
+      Relax(False);
+    until False;
+    if not LzmaFullOptimumBackward(FullOptimumState, Cur, Result, Back) then
+      RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid online optimum backward path');
+    for I := 1 to Last do
+      FullOptimumState.Nodes[Integer(I)].Price := High(UInt32);
+    Inc(LocalFullOptimumDecisionCount);
     FullOptimumState.BackRes := Back;
   end;
 
+{$ENDIF}
   procedure EncodeOneLiteral;
   begin
     Value := Data[Offset + Pos];
@@ -2568,6 +3419,8 @@ var
   end;
 
 begin
+  InitialDecisionCount := LocalFullOptimumDecisionCount;
+  ContinuingSession := FInitialized;
   if Props.Lc > 8 then
     RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA lc property');
   if Props.Lp > 4 then
@@ -2578,11 +3431,18 @@ begin
     RaiseLzmaError(SZ_ERROR_INPUT_EOF, 'Invalid LZMA encoder chunk offset');
   if Count > NativeUInt(Length(Data)) - Offset then
     RaiseLzmaError(SZ_ERROR_INPUT_EOF, 'Truncated LZMA encoder chunk');
-  if Count > NativeUInt(High(UInt32)) then
-    RaiseLzmaError(SZ_ERROR_PARAM, 'LZMA chunk is too large');
   if FullOptimumDecisionCount <> nil then
     FullOptimumDecisionCount^ := 0;
+{$IFDEF LZMA_ENCODER_FLAT_OPTIMUM_FRAME}
+  FullFrame.Owner := Self;
+  FullFrame.InputRef := @Data;
+  FullFrame.Offset := Offset;
+  FullFrame.Count := Count;
+{$ENDIF}
 
+  try
+    if not FInitialized then
+    begin
   if FastBytes < 5 then
     EffectiveFastBytes := 5
   else
@@ -2612,7 +3472,7 @@ begin
   LzmaUpdateLenPriceEncoder(RepLenPrices, RepLenEncoder.Low, RepLenEncoder.High, NumPosStates, ProbPrices);
   LzmaInitDistancePriceEncoder(DistancePrices, Props.DictionarySize);
   LzmaUpdateDistancePriceEncoder(DistancePrices, PosSlot, PosDecoders, Align, ProbPrices);
-  SetLength(Literals, $300 shl (Props.Lc + Props.Lp));
+  SetLength(Literals, LzmaEncoderLiteralProbCount(Props));
   if Length(Literals) <> 0 then
     InitProbArray(Literals[0], Length(Literals));
   PbMask := (UInt32(1) shl Props.Pb) - 1;
@@ -2624,17 +3484,16 @@ begin
   Hc4Finder := nil;
   Hc5Finder := nil;
   Bt4Finder := nil;
+  SdkFinder := nil;
   Encoder := nil;
   LocalFullOptimumDecisionCount := 0;
-  try
-    Encoder := TLzmaRangeEncoder.Create;
+    Encoder := TLzmaRangeEncoder.Create(FOutputSink);
     Encoder.Init;
     Pos := 0;
     Processed := 0;
     NextProgressAt := kProgressInterval;
     InsertedUntil := 0;
     MatchCache.Clear;
-    ClearOptimumReplayQueue;
     LzmaFullOptimumInit(FullOptimumState, EnableOptimumWindow);
     State := 0;
     Reps[0] := 1;
@@ -2642,7 +3501,8 @@ begin
     Reps[2] := 1;
     Reps[3] := 1;
 
-    if (not FullOptimumState.Enabled) and TryDetectSmallPeriodicChunk(PeriodicDistance) then
+    if (not BoundedFrame) and (not FContinuousRange) and
+      (not FullOptimumState.Enabled) and TryDetectSmallPeriodicChunk(PeriodicDistance) then
     begin
       while Pos < Count do
       begin
@@ -2667,23 +3527,98 @@ begin
       Exit;
     end;
 
-    case MatchFinderKind of
+    FinderInputCount := Count;
+    if FContinuousRange then
+      FinderInputCount := NativeUInt(Length(Data)) - Offset;
+    // Cap engine-owned finder traversal for both fast and full parsing.
+    if FUseSdkFinder then
+      SdkFinder := TLzmaSdkMatchFinder.Create(Data, Offset, FinderInputCount,
+        TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize), SdkFinderHashBytes(MatchFinderKind),
+        EffectiveFastBytes, CutValue, FUseSdkMtHighHash, SdkFinderIsBinaryTree(MatchFinderKind),
+        FSdkHashOutBits, FSdkExpectedDataSize, True)
+    else case MatchFinderKind of
+      mfBinaryTree2:
+        SdkFinder := TLzmaSdkBinaryTreeMatchFinder.Create(Data, Offset, FinderInputCount,
+          TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize), 2,
+          EffectiveFastBytes, CutValue, FUseSdkMtHighHash);
+      mfBinaryTree3:
+        SdkFinder := TLzmaSdkBinaryTreeMatchFinder.Create(Data, Offset, FinderInputCount,
+          TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize), 3,
+          EffectiveFastBytes, CutValue, FUseSdkMtHighHash);
+      mfBinaryTree5:
+        SdkFinder := TLzmaSdkBinaryTreeMatchFinder.Create(Data, Offset, FinderInputCount,
+          TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize), 5,
+          EffectiveFastBytes, CutValue, FUseSdkMtHighHash);
       mfHashChain4:
-        Hc4Finder := TLzmaHashChain4MatchFinder.Create(Data, Offset, Count, Props.DictionarySize,
-        EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen, CutValue);
+        Hc4Finder := TLzmaHashChain4MatchFinder.Create(Data, Offset, FinderInputCount,
+        TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize),
+        EffectiveFastBytes, EffectiveFastBytes, CutValue);
       mfHashChain5:
-        Hc5Finder := TLzmaHashChain5MatchFinder.Create(Data, Offset, Count, Props.DictionarySize,
-          EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen, CutValue);
+        Hc5Finder := TLzmaHashChain5MatchFinder.Create(Data, Offset, FinderInputCount,
+          TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize),
+          EffectiveFastBytes, EffectiveFastBytes, CutValue);
       mfBinaryTree4:
-        Bt4Finder := TLzmaBinaryTree4MatchFinder.Create(Data, Offset, Count, Props.DictionarySize,
-          EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen, CutValue);
+        begin
+          if FUseSdkMtHighHash then
+            Bt4Finder := TLzmaBinaryTree4MatchFinder.CreateSdkMtHighHash(Data, Offset, FinderInputCount,
+              TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize),
+              EffectiveFastBytes, EffectiveFastBytes, CutValue)
+          else
+            Bt4Finder := TLzmaBinaryTree4MatchFinder.Create(Data, Offset, FinderInputCount,
+              TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize),
+              EffectiveFastBytes, EffectiveFastBytes, CutValue);
+        end;
     else
-      GreedyFinder := TLzmaGreedyMatchFinder.Create(Data, Offset, Count, Props.DictionarySize,
-        EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen, CutValue);
+      GreedyFinder := TLzmaGreedyMatchFinder.Create(Data, Offset, FinderInputCount,
+        TLzmaRawEncoder.EffectiveHistorySize(Props.DictionarySize),
+        EffectiveFastBytes, EffectiveFastBytes, CutValue);
+    end;
+    if FinderInputCount <> Count then
+      RebaseWindow(0, Count);
+
+    FInitialized := True;
+    if FUseMatchFinderThread then
+    begin
+      FThreadProgress := Progress;
+      FMatchFinderThread := TLzmaMatchFinderPipeline.Create(
+        procedure(const Position: NativeUInt; var Pairs: TLzmaMatchBuffer)
+        begin
+          if SdkFinder <> nil then SdkFinder.ReadMatchPairs(Position, Pairs)
+          else Bt4Finder.ReadMatchPairs(Position, Pairs);
+        end,
+        procedure
+        begin
+          // Progress/cancel and all stream callbacks stay on the encoder caller.
+          ReportProgress(FThreadProgress, Processed, Encoder.FCommittedOutputSize);
+        end);
+      ResumeMatchFinder(Count, FinalInput);
+    end;
+    end;
+
+    if ContinuingSession and (not FContinuousRange) then
+      Encoder.Init;
+    FFrameStart := Pos;
+    if BoundedFrame then
+    begin
+      SaveModels(FModelSnapshot);
+      RefreshOptimumPriceTables;
+      // SDK CodeOneMemBlock initializes both price families for each frame.
+      if FullOptimumState.Enabled then
+        LzmaFullOptimumResetRefreshCounters(FullOptimumState);
     end;
 
     while Pos < Count do
     begin
+      // SDK bounded frames consume pending fast-parser lookahead before a limit stop.
+      if (Pos > FFrameStart) and
+        ((FullOptimumState.Enabled and (FullOptimumState.AdditionalOffset = 0)) or
+         ((not FullOptimumState.Enabled) and
+          ((not BoundedFrame) or (InsertedUntil = Pos)))) and
+        ((BoundedFrame and
+          (((Pos - FFrameStart) + kFrameUnpackReserve >= FrameUnpackLimit) or
+           (Encoder.FOutputSize + Encoder.FCacheSize + kFramePackReserve >= kMaxFramePackSize))) or
+         ((not FinalInput) and (Count - Pos <= kFrameUnpackReserve))) then
+        Break;
       if FullOptimumState.Enabled then
         LenRes := GetOptimumFull(BackRes)
       else
@@ -2700,34 +3635,476 @@ begin
         EncodeOneMatch(LenRes, BackRes - 3);
       if FullOptimumState.Enabled then
       begin
-        if BackRes >= 4 then
+        if (BackRes <> LZMA_OPTIMUM_BACK_LITERAL) and (BackRes >= 4) then
           LzmaFullOptimumNoteNormalMatch(FullOptimumState)
         else if (BackRes < 4) and (LenRes > 1) then
           LzmaFullOptimumNoteRepLen(FullOptimumState);
         if not LzmaFullOptimumCommitEncodedLen(FullOptimumState, LenRes) then
           RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA full optimum additionalOffset underflow');
-        if LzmaFullOptimumCanRefreshPrices(FullOptimumState) and
-          ((FullOptimumState.MatchPriceCount >= LZMA_FULL_OPTIMUM_MATCH_PRICE_REFRESH) or
-           (FullOptimumState.RepLenEncCounter <= 0)) then
+        if LzmaFullOptimumCanRefreshPrices(FullOptimumState) then
         begin
-          RefreshOptimumPriceTables;
-          LzmaFullOptimumResetRefreshCounters(FullOptimumState);
+          if FullOptimumState.MatchPriceCount >= LZMA_FULL_OPTIMUM_MATCH_PRICE_REFRESH then
+          begin
+            LzmaUpdateLenPriceEncoder(LenPrices, LenEncoder.Low, LenEncoder.High,
+              NumPosStates, ProbPrices);
+            LzmaUpdateDistancePriceEncoder(DistancePrices, PosSlot, PosDecoders,
+              Align, ProbPrices);
+            FullOptimumState.MatchPriceCount := 0;
+          end;
+          if FullOptimumState.RepLenEncCounter <= 0 then
+          begin
+            LzmaUpdateLenPriceEncoder(RepLenPrices, RepLenEncoder.Low,
+              RepLenEncoder.High, NumPosStates, ProbPrices);
+            FullOptimumState.RepLenEncCounter := LZMA_FULL_OPTIMUM_REP_LEN_COUNT;
+          end;
         end;
       end;
     end;
 
-    if WriteEndMarker then
-      EncodeEndMarker;
-    Encoder.FlushData;
-    Result := Encoder.ToBytes;
+    if (not FContinuousRange) or FinalInput then
+    begin
+      if FContinuousRange then
+        ReportProgress(Progress, Processed, Encoder.FCommittedOutputSize);
+      if WriteEndMarker then
+        EncodeEndMarker;
+      Encoder.FlushData;
+      if FOutputSink = nil then
+        Result := Encoder.ToBytes
+      else
+        Result := nil;
+    end
+    else
+      Result := nil;
   finally
     if FullOptimumDecisionCount <> nil then
-      FullOptimumDecisionCount^ := LocalFullOptimumDecisionCount;
-    Encoder.Free;
-    Bt4Finder.Free;
-    Hc5Finder.Free;
-    Hc4Finder.Free;
-    GreedyFinder.Free;
+      FullOptimumDecisionCount^ := LocalFullOptimumDecisionCount - InitialDecisionCount;
+  end;
+end;
+
+procedure TLzmaEncoderInputWindow.Initialize(InputSource: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const InputProgress: TLzma2ProgressEvent; const BufferSize: NativeUInt;
+  const Incremental: Boolean; const MemoryLimit: UInt64; const Framed, SdkFinder: Boolean;
+  const HashOutBits: UInt32; const ExpectedDataSize: UInt64);
+var
+  RequestedCapacity: NativeUInt;
+  Lookahead: Byte;
+  LookaheadCount: Integer;
+begin
+  Self := Default(TLzmaEncoderInputWindow);
+  Source := InputSource;
+  if Source = nil then
+    RaiseLzmaError(SZ_ERROR_PARAM, 'Invalid LZMA encoder input configuration');
+  LzmaStreamingInputDimensions(Props, BufferSize, DictionarySize, ReadQuantum, RequestedCapacity);
+  IncrementalInput := Incremental;
+  Progress := InputProgress;
+  Capacity := ReadQuantum;
+  if Capacity > RequestedCapacity then
+    Capacity := RequestedCapacity;
+  ReportProgress(Progress, 0, 0);
+  ValidateMemoryLimit(TLzmaRawEncoder.RequiredMemoryCore(Profile, Props, Capacity,
+    Framed, SdkFinder, HashOutBits, ExpectedDataSize), MemoryLimit);
+  SetLength(Data, NativeInt(Capacity));
+  Fill;
+  if not FinalInput then
+  begin
+    LookaheadCount := ReadAvailable(Source, Lookahead, SizeOf(Lookahead));
+    if LookaheadCount = 0 then
+      FinalInput := True
+    else
+    begin
+      Inc(TotalRead, UInt64(LookaheadCount));
+      ReportProgress(Progress, ReportedInput, ReportedOutput);
+      // A moving reallocation may retain the old array until its copy completes.
+      ValidateMemoryLimit(CheckedMemoryAdd(UInt64(Length(Data)),
+        TLzmaRawEncoder.RequiredMemoryCore(Profile, Props, RequestedCapacity,
+          Framed, SdkFinder, HashOutBits, ExpectedDataSize)), MemoryLimit);
+      Capacity := RequestedCapacity;
+      SetLength(Data, NativeInt(Capacity));
+      Data[Count] := Lookahead;
+      Inc(Count);
+      if not IncrementalInput then
+        Fill;
+    end;
+  end;
+  if FinalInput then
+  begin
+    Capacity := Count;
+    if Capacity <> NativeUInt(Length(Data)) then
+    begin
+      ValidateMemoryLimit(CheckedMemoryAdd(UInt64(Length(Data)),
+        TLzmaRawEncoder.RequiredMemoryCore(Profile, Props, Capacity, Framed, SdkFinder, HashOutBits, ExpectedDataSize)), MemoryLimit);
+      SetLength(Data, NativeInt(Capacity));
+    end;
+    if DictionarySize > Count then
+      DictionarySize := Count;
+  end;
+end;
+
+procedure TLzmaEncoderInputWindow.Fill;
+var
+  Available, FillLimit: NativeUInt;
+  ReadSize, ReadCount: Integer;
+begin
+  ReportProgress(Progress, ReportedInput, ReportedOutput);
+  FillLimit := Capacity;
+  if IncrementalInput and (FillLimit - Count > ReadQuantum) then
+    FillLimit := Count + ReadQuantum;
+  while Count < FillLimit do
+  begin
+    Available := FillLimit - Count;
+    if Available > ReadQuantum then
+      ReadSize := Integer(ReadQuantum)
+    else
+      ReadSize := Integer(Available);
+    ReadCount := ReadAvailable(Source, Data[Count], NativeUInt(ReadSize));
+    if ReadCount = 0 then
+    begin
+      FinalInput := True;
+      Break;
+    end;
+    Inc(Count, NativeUInt(ReadCount));
+    Inc(TotalRead, UInt64(ReadCount));
+    ReportProgress(Progress, ReportedInput, ReportedOutput);
+  end;
+  if UInt64(Count) > MaxRetained then
+    MaxRetained := Count;
+end;
+
+procedure TLzmaEncoderInputWindow.RefillAtBoundary(Context: TLzmaEncoderContext;
+  const CommittedOutput: UInt64);
+var
+  DropCount: NativeUInt;
+begin
+  if FinalInput or
+    (Count - Context.Pos > TLzmaStatefulFrameLimits.MaxUnpackedSize +
+      TLzmaStatefulFrameLimits.UnpackReserve) then
+    Exit;
+  if Context.Pos <= DictionarySize then
+  begin
+    if not IncrementalInput or (Count = Capacity) then
+      Exit;
+    DropCount := 0;
+  end
+  else
+    DropCount := Context.Pos - DictionarySize;
+  // The finder shares this array. Acknowledge its pause BEFORE moving/filling bytes.
+  Context.PauseMatchFinder;
+  if DropCount <> 0 then
+  begin
+    Move(Data[DropCount], Data[0], Count - DropCount);
+    Dec(Count, DropCount);
+  end;
+  ReportedInput := Context.Processed;
+  ReportedOutput := CommittedOutput;
+  Fill;
+  Context.RebaseWindow(DropCount, Count);
+  Context.ResumeMatchFinder(Count, FinalInput);
+end;
+
+constructor TLzmaEncoderContext.Create(const OutputSink: TStream);
+begin
+  inherited Create;
+  FOutputSink := OutputSink;
+  FContinuousRange := OutputSink <> nil;
+end;
+
+procedure TLzmaEncoderContext.RebaseWindow(const DropCount, NewCount: NativeUInt);
+begin
+  if (DropCount > Pos) or (DropCount > InsertedUntil) then
+    RaiseLzmaError(SZ_ERROR_FAIL, 'Invalid LZMA encoder window cursor');
+  if FullOptimumState.Enabled and (FullOptimumState.AdditionalOffset <> 0) then
+    RaiseLzmaError(SZ_ERROR_FAIL, 'Cannot rebase LZMA encoder input before commit');
+  if SdkFinder <> nil then
+  begin
+    SdkFinder.RebaseWindow(DropCount);
+    SdkFinder.SetInputCount(NewCount);
+  end
+  else if Bt4Finder <> nil then
+  begin
+    Bt4Finder.RebaseWindow(DropCount);
+    Bt4Finder.SetInputCount(NewCount);
+  end
+  else if Hc5Finder <> nil then
+  begin
+    Hc5Finder.RebaseWindow(DropCount);
+    Hc5Finder.SetInputCount(NewCount);
+  end
+  else if Hc4Finder <> nil then
+  begin
+    Hc4Finder.RebaseWindow(DropCount);
+    Hc4Finder.SetInputCount(NewCount);
+  end
+  else if GreedyFinder <> nil then
+  begin
+    GreedyFinder.RebaseWindow(DropCount);
+    GreedyFinder.SetInputCount(NewCount);
+  end;
+  Dec(Pos, DropCount);
+  Dec(InsertedUntil, DropCount);
+  MatchCache.RebasePositions(DropCount);
+  FWindowBase := CheckedMemoryAdd(FWindowBase, DropCount);
+end;
+
+procedure TLzmaEncoderContext.PauseMatchFinder;
+begin
+  if FMatchFinderThread <> nil then FMatchFinderThread.Pause;
+end;
+
+procedure TLzmaEncoderContext.ResumeMatchFinder(const Count: NativeUInt; const FinalInput: Boolean);
+begin
+  if FMatchFinderThread <> nil then
+    FMatchFinderThread.SetWindow(FWindowBase, Count, EffectiveFastBytes, FinalInput);
+end;
+
+procedure TLzmaEncoderContext.SaveModels(var Snapshot: TLzmaEncoderModelSnapshot);
+begin
+  Move(IsMatch, Snapshot.IsMatch, SizeOf(IsMatch));
+  Move(IsRep, Snapshot.IsRep, SizeOf(IsRep));
+  Move(IsRepG0, Snapshot.IsRepG0, SizeOf(IsRepG0));
+  Move(IsRepG1, Snapshot.IsRepG1, SizeOf(IsRepG1));
+  Move(IsRepG2, Snapshot.IsRepG2, SizeOf(IsRepG2));
+  Move(IsRep0Long, Snapshot.IsRep0Long, SizeOf(IsRep0Long));
+  Snapshot.PosSlot := PosSlot;
+  Snapshot.PosDecoders := PosDecoders;
+  Snapshot.Align := Align;
+  Snapshot.LenEncoder := LenEncoder;
+  Snapshot.RepLenEncoder := RepLenEncoder;
+  Snapshot.State := State;
+  Move(Reps, Snapshot.Reps, SizeOf(Reps));
+  SetLength(Snapshot.Literals, Length(Literals));
+  if Length(Literals) <> 0 then
+    Move(Literals[0], Snapshot.Literals[0], Length(Literals) * SizeOf(CLzmaProb));
+end;
+
+procedure TLzmaEncoderContext.RestoreModels(const Snapshot: TLzmaEncoderModelSnapshot);
+begin
+  Move(Snapshot.IsMatch, IsMatch, SizeOf(IsMatch));
+  Move(Snapshot.IsRep, IsRep, SizeOf(IsRep));
+  Move(Snapshot.IsRepG0, IsRepG0, SizeOf(IsRepG0));
+  Move(Snapshot.IsRepG1, IsRepG1, SizeOf(IsRepG1));
+  Move(Snapshot.IsRepG2, IsRepG2, SizeOf(IsRepG2));
+  Move(Snapshot.IsRep0Long, IsRep0Long, SizeOf(IsRep0Long));
+  PosSlot := Snapshot.PosSlot;
+  PosDecoders := Snapshot.PosDecoders;
+  Align := Snapshot.Align;
+  LenEncoder := Snapshot.LenEncoder;
+  RepLenEncoder := Snapshot.RepLenEncoder;
+  State := Snapshot.State;
+  Move(Snapshot.Reps, Reps, SizeOf(Reps));
+  SetLength(Literals, Length(Snapshot.Literals));
+  if Length(Literals) <> 0 then
+    Move(Snapshot.Literals[0], Literals[0], Length(Literals) * SizeOf(CLzmaProb));
+end;
+
+function LzmaWriteContextLzma2Frame(Context: TLzmaEncoderContext;
+  Output: TStream; const Data, Payload: TBytes; const StartPos, UnpackSize: NativeUInt;
+  const Props: TLzmaProps; var NeedDictionary, NeedProperties: Boolean;
+  out CompressedFrame: Boolean): UInt64;
+var
+  CopyPos, CopySize: NativeUInt;
+  PackedMinusOne, UnpackedMinusOne: UInt32;
+  Control: Byte;
+  Written, PackedWireSize, CopyWireSize: UInt64;
+
+  procedure PutByte(const Value: Byte);
+  begin
+    WriteExact(Output, Value, 1);
+    Inc(Written);
+  end;
+
+begin
+  Written := 0;
+  CompressedFrame := False;
+  if (UnpackSize = 0) or (UnpackSize > NativeUInt(1) shl 21) then
+    RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA2 frame unpack bound exceeded');
+  if Length(Payload) > 65536 then
+    RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA2 frame packed bound exceeded');
+  PackedWireSize := UInt64(Length(Payload)) + 5 + UInt64(Ord(NeedProperties));
+  CopyWireSize := UInt64(UnpackSize) + 3 *
+    ((UInt64(UnpackSize) + TLzmaStatefulFrameLimits.MaxPackedSize - 1) div
+      TLzmaStatefulFrameLimits.MaxPackedSize);
+  if PackedWireSize >= CopyWireSize then
+  begin
+    Context.RestoreModels(Context.FModelSnapshot);
+    CopyPos := StartPos;
+    while CopyPos < Context.Pos do
+    begin
+      CopySize := Context.Pos - CopyPos;
+      if CopySize > 65536 then
+        CopySize := 65536;
+      if NeedDictionary then
+        PutByte(1)
+      else
+        PutByte(2);
+      PutByte(Byte((CopySize - 1) shr 8));
+      PutByte(Byte((CopySize - 1) and $FF));
+      WriteExact(Output, Data[CopyPos], CopySize);
+      Inc(Written, CopySize);
+      NeedDictionary := False;
+      Inc(CopyPos, CopySize);
+    end;
+  end
+  else
+  begin
+    UnpackedMinusOne := UInt32(UnpackSize - 1);
+    PackedMinusOne := UInt32(Length(Payload) - 1);
+    if NeedDictionary then
+      Control := $E0
+    else if NeedProperties then
+      Control := $C0
+    else
+      Control := $80;
+    PutByte(Control or Byte(UnpackedMinusOne shr 16));
+    PutByte(Byte((UnpackedMinusOne shr 8) and $FF));
+    PutByte(Byte(UnpackedMinusOne and $FF));
+    PutByte(Byte(PackedMinusOne shr 8));
+    PutByte(Byte(PackedMinusOne and $FF));
+    if NeedProperties then
+      PutByte(Byte((Props.Pb * 5 + Props.Lp) * 9 + Props.Lc));
+    WriteExact(Output, Payload[0], Length(Payload));
+    Inc(Written, UInt64(Length(Payload)));
+    NeedDictionary := False;
+    NeedProperties := False;
+    CompressedFrame := True;
+  end;
+  Result := Written;
+end;
+
+class procedure TLzmaRawEncoder.EncodeLzma2StreamCore(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const Progress: TLzma2ProgressEvent; const Diagnostics: PLzma2EncodeDiagnostics;
+  const BufferSize: NativeUInt; const MemoryLimit: UInt64;
+  const UseSdkMtHighHash: Boolean);
+var
+  Context: TLzmaEncoderContext;
+  Window: TLzmaEncoderInputWindow;
+  Payload: TBytes;
+  StartPos: NativeUInt;
+  EnableOptimumWindow, NeedDictionary, NeedProperties, CompressedFrame: Boolean;
+  CommittedOutput, DecisionCount, FrameStartProcessed: UInt64;
+  FrameUnpackLimit: NativeUInt;
+  TrialProgress: TLzma2ProgressEvent;
+  EndMarker: Byte;
+begin
+  if Destination = nil then
+    RaiseLzmaError(SZ_ERROR_PARAM, 'LZMA2 output stream is required');
+  if (Props.Lc + Props.Lp > 4) or (Props.Pb > 4) then
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA2 encoder properties');
+  EnableOptimumWindow := (Profile.ParserMode = lpmSdkProfile) and (Profile.Algorithm <> 0);
+  FrameUnpackLimit := TLzmaStatefulFrameLimits.MaxUnpackedSize;
+  if BufferSize <> 0 then
+  begin
+    FrameUnpackLimit := CheckedBufferSize(BufferSize);
+    if FrameUnpackLimit > TLzmaStatefulFrameLimits.MaxUnpackedSize then
+      FrameUnpackLimit := TLzmaStatefulFrameLimits.MaxUnpackedSize;
+  end;
+  Window.Initialize(Source, Profile, Props, Progress, BufferSize, False, MemoryLimit, True);
+  ValidateMemoryLimit(RequiredStreamingMemory(Profile, Props, Window.Capacity, True), MemoryLimit);
+  NeedDictionary := True;
+  NeedProperties := True;
+  CommittedOutput := 0;
+  if Diagnostics <> nil then
+  begin
+    Diagnostics.ActualThreadCount := 1;
+    Diagnostics.OptimumParserEnabled := False;
+    Diagnostics.FastBytes := Profile.FastBytes;
+    Diagnostics.NiceLen := Profile.FastBytes;
+    Diagnostics.CutValue := Profile.CutValue;
+    Diagnostics.ParserMode := Profile.ParserMode;
+    Diagnostics.MatchFinderProfile := Profile.MatchFinderProfile;
+    Diagnostics.NumHashBytes := Profile.NumHashBytes;
+  end;
+  FrameStartProcessed := 0;
+  TrialProgress := nil;
+  if Assigned(Progress) then
+    TrialProgress := procedure(const TrialInput, TrialOutput: UInt64; var Cancel: Boolean)
+      begin
+        Progress(FrameStartProcessed, CommittedOutput, Cancel);
+      end;
+  Context := TLzmaEncoderContext.Create;
+  Context.FUseSdkMtHighHash := UseSdkMtHighHash and (Profile.Algorithm <> 0);
+  try
+    while Context.Pos < Window.Count do
+    begin
+      Window.RefillAtBoundary(Context, CommittedOutput);
+      StartPos := Context.Pos;
+      FrameStartProcessed := Context.Processed;
+      Payload := Context.Encode(Window.Data, 0, Window.Count, Props, Profile.FastBytes,
+        Profile.CutValue, Profile.MatchFinderKind, False, EnableOptimumWindow, TrialProgress,
+        @DecisionCount, True, Window.FinalInput, FrameUnpackLimit);
+      Inc(CommittedOutput, LzmaWriteContextLzma2Frame(Context, Destination, Window.Data,
+        Payload, StartPos, Context.Pos - StartPos, Props, NeedDictionary, NeedProperties,
+        CompressedFrame));
+      if (Diagnostics <> nil) and CompressedFrame then
+      begin
+        Inc(Diagnostics.BlockCount);
+        Inc(Diagnostics.FullOptimumDecisionCount, DecisionCount);
+        if EnableOptimumWindow then
+          Diagnostics.OptimumParserEnabled := True;
+      end
+      else if Diagnostics <> nil then
+        Inc(Diagnostics.CopyFastPathCount, Integer(
+          (UInt64(Context.Pos - StartPos) + TLzmaStatefulFrameLimits.MaxPackedSize - 1) div
+            TLzmaStatefulFrameLimits.MaxPackedSize));
+      ReportProgress(Progress, Context.Processed, CommittedOutput);
+    end;
+    EndMarker := 0;
+    WriteExact(Destination, EndMarker, 1);
+    Inc(CommittedOutput);
+    ReportProgress(Progress, Context.Processed, CommittedOutput);
+  finally
+    Context.Free;
+  end;
+end;
+
+class procedure TLzmaRawEncoder.EncodeLzma2Stream(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const Progress: TLzma2ProgressEvent; const Diagnostics: PLzma2EncodeDiagnostics;
+  const BufferSize: NativeUInt; const MemoryLimit: UInt64);
+begin
+  EncodeLzma2StreamCore(Source, Destination, Profile, Props, Progress, Diagnostics,
+    BufferSize, MemoryLimit, False);
+end;
+
+class procedure TLzmaRawEncoder.EncodeLzma2MtWorkerStream(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const Progress: TLzma2ProgressEvent; const Diagnostics: PLzma2EncodeDiagnostics;
+  const BufferSize: NativeUInt; const MemoryLimit: UInt64);
+begin
+  EncodeLzma2StreamCore(Source, Destination, Profile, Props, Progress, Diagnostics,
+    BufferSize, MemoryLimit, True);
+end;
+
+destructor TLzmaEncoderContext.Destroy;
+begin
+  // Join before destroying the range encoder, finder or its shared input window.
+  FMatchFinderThread.Free;
+  FThreadProgress := nil;
+  Encoder.Free;
+  SdkFinder.Free;
+  Bt4Finder.Free;
+  Hc5Finder.Free;
+  Hc4Finder.Free;
+  GreedyFinder.Free;
+  inherited;
+end;
+
+class function TLzmaRawEncoder.EncodeGreedyChunk(const Data: TBytes; const Offset, Count: NativeUInt;
+  const Props: TLzmaProps; const FastBytes: Integer; const CutValue: UInt32;
+  const MatchFinderKind: TLzmaMatchFinderKind; const WriteEndMarker: Boolean;
+  const EnableOptimumWindow: Boolean; const Progress: TLzma2ProgressEvent;
+  const FullOptimumDecisionCount: PUInt64): TBytes;
+var
+  Context: TLzmaEncoderContext;
+begin
+  Context := TLzmaEncoderContext.Create;
+  try
+    Result := Context.Encode(Data, Offset, Count, Props, FastBytes, CutValue,
+      MatchFinderKind, WriteEndMarker, EnableOptimumWindow, Progress,
+      FullOptimumDecisionCount);
+  finally
+    Context.Free;
   end;
 end;
 
@@ -2742,1166 +4119,128 @@ end;
 
 class procedure TLzmaRawEncoder.Encode(Source: TStream; Destination: TStream; const Profile: TLzmaEncoderProfile;
   const Props: TLzmaProps; const WriteEndMarker: Boolean; const Progress: TLzma2ProgressEvent);
-const
-  kStreamBufferSize = 1 shl 20;
-  kCompactGranularity = 1 shl 16;
-  kProgressInterval = UInt64(1) shl 20;
-type
-  PLzmaLiteralProbs = ^TLzmaLiteralProbs;
 var
-  IsMatch: array[0..TLzmaEncoderConstants.kNumStates - 1,
-    0..TLzmaEncoderConstants.kNumPosStatesMax - 1] of CLzmaProb;
-  IsRep: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRepG0: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRepG1: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRepG2: array[0..TLzmaEncoderConstants.kNumStates - 1] of CLzmaProb;
-  IsRep0Long: array[0..TLzmaEncoderConstants.kNumStates - 1,
-    0..TLzmaEncoderConstants.kNumPosStatesMax - 1] of CLzmaProb;
-  PosSlot: TLzmaPosSlotProbs;
-  PosDecoders: TLzmaPosDecoderProbs;
-  Align: TLzmaAlignProbs;
-  LenEncoder: TLenEncoder;
-  RepLenEncoder: TLenEncoder;
-  Literals: array of CLzmaProb;
-  ProbPrices: TLzmaProbPrices;
-  LenPrices: TLzmaLenPriceEncoder;
-  RepLenPrices: TLzmaLenPriceEncoder;
-  DistancePrices: TLzmaDistancePriceEncoder;
-  Buffer: TBytes;
-  Pending: TBytes;
-  Encoder: TLzmaRangeEncoder;
-  GreedyFinder: TLzmaGreedyMatchFinder;
-  Hc4Finder: TLzmaHashChain4MatchFinder;
-  Hc5Finder: TLzmaHashChain5MatchFinder;
-  Bt4Finder: TLzmaBinaryTree4MatchFinder;
-  Count: Integer;
-  FinderInsertedUntil: NativeUInt;
-  PendingBase: UInt64;
-  PendingSize: NativeInt;
-  Processed: UInt64;
-  NextProgressAt: UInt64;
-  State: UInt32;
-  Reps: array[0..3] of UInt32;
-  PosState: UInt32;
-  LitState: UInt32;
-  LiteralOffset: NativeUInt;
-  EffectiveFastBytes: UInt32;
-  MaxSearchDistance: UInt32;
-  HistoryKeep: UInt64;
-  PbMask: UInt32;
-  LpMask: UInt32;
-  LcBits: UInt32;
-  LcShift: UInt32;
-  MatchFinderDirty: Boolean;
-  InputEof: Boolean;
-  NumPosStates: UInt32;
-  OptimumReplayCount: UInt32;
-  OptimumReplayIndex: UInt32;
-  OptimumReplayQueue: TArray<TLzmaOptimumDecision>;
-
-  procedure MaybeReportProgress;
-  begin
-    if Processed < NextProgressAt then
-      Exit;
-    ReportProgress(Progress, Processed, Encoder.FCommittedOutputSize);
-    repeat
-      Inc(NextProgressAt, kProgressInterval);
-    until Processed < NextProgressAt;
-  end;
-
-  function CurrentIndex: NativeInt;
-  begin
-    if Processed < PendingBase then
-      RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA stream encoder window underflow');
-    if Processed - PendingBase > UInt64(High(NativeInt)) then
-      RaiseLzmaError(SZ_ERROR_MEM, 'LZMA stream encoder pending window exceeds native capacity');
-    Result := NativeInt(Processed - PendingBase);
-  end;
-
-  function PendingAvailable: UInt64;
-  begin
-    if Processed < PendingBase then
-      RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA stream encoder window underflow');
-    Result := UInt64(PendingSize) - (Processed - PendingBase);
-  end;
-
-  procedure FreeMatchFinder;
-  begin
-    Bt4Finder.Free;
-    Bt4Finder := nil;
-    Hc5Finder.Free;
-    Hc5Finder := nil;
-    Hc4Finder.Free;
-    Hc4Finder := nil;
-    GreedyFinder.Free;
-    GreedyFinder := nil;
-    FinderInsertedUntil := 0;
-  end;
-
-  procedure InvalidateMatchFinder;
-  begin
-    FreeMatchFinder;
-    MatchFinderDirty := True;
-  end;
-
-  procedure AppendPending(const Chunk; const ChunkSize: NativeInt);
-  begin
-    if ChunkSize <= 0 then
-      Exit;
-    if ChunkSize > High(NativeInt) - PendingSize then
-      RaiseLzmaError(SZ_ERROR_MEM, 'Raw LZMA stream encoder pending window exceeds native capacity');
-    SetLength(Pending, PendingSize + ChunkSize);
-    Move(Chunk, Pending[PendingSize], ChunkSize);
-    Inc(PendingSize, ChunkSize);
-    InvalidateMatchFinder;
-  end;
-
-  procedure CompactPending;
-  var
-    Drop: UInt64;
-    DropNative: NativeInt;
-    EncodedInPending: UInt64;
-    Keep: UInt64;
-    Remaining: NativeInt;
-
-    function CurrentHistoryKeep: UInt64;
-    var
-      RepIndex: Integer;
-      RepKeep: UInt64;
-    begin
-      Result := HistoryKeep;
-      for RepIndex := 0 to 3 do
-      begin
-        RepKeep := UInt64(Reps[RepIndex]) + TLzmaEncoderConstants.kMatchMaxLen + 16;
-        if RepKeep > Result then
-          Result := RepKeep;
-      end;
-    end;
-  begin
-    if Processed < PendingBase then
-      RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA stream encoder window underflow');
-    EncodedInPending := Processed - PendingBase;
-    Keep := CurrentHistoryKeep;
-    if EncodedInPending <= Keep + kCompactGranularity then
-      Exit;
-    Drop := EncodedInPending - Keep;
-    if Drop = 0 then
-      Exit;
-    if Drop > UInt64(PendingSize) then
-      Drop := UInt64(PendingSize);
-    DropNative := NativeInt(Drop);
-    Remaining := PendingSize - DropNative;
-    if Remaining > 0 then
-      Move(Pending[DropNative], Pending[0], Remaining);
-    PendingSize := Remaining;
-    SetLength(Pending, PendingSize);
-    Inc(PendingBase, Drop);
-    InvalidateMatchFinder;
-  end;
-
-  procedure EnsureMatchFinder;
-  begin
-    if (not MatchFinderDirty) and
-      ((GreedyFinder <> nil) or (Hc4Finder <> nil) or (Hc5Finder <> nil) or (Bt4Finder <> nil)) then
-      Exit;
-
-    FreeMatchFinder;
-    case Profile.MatchFinderKind of
-      mfHashChain4:
-        Hc4Finder := TLzmaHashChain4MatchFinder.Create(Pending, 0, PendingSize,
-          Props.DictionarySize, EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen,
-          Profile.CutValue);
-      mfHashChain5:
-        Hc5Finder := TLzmaHashChain5MatchFinder.Create(Pending, 0, PendingSize,
-          Props.DictionarySize, EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen,
-          Profile.CutValue);
-      mfBinaryTree4:
-        Bt4Finder := TLzmaBinaryTree4MatchFinder.Create(Pending, 0, PendingSize,
-          Props.DictionarySize, EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen,
-          Profile.CutValue);
-    else
-      GreedyFinder := TLzmaGreedyMatchFinder.Create(Pending, 0, PendingSize,
-        Props.DictionarySize, EffectiveFastBytes, TLzmaEncoderConstants.kMatchMaxLen,
-        Profile.CutValue);
-    end;
-    MatchFinderDirty := False;
-  end;
-
-  procedure EnsureMatchFinderInsertedUntil(const Target: NativeUInt);
-  var
-    BoundedTarget: NativeUInt;
-  begin
-    EnsureMatchFinder;
-    BoundedTarget := Target;
-    if BoundedTarget > NativeUInt(PendingSize) then
-      BoundedTarget := NativeUInt(PendingSize);
-    if BoundedTarget <= FinderInsertedUntil then
-      Exit;
-
-    if Bt4Finder <> nil then
-      Bt4Finder.InsertRange(FinderInsertedUntil, BoundedTarget - FinderInsertedUntil)
-    else if Hc5Finder <> nil then
-      Hc5Finder.SkipRangeMonotonic(FinderInsertedUntil, BoundedTarget - FinderInsertedUntil)
-    else if Hc4Finder <> nil then
-      Hc4Finder.InsertRange(FinderInsertedUntil, BoundedTarget - FinderInsertedUntil)
-    else
-      GreedyFinder.InsertRange(FinderInsertedUntil, BoundedTarget - FinderInsertedUntil);
-    FinderInsertedUntil := BoundedTarget;
-  end;
-
-  procedure ReadMatchFinderMatchesAt(const RelativePos: NativeUInt;
-    var Matches: TLzmaMatchBuffer);
-  begin
-    Matches.Clear;
-    if (RelativePos = 0) or (RelativePos >= NativeUInt(PendingSize)) then
-      Exit;
-
-    EnsureMatchFinderInsertedUntil(RelativePos);
-    if Bt4Finder <> nil then
-      Bt4Finder.ReadMatches(RelativePos, Matches)
-    else if Hc5Finder <> nil then
-      Hc5Finder.ReadMatches(RelativePos, Matches)
-    else if Hc4Finder <> nil then
-      Hc4Finder.ReadMatches(RelativePos, Matches)
-    else
-      GreedyFinder.ReadMatches(RelativePos, Matches);
-    if FinderInsertedUntil < RelativePos + 1 then
-      FinderInsertedUntil := RelativePos + 1;
-  end;
-
-  procedure ReadLookaheadMatchFinderMatchesAt(const RelativePos: NativeUInt;
-    var Matches: TLzmaMatchBuffer);
-  begin
-    Matches.Clear;
-    if (RelativePos = 0) or (RelativePos >= NativeUInt(PendingSize)) then
-      Exit;
-
-    EnsureMatchFinder;
-    if Bt4Finder <> nil then
-      Bt4Finder.GetMatches(RelativePos, Matches)
-    else if Hc5Finder <> nil then
-      Hc5Finder.GetMatches(RelativePos, Matches)
-    else if Hc4Finder <> nil then
-      Hc4Finder.GetMatches(RelativePos, Matches)
-    else
-      GreedyFinder.GetMatches(RelativePos, Matches);
-  end;
-
-  procedure ClampMatchBufferLengths(var MatchList: TLzmaMatchBuffer;
-    const MaxLen: UInt32);
-  var
-    MatchIndex: Integer;
-  begin
-    for MatchIndex := 0 to MatchList.Count - 1 do
-    begin
-      if MatchList.Items[MatchIndex].Length > MaxLen then
-        MatchList.Items[MatchIndex].Length := MaxLen;
-    end;
-  end;
-
-  procedure RefreshOptimumPriceTables;
-  begin
-    LzmaUpdateLenPriceEncoder(LenPrices, LenEncoder.Low, LenEncoder.High,
-      NumPosStates, ProbPrices);
-    LzmaUpdateLenPriceEncoder(RepLenPrices, RepLenEncoder.Low,
-      RepLenEncoder.High, NumPosStates, ProbPrices);
-    LzmaUpdateDistancePriceEncoder(DistancePrices, PosSlot, PosDecoders,
-      Align, ProbPrices);
-  end;
-
-  function NumAvailAtCurrent: UInt32;
-  var
-    Avail: UInt64;
-  begin
-    Avail := PendingAvailable;
-    if Avail > TLzmaEncoderConstants.kMatchMaxLen then
-      Result := TLzmaEncoderConstants.kMatchMaxLen
-    else
-      Result := UInt32(Avail);
-  end;
-
-  function NumAvailAtRelative(const RelativePos: NativeUInt): UInt32;
-  var
-    Avail: NativeUInt;
-  begin
-    if RelativePos >= NativeUInt(PendingSize) then
-      Exit(0);
-    Avail := NativeUInt(PendingSize) - RelativePos;
-    if Avail > TLzmaEncoderConstants.kMatchMaxLen then
-      Result := TLzmaEncoderConstants.kMatchMaxLen
-    else
-      Result := UInt32(Avail);
-  end;
-
-  function MatchLenAtRelativeDistance(const RelativePos: NativeUInt;
-    const Distance, MaxLen: UInt32): UInt32;
-  var
-    Avail: UInt32;
-    Right: NativeUInt;
-  begin
-    Result := 0;
-    if (Distance = 0) or (NativeUInt(Distance) > RelativePos) then
-      Exit;
-    Avail := NumAvailAtRelative(RelativePos);
-    if (MaxLen <> 0) and (Avail > MaxLen) then
-      Avail := MaxLen;
-    if Avail = 0 then
-      Exit;
-    Right := RelativePos - NativeUInt(Distance);
-    Result := LzmaCountMatchingBytes(Pending, RelativePos, Right, Avail);
-  end;
-
-  function MatchLenAtDistance(const Distance: UInt32): UInt32;
-  begin
-    Result := MatchLenAtRelativeDistance(NativeUInt(CurrentIndex), Distance, 0);
-  end;
-
-  function DecisionMatchesInput(const DecisionLen, DecisionBack: UInt32): Boolean;
-  var
-    Distance: UInt32;
-  begin
-    Result := False;
-    if (DecisionLen = 0) or (UInt64(DecisionLen) > PendingAvailable) then
-      Exit;
-    if DecisionBack = LZMA_OPTIMUM_BACK_LITERAL then
-      Exit(DecisionLen = 1);
-    if DecisionBack < 4 then
-      Distance := Reps[Integer(DecisionBack)]
-    else
-      Distance := DecisionBack - 3;
-    Result := MatchLenAtRelativeDistance(NativeUInt(CurrentIndex), Distance,
-      DecisionLen) >= DecisionLen;
-  end;
-
-  procedure ClearOptimumReplayQueue;
-  begin
-    OptimumReplayCount := 0;
-    OptimumReplayIndex := 0;
-    SetLength(OptimumReplayQueue, 0);
-  end;
-
-  function IsOptimumReplayDecisionUsable(
-    const Decision: TLzmaOptimumDecision): Boolean;
-  begin
-    Result := DecisionMatchesInput(Decision.Len, Decision.Back);
-  end;
-
-  function TryPopOptimumReplayDecision(out Len, Back: UInt32): Boolean;
-  var
-    Decision: TLzmaOptimumDecision;
-  begin
-    Result := False;
-    if OptimumReplayIndex >= OptimumReplayCount then
-      Exit;
-
-    Decision := OptimumReplayQueue[Integer(OptimumReplayIndex)];
-    if not IsOptimumReplayDecisionUsable(Decision) then
-    begin
-      ClearOptimumReplayQueue;
-      Exit;
-    end;
-
-    Len := Decision.Len;
-    Back := Decision.Back;
-    Inc(OptimumReplayIndex);
-    if OptimumReplayIndex >= OptimumReplayCount then
-      ClearOptimumReplayQueue;
-    Result := True;
-  end;
-
-  function QueueOptimumReplayPath(const Nodes: array of TLzmaOptimumNode;
-    const EndPos: UInt32; out FirstLen, FirstBack: UInt32): Boolean;
-  var
-    BackwardState: TLzmaOptimumBackwardState;
-    DecisionCount: UInt32;
-    Decisions: TArray<TLzmaOptimumDecision>;
-    Index: UInt32;
-
-    function ReplayPathMatchesInput: Boolean;
-    var
-      DecisionIndex: UInt32;
-      SimPos: NativeUInt;
-      SimReps: array[0..3] of UInt32;
-
-      procedure MoveSimRepToFront(const RepIndex: Integer);
-      var
-        I: Integer;
-        Distance: UInt32;
-      begin
-        if RepIndex <= 0 then
-          Exit;
-        Distance := SimReps[RepIndex];
-        for I := RepIndex downto 1 do
-          SimReps[I] := SimReps[I - 1];
-        SimReps[0] := Distance;
-      end;
-
-      function AcceptDecision(const Decision: TLzmaOptimumDecision): Boolean;
-      var
-        Distance: UInt32;
-        RepIndex: Integer;
-      begin
-        Result := False;
-        if SimPos > NativeUInt(PendingSize) then
-          Exit;
-        if (Decision.Len = 0) or
-          (NativeUInt(Decision.Len) > NativeUInt(PendingSize) - SimPos) then
-          Exit;
-        if Decision.Back = LZMA_OPTIMUM_BACK_LITERAL then
-        begin
-          Result := Decision.Len = 1;
-          if Result then
-            Inc(SimPos);
-          Exit;
-        end;
-
-        if Decision.Back < 4 then
-        begin
-          RepIndex := Integer(Decision.Back);
-          Distance := SimReps[RepIndex];
-          if MatchLenAtRelativeDistance(SimPos, Distance, Decision.Len) < Decision.Len then
-            Exit;
-          MoveSimRepToFront(RepIndex);
-          Inc(SimPos, Decision.Len);
-          Exit(True);
-        end;
-
-        Distance := Decision.Back - 3;
-        if MatchLenAtRelativeDistance(SimPos, Distance, Decision.Len) < Decision.Len then
-          Exit;
-        SimReps[3] := SimReps[2];
-        SimReps[2] := SimReps[1];
-        SimReps[1] := SimReps[0];
-        SimReps[0] := Distance;
-        Inc(SimPos, Decision.Len);
-        Result := True;
-      end;
-
-    begin
-      Result := False;
-      SimPos := NativeUInt(CurrentIndex);
-      for DecisionIndex := 0 to 3 do
-        SimReps[Integer(DecisionIndex)] := Reps[Integer(DecisionIndex)];
-      for DecisionIndex := 0 to DecisionCount - 1 do
-      begin
-        if not AcceptDecision(Decisions[Integer(DecisionIndex)]) then
-          Exit;
-      end;
-      Result := True;
-    end;
-  begin
-    Result := False;
-    FirstLen := 0;
-    FirstBack := LZMA_OPTIMUM_BACK_LITERAL;
-    ClearOptimumReplayQueue;
-
-    SetLength(Decisions, Integer(EndPos));
-    if not LzmaOptimumReplaySdkBackward(Nodes, EndPos, Decisions, DecisionCount,
-      BackwardState) then
-      Exit;
-    if (DecisionCount = 0) or (not ReplayPathMatchesInput) then
-      Exit;
-    if (DecisionCount = 0) or not IsOptimumReplayDecisionUsable(Decisions[0]) then
-      Exit;
-
-    FirstLen := Decisions[0].Len;
-    FirstBack := Decisions[0].Back;
-    if DecisionCount > 1 then
-    begin
-      SetLength(OptimumReplayQueue, Integer(DecisionCount - 1));
-      for Index := 1 to DecisionCount - 1 do
-        OptimumReplayQueue[Integer(Index - 1)] := Decisions[Integer(Index)];
-      OptimumReplayCount := DecisionCount - 1;
-      OptimumReplayIndex := 0;
-    end;
-
-    Result := True;
-  end;
-
-  function GetBestDecision(out Len, Back: UInt32): Boolean;
-  var
-    BestMatchDistance: UInt32;
-    BestMatchLen: UInt32;
-    BestRepIndex: Integer;
-    BestRepLen: UInt32;
-    Cur: NativeInt;
-    MatchIndex: Integer;
-    Matches: TLzmaMatchBuffer;
-    RepIndex: Integer;
-    TestLen: UInt32;
-    WindowBack: UInt32;
-    WindowLen: UInt32;
-
-    function TryGetOptimumWindowDecision(const BaselineLen, BaselineBack: UInt32;
-      out WindowLen, WindowBack: UInt32): Boolean;
-    var
-      LiteralResolver: TLzmaOptimumLiteralResolver;
-      BaseIndex: NativeUInt;
-      MatchesByPos: TArray<TLzmaMatchBuffer>;
-      Nodes: TArray<TLzmaOptimumNode>;
-      PosIndex: Integer;
-      PosStates: TArray<UInt32>;
-      ProbInputsByPos: TArray<TLzmaOptimumStateProbInputs>;
-      ProbState: Integer;
-      RelativePos: NativeUInt;
-      RepResolver: TLzmaOptimumRepLensResolver;
-      BaselinePrice: UInt32;
-      InitialTargetEnd: UInt32;
-      LookaheadWindowEnd: UInt32;
-      ReplayBack: UInt32;
-      ReplayLen: UInt32;
-      TempBt4Finder: TLzmaBinaryTree4MatchFinder;
-      TempFinderInsertedUntil: NativeUInt;
-      TempGreedyFinder: TLzmaGreedyMatchFinder;
-      TempHc4Finder: TLzmaHashChain4MatchFinder;
-      TempHc5Finder: TLzmaHashChain5MatchFinder;
-      TargetEnd: UInt32;
-      TargetPrice: UInt32;
-      WindowEnd: UInt32;
-
-      procedure FreeTempMatchFinder;
-      begin
-        TempBt4Finder.Free;
-        TempBt4Finder := nil;
-        TempHc5Finder.Free;
-        TempHc5Finder := nil;
-        TempHc4Finder.Free;
-        TempHc4Finder := nil;
-        TempGreedyFinder.Free;
-        TempGreedyFinder := nil;
-        TempFinderInsertedUntil := 0;
-      end;
-
-      procedure EnsureTempMatchFinder;
-      begin
-        if (TempGreedyFinder <> nil) or (TempHc4Finder <> nil) or
-          (TempHc5Finder <> nil) or (TempBt4Finder <> nil) then
-          Exit;
-
-        case Profile.MatchFinderKind of
-          mfHashChain4:
-            TempHc4Finder := TLzmaHashChain4MatchFinder.Create(Pending, 0,
-              PendingSize, Props.DictionarySize, EffectiveFastBytes,
-              TLzmaEncoderConstants.kMatchMaxLen, Profile.CutValue);
-          mfHashChain5:
-            TempHc5Finder := TLzmaHashChain5MatchFinder.Create(Pending, 0,
-              PendingSize, Props.DictionarySize, EffectiveFastBytes,
-              TLzmaEncoderConstants.kMatchMaxLen, Profile.CutValue);
-          mfBinaryTree4:
-            TempBt4Finder := TLzmaBinaryTree4MatchFinder.Create(Pending, 0,
-              PendingSize, Props.DictionarySize, EffectiveFastBytes,
-              TLzmaEncoderConstants.kMatchMaxLen, Profile.CutValue);
-        else
-          TempGreedyFinder := TLzmaGreedyMatchFinder.Create(Pending, 0,
-            PendingSize, Props.DictionarySize, EffectiveFastBytes,
-            TLzmaEncoderConstants.kMatchMaxLen, Profile.CutValue);
-        end;
-      end;
-
-      procedure EnsureTempMatchFinderInsertedUntil(const Target: NativeUInt);
-      var
-        BoundedTarget: NativeUInt;
-      begin
-        EnsureTempMatchFinder;
-        BoundedTarget := Target;
-        if BoundedTarget > NativeUInt(PendingSize) then
-          BoundedTarget := NativeUInt(PendingSize);
-        if BoundedTarget <= TempFinderInsertedUntil then
-          Exit;
-
-        if TempBt4Finder <> nil then
-          TempBt4Finder.InsertRange(TempFinderInsertedUntil,
-            BoundedTarget - TempFinderInsertedUntil)
-        else if TempHc5Finder <> nil then
-          TempHc5Finder.SkipRangeMonotonic(TempFinderInsertedUntil,
-            BoundedTarget - TempFinderInsertedUntil)
-        else if TempHc4Finder <> nil then
-          TempHc4Finder.InsertRange(TempFinderInsertedUntil,
-            BoundedTarget - TempFinderInsertedUntil)
-        else
-          TempGreedyFinder.InsertRange(TempFinderInsertedUntil,
-            BoundedTarget - TempFinderInsertedUntil);
-        TempFinderInsertedUntil := BoundedTarget;
-      end;
-
-      procedure ReadTempMatchFinderMatchesAt(const RelativePos: NativeUInt;
-        var Matches: TLzmaMatchBuffer);
-      begin
-        Matches.Clear;
-        if (RelativePos = 0) or (RelativePos >= NativeUInt(PendingSize)) then
-          Exit;
-
-        EnsureTempMatchFinderInsertedUntil(RelativePos);
-        if TempBt4Finder <> nil then
-          TempBt4Finder.ReadMatches(RelativePos, Matches)
-        else if TempHc5Finder <> nil then
-          TempHc5Finder.ReadMatches(RelativePos, Matches)
-        else if TempHc4Finder <> nil then
-          TempHc4Finder.ReadMatches(RelativePos, Matches)
-        else
-          TempGreedyFinder.ReadMatches(RelativePos, Matches);
-        if TempFinderInsertedUntil < RelativePos + 1 then
-          TempFinderInsertedUntil := RelativePos + 1;
-      end;
-
-      function HasLiteralLookaheadWork(out LookaheadEnd: UInt32): Boolean;
-      var
-        MatchIndex: Integer;
-        ProbeLen: UInt32;
-        ProbeMatches: TLzmaMatchBuffer;
-        RepIndex: Integer;
-        TestLen: UInt32;
-      begin
-        Result := False;
-        LookaheadEnd := 1;
-        if WindowEnd <= 1 then
-          Exit;
-
-        ProbeLen := 0;
-        ReadLookaheadMatchFinderMatchesAt(BaseIndex + 1, ProbeMatches);
-        for MatchIndex := 0 to ProbeMatches.Count - 1 do
-        begin
-          TestLen := ProbeMatches.Items[MatchIndex].Length;
-          if TestLen > EffectiveFastBytes then
-            TestLen := EffectiveFastBytes;
-          if TestLen > ProbeLen then
-            ProbeLen := TestLen;
-        end;
-
-        for RepIndex := 0 to 3 do
-        begin
-          TestLen := MatchLenAtRelativeDistance(BaseIndex + 1,
-            Reps[RepIndex], EffectiveFastBytes);
-          if TestLen > ProbeLen then
-            ProbeLen := TestLen;
-        end;
-
-        if ProbeLen < TLzmaEncoderConstants.kMatchMinLen then
-          Exit;
-        LookaheadEnd := ProbeLen + 1;
-        if LookaheadEnd > WindowEnd then
-          LookaheadEnd := WindowEnd;
-        Result := True;
-      end;
-
-      function GetDirectBaselinePrice(out DirectPrice,
-        DirectEnd: UInt32): Boolean;
-      var
-        BaselineInput: TLzmaOptimumLiteralInput;
-        BaselineMatches: TLzmaMatchBuffer;
-        BaselineNodes: TArray<TLzmaOptimumNode>;
-        BaselineRepLens: TLzmaOptimumRepLens;
-      begin
-        Result := False;
-        DirectPrice := High(UInt32);
-        DirectEnd := BaselineLen;
-        if DirectEnd = 0 then
-          DirectEnd := 1;
-        if DirectEnd >= UInt32(Length(Nodes)) then
-          Exit;
-
-        SetLength(BaselineNodes, Integer(DirectEnd) + 1);
-        LzmaOptimumPrepareNodes(BaselineNodes, 0, State, Reps);
-        if BaselineBack = LZMA_OPTIMUM_BACK_LITERAL then
-        begin
-          if (DirectEnd <> 1) or
-            (not LiteralResolver(0, BaselineNodes[0], BaselineInput)) or
-            (not BaselineInput.Enabled) then
-            Exit;
-          Result := LzmaOptimumRelaxLiteralCandidate(BaselineNodes, 0,
-            ProbPrices, BaselineInput.LiteralProbs,
-            IsMatch[State][UInt32(Processed) and PbMask], BaselineInput.Value,
-            BaselineInput.UseMatchedLiteral, BaselineInput.MatchByte,
-            DirectPrice);
-        end
-        else if (BaselineBack = 0) and (BaselineLen = 1) then
-        begin
-          Result := LzmaOptimumRelaxShortRepCandidate(BaselineNodes, 0,
-            ProbPrices, IsMatch[State][UInt32(Processed) and PbMask],
-            IsRep[State], IsRepG0[State],
-            IsRep0Long[State][UInt32(Processed) and PbMask], DirectPrice);
-        end
-        else if BaselineBack < 4 then
-        begin
-          if (BaselineLen < TLzmaEncoderConstants.kMatchMinLen) or
-            (BaselineBack > UInt32(High(BaselineRepLens))) then
-            Exit;
-          FillChar(BaselineRepLens, SizeOf(BaselineRepLens), 0);
-          BaselineRepLens[Integer(BaselineBack)] := BaselineLen;
-          Result := LzmaOptimumRelaxRepCandidates(BaselineNodes, 0,
-            BaselineRepLens, ProbPrices, RepLenPrices,
-            IsMatch[State][UInt32(Processed) and PbMask], IsRep[State],
-            IsRepG0[State], IsRepG1[State], IsRepG2[State],
-            IsRep0Long[State][UInt32(Processed) and PbMask],
-            UInt32(Processed) and PbMask, DirectPrice);
-        end
-        else
-        begin
-          if BaselineLen < TLzmaEncoderConstants.kMatchMinLen then
-            Exit;
-          BaselineMatches.Clear;
-          BaselineMatches.Add(BaselineLen, BaselineBack - 3);
-          Result := LzmaOptimumRelaxMatchCandidates(BaselineNodes, 0,
-            BaselineMatches, ProbPrices, LenPrices, DistancePrices,
-            IsMatch[State][UInt32(Processed) and PbMask], IsRep[State],
-            UInt32(Processed) and PbMask, BaselineLen, BaselineLen,
-            DirectPrice);
-        end;
-
-        if Result then
-          DirectPrice := BaselineNodes[Integer(DirectEnd)].Price;
-        Result := Result and (DirectPrice <> High(UInt32));
-      end;
-    begin
-      Result := False;
-      WindowLen := 0;
-      WindowBack := UInt32($FFFFFFFF);
-      TempGreedyFinder := nil;
-      TempHc4Finder := nil;
-      TempHc5Finder := nil;
-      TempBt4Finder := nil;
-      TempFinderInsertedUntil := 0;
-      if Profile.ParserMode <> lpmSdkProfile then
-        Exit;
-
-      WindowEnd := NumAvailAtCurrent;
-      if WindowEnd >= LZMA_FULL_OPTIMUM_NUM_OPTS then
-        WindowEnd := LZMA_FULL_OPTIMUM_NUM_OPTS - 1;
-      if WindowEnd = 0 then
-        Exit;
-      BaseIndex := NativeUInt(Cur);
-
-      try
-      if (BaselineBack = LZMA_OPTIMUM_BACK_LITERAL) and (BaselineLen = 1) then
-      begin
-        if not HasLiteralLookaheadWork(LookaheadWindowEnd) then
-          Exit;
-        WindowEnd := LookaheadWindowEnd;
-      end;
-
-      RefreshOptimumPriceTables;
-      SetLength(Nodes, Integer(WindowEnd) + 1);
-      SetLength(MatchesByPos, Integer(WindowEnd) + 1);
-      SetLength(PosStates, Integer(WindowEnd) + 1);
-      SetLength(ProbInputsByPos, Integer(WindowEnd) + 1);
-      LzmaOptimumPrepareNodes(Nodes, 0, State, Reps);
-
-      for PosIndex := 0 to Integer(WindowEnd) - 1 do
-      begin
-        RelativePos := BaseIndex + NativeUInt(PosIndex);
-        PosStates[PosIndex] := (UInt32(Processed) + UInt32(PosIndex)) and PbMask;
-
-        for ProbState := 0 to TLzmaEncoderConstants.kNumStates - 1 do
-        begin
-          ProbInputsByPos[PosIndex][ProbState].IsMatchProb :=
-            IsMatch[ProbState][PosStates[PosIndex]];
-          ProbInputsByPos[PosIndex][ProbState].IsRepProb := IsRep[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRepG0Prob := IsRepG0[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRepG1Prob := IsRepG1[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRepG2Prob := IsRepG2[ProbState];
-          ProbInputsByPos[PosIndex][ProbState].IsRep0LongProb :=
-            IsRep0Long[ProbState][PosStates[PosIndex]];
-        end;
-
-        if PosIndex = 0 then
-          MatchesByPos[PosIndex] := Matches
-        else
-          ReadTempMatchFinderMatchesAt(RelativePos, MatchesByPos[PosIndex]);
-        ClampMatchBufferLengths(MatchesByPos[PosIndex], EffectiveFastBytes);
-      end;
-
-      LiteralResolver :=
-        function(const WindowPos: UInt32; const Node: TLzmaOptimumNode;
-          out LiteralInput: TLzmaOptimumLiteralInput): Boolean
-        var
-          LiteralRelativePos: NativeUInt;
-          MatchByteForLiteral: Byte;
-          PriceLiteralOffset: NativeUInt;
-          PriceLitState: UInt32;
-          PricePrevByte: Byte;
-          UseMatchedLiteral: Boolean;
-        begin
-          FillChar(LiteralInput, SizeOf(LiteralInput), 0);
-          LiteralRelativePos := BaseIndex + NativeUInt(WindowPos);
-          Result := LiteralRelativePos < NativeUInt(PendingSize);
-          if not Result then
-            Exit;
-
-          if (Processed + WindowPos) = 0 then
-            PricePrevByte := 0
-          else
-            PricePrevByte := Pending[LiteralRelativePos - 1];
-          PriceLitState := (((UInt32(Processed) + WindowPos) and LpMask) shl LcBits) +
-            (UInt32(PricePrevByte) shr LcShift);
-          PriceLiteralOffset := NativeUInt(PriceLitState) * LZMA_LITERAL_PROB_COUNT;
-          UseMatchedLiteral := (Node.State >= TLzmaEncoderConstants.kNumLitStates) and
-            (Node.Reps[0] > 0) and (UInt64(Node.Reps[0]) <= Processed + WindowPos) and
-            (NativeUInt(Node.Reps[0]) <= LiteralRelativePos);
-          if UseMatchedLiteral then
-            MatchByteForLiteral := Pending[LiteralRelativePos - NativeUInt(Node.Reps[0])]
-          else
-            MatchByteForLiteral := 0;
-
-          LiteralInput.Enabled := True;
-          LiteralInput.LiteralProbs := PLzmaLiteralProbs(@Literals[PriceLiteralOffset])^;
-          LiteralInput.Value := Pending[LiteralRelativePos];
-          LiteralInput.UseMatchedLiteral := UseMatchedLiteral;
-          LiteralInput.MatchByte := MatchByteForLiteral;
-        end;
-
-      RepResolver :=
-        procedure(const WindowPos: UInt32; const NodeReps: TLzmaOptimumReps;
-          out RepLens: TLzmaOptimumRepLens)
-        var
-          MaxLen: UInt32;
-          RepIndex: Integer;
-          RelativePos: NativeUInt;
-          RepDistance: UInt32;
-        begin
-          FillChar(RepLens, SizeOf(RepLens), 0);
-          RelativePos := BaseIndex + NativeUInt(WindowPos);
-          if RelativePos >= NativeUInt(PendingSize) then
-            Exit;
-          for RepIndex := Low(NodeReps) to High(NodeReps) do
-          begin
-            RepDistance := NodeReps[RepIndex];
-            if (RepDistance = 0) or (UInt64(RepDistance) > Processed + WindowPos) or
-              (NativeUInt(RepDistance) > RelativePos) then
-              Continue;
-            MaxLen := UInt32(NativeUInt(PendingSize) - RelativePos);
-            if MaxLen > TLzmaEncoderConstants.kMatchMaxLen then
-              MaxLen := TLzmaEncoderConstants.kMatchMaxLen;
-            if MaxLen > EffectiveFastBytes then
-              MaxLen := EffectiveFastBytes;
-            RepLens[RepIndex] := LzmaCountMatchingBytes(Pending, RelativePos,
-              RelativePos - NativeUInt(RepDistance), MaxLen);
-          end;
-        end;
-
-      if not LzmaOptimumRelaxWindow(Nodes, MatchesByPos, PosStates,
-        LiteralResolver, RepResolver, ProbInputsByPos, ProbPrices, LenPrices,
-        RepLenPrices, DistancePrices) then
-        Exit;
-
-      if not GetDirectBaselinePrice(BaselinePrice, InitialTargetEnd) then
-        Exit;
-      if not LzmaOptimumSelectWindowTarget(Nodes, InitialTargetEnd, WindowEnd,
-        BaselinePrice, TargetEnd, TargetPrice) then
-        Exit;
-      if (TargetEnd > EffectiveFastBytes) and
-        (Nodes[Integer(TargetEnd)].Extra = 0) then
-        Exit;
-      if not QueueOptimumReplayPath(Nodes, TargetEnd, ReplayLen, ReplayBack) then
-        Exit;
-
-      WindowLen := ReplayLen;
-      WindowBack := ReplayBack;
-      Result := WindowLen > 0;
-      finally
-        FreeTempMatchFinder;
-      end;
-    end;
-  begin
-    Back := UInt32($FFFFFFFF);
-    Len := 1;
-    Result := True;
-    if TryPopOptimumReplayDecision(Len, Back) then
-      Exit;
-    if NumAvailAtCurrent < TLzmaEncoderConstants.kMatchMinLen then
-      Exit;
-
-    BestRepIndex := -1;
-    BestRepLen := 0;
-    for RepIndex := 0 to 3 do
-    begin
-      TestLen := MatchLenAtDistance(Reps[RepIndex]);
-      if TestLen > EffectiveFastBytes then
-        TestLen := EffectiveFastBytes;
-      if TestLen > BestRepLen then
-      begin
-        BestRepLen := TestLen;
-        BestRepIndex := RepIndex;
-      end;
-    end;
-
-    Cur := CurrentIndex;
-    ReadMatchFinderMatchesAt(NativeUInt(Cur), Matches);
-    BestMatchDistance := 0;
-    BestMatchLen := 0;
-    for MatchIndex := 0 to Matches.Count - 1 do
-    begin
-      TestLen := Matches.Items[MatchIndex].Length;
-      if TestLen > EffectiveFastBytes then
-        TestLen := EffectiveFastBytes;
-      if (TestLen > BestMatchLen) or
-        ((TestLen = BestMatchLen) and (BestMatchDistance <> 0) and
-         ChangePair(Matches.Items[MatchIndex].Distance, BestMatchDistance)) then
-      begin
-        BestMatchLen := TestLen;
-        BestMatchDistance := Matches.Items[MatchIndex].Distance;
-      end;
-    end;
-
-    if (BestRepLen >= TLzmaEncoderConstants.kMatchMinLen) and (BestRepLen >= BestMatchLen) then
-    begin
-      Len := BestRepLen;
-      Back := UInt32(BestRepIndex);
-    end
-    else if BestMatchLen >= TLzmaEncoderConstants.kMatchMinLen then
-    begin
-      Len := BestMatchLen;
-      Back := BestMatchDistance + 3;
-    end;
-
-    if TryGetOptimumWindowDecision(Len, Back, WindowLen, WindowBack) then
-    begin
-      Len := WindowLen;
-      Back := WindowBack;
-    end;
-  end;
-
-  procedure MoveRepToFront(const RepIndex: Integer);
-  var
-    Distance: UInt32;
-  begin
-    if RepIndex = 0 then
-      Exit;
-    Distance := Reps[RepIndex];
-    case RepIndex of
-      1:
-        Reps[1] := Reps[0];
-      2:
-        begin
-          Reps[2] := Reps[1];
-          Reps[1] := Reps[0];
-        end;
-    else
-      Reps[3] := Reps[2];
-      Reps[2] := Reps[1];
-      Reps[1] := Reps[0];
-    end;
-    Reps[0] := Distance;
-  end;
-
-  procedure EncodeOneLiteral;
-  var
-    Cur: NativeInt;
-    MatchByte: Byte;
-    PrevByte: Byte;
-    Value: Byte;
-  begin
-    Cur := CurrentIndex;
-    Value := Pending[Cur];
-    PosState := UInt32(Processed) and PbMask;
-    Encoder.EncodeBit(IsMatch[State][PosState], 0);
-    if Processed = 0 then
-      PrevByte := 0
-    else
-      PrevByte := Pending[Cur - 1];
-    LitState := ((UInt32(Processed) and LpMask) shl LcBits) +
-      (UInt32(PrevByte) shr LcShift);
-    LiteralOffset := NativeUInt(LitState) * $300;
-
-    if (State >= TLzmaEncoderConstants.kNumLitStates) and (UInt64(Reps[0]) <= Processed) then
-    begin
-      if UInt64(Reps[0]) > UInt64(Cur) then
-        RaiseLzmaError(SZ_ERROR_FAIL, 'LZMA stream encoder compacted active literal history');
-      MatchByte := Pending[Cur - NativeInt(Reps[0])];
-      Encoder.EncodeMatchedLiteral(Literals[LiteralOffset], Value, MatchByte);
-    end
-    else
-      Encoder.EncodeLiteral(Literals[LiteralOffset], Value);
-    State := LZMA_STATE_LITERAL_NEXT[State];
-    Inc(Processed);
-    MaybeReportProgress;
-  end;
-
-  procedure EncodeOneRep(const RepIndex: Integer; const Len: UInt32);
-  begin
-    PosState := UInt32(Processed) and PbMask;
-    Encoder.EncodeBit(IsMatch[State][PosState], 1);
-    Encoder.EncodeBit(IsRep[State], 1);
-
-    if (RepIndex = 0) and (Len = 1) then
-    begin
-      Encoder.EncodeBit(IsRepG0[State], 0);
-      Encoder.EncodeBit(IsRep0Long[State][PosState], 0);
-      State := LZMA_STATE_SHORT_REP_NEXT[State];
-    end
-    else
-    begin
-      if RepIndex = 0 then
-      begin
-        Encoder.EncodeBit(IsRepG0[State], 0);
-        Encoder.EncodeBit(IsRep0Long[State][PosState], 1);
-      end
-      else
-      begin
-        Encoder.EncodeBit(IsRepG0[State], 1);
-        if RepIndex = 1 then
-          Encoder.EncodeBit(IsRepG1[State], 0)
-        else
-        begin
-          Encoder.EncodeBit(IsRepG1[State], 1);
-          Encoder.EncodeBit(IsRepG2[State], UInt32(Ord(RepIndex <> 2)));
-        end;
-        MoveRepToFront(RepIndex);
-      end;
-      EncodeLenSymbol(Encoder, RepLenEncoder, Len - TLzmaEncoderConstants.kMatchMinLen, PosState);
-      State := LZMA_STATE_REP_NEXT[State];
-    end;
-
-    Inc(Processed, Len);
-    MaybeReportProgress;
-  end;
-
-  procedure EncodeOneMatch(const Len, Distance: UInt32);
-  begin
-    PosState := UInt32(Processed) and PbMask;
-    Encoder.EncodeBit(IsMatch[State][PosState], 1);
-    Encoder.EncodeBit(IsRep[State], 0);
-    EncodeLenSymbol(Encoder, LenEncoder, Len - TLzmaEncoderConstants.kMatchMinLen, PosState);
-    EncodeDistance(Encoder, PosSlot, PosDecoders, Align, Len, Distance);
-    Reps[3] := Reps[2];
-    Reps[2] := Reps[1];
-    Reps[1] := Reps[0];
-    Reps[0] := Distance;
-    State := LZMA_STATE_MATCH_NEXT[State];
-    Inc(Processed, Len);
-    MaybeReportProgress;
-  end;
-
-  procedure EncodeEndMarker;
-  var
-    MarkerPosState: UInt32;
-  begin
-    MarkerPosState := UInt32(Processed) and PbMask;
-    Encoder.EncodeBit(IsMatch[State][MarkerPosState], 1);
-    Encoder.EncodeBit(IsRep[State], 0);
-    EncodeLenSymbol(Encoder, LenEncoder, 0, MarkerPosState);
-    Encoder.BitTreeEncode(PosSlot[0][0], TLzmaEncoderConstants.kNumPosSlotBits,
-      (UInt32(1) shl TLzmaEncoderConstants.kNumPosSlotBits) - 1);
-    Encoder.EncodeDirectBits((UInt32(1) shl (30 - TLzmaEncoderConstants.kNumAlignBits)) - 1,
-      30 - TLzmaEncoderConstants.kNumAlignBits);
-    Encoder.BitTreeReverseEncode(Align[0], TLzmaEncoderConstants.kNumAlignBits,
-      TLzmaEncoderConstants.kAlignTableSize - 1);
-    State := LZMA_STATE_MATCH_NEXT[State];
-  end;
-
-  procedure EncodeNextDecision;
-  var
-    Back: UInt32;
-    Len: UInt32;
-  begin
-    GetBestDecision(Len, Back);
-    if Back = UInt32($FFFFFFFF) then
-      EncodeOneLiteral
-    else if Back < 4 then
-      EncodeOneRep(Integer(Back), Len)
-    else
-      EncodeOneMatch(Len, Back - 3);
-  end;
+  FullOptimumDecisionCount: UInt64;
 begin
-  if Source = nil then
-    RaiseLzmaError(SZ_ERROR_PARAM, 'Source stream is nil');
+  Encode(Source, Destination, Profile, Props, WriteEndMarker, 0, 0,
+    FullOptimumDecisionCount, Progress);
+end;
+
+class procedure TLzmaRawEncoder.Encode(Source: TStream; Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const WriteEndMarker: Boolean; const BufferSize: NativeUInt; const MemoryLimit: UInt64;
+  out FullOptimumDecisionCount: UInt64; const Progress: TLzma2ProgressEvent);
+var
+  ActualThreadCount: Integer;
+begin
+  // Preserve the existing raw entry points and their serial hash/parser behavior.
+  EncodeStreamCore(Source, Destination, Profile, Props, WriteEndMarker, BufferSize,
+    MemoryLimit, False, False, FullOptimumDecisionCount, ActualThreadCount, Progress);
+end;
+
+class procedure TLzmaRawEncoder.EncodeWithThreads(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+  const MemoryLimit: UInt64; const RequestedThreadCount: Integer;
+  out FullOptimumDecisionCount: UInt64; out ActualThreadCount: Integer;
+  const Progress: TLzma2ProgressEvent);
+var UseMt: Boolean;
+begin
+  UseMt := ResolveThreadCount(Profile, RequestedThreadCount) = 2;
+  EncodeStreamCore(Source, Destination, Profile, Props, WriteEndMarker, BufferSize,
+    MemoryLimit, UseMt, UseMt, FullOptimumDecisionCount, ActualThreadCount, Progress);
+end;
+
+{$IFDEF LZMA_MT_QA}
+class procedure TLzmaRawEncoder.EncodeMtReference(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+  const MemoryLimit: UInt64; out FullOptimumDecisionCount: UInt64;
+  const Progress: TLzma2ProgressEvent);
+var ActualThreadCount: Integer;
+begin
+  EncodeStreamCore(Source, Destination, Profile, Props, WriteEndMarker, BufferSize,
+    MemoryLimit, False, True, FullOptimumDecisionCount, ActualThreadCount, Progress);
+end;
+{$ENDIF}
+
+class procedure TLzmaRawEncoder.EncodeWithSdkSettings(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+  const MemoryLimit: UInt64; const RequestedThreadCount: Integer;
+  const HashOutBits: UInt32; const ExpectedDataSize: UInt64;
+  out FullOptimumDecisionCount: UInt64; out ActualThreadCount: Integer;
+  const Progress: TLzma2ProgressEvent);
+var UseMt: Boolean;
+begin
+  UseMt := ResolveThreadCount(Profile, RequestedThreadCount) = 2;
+  EncodeStreamCore(Source, Destination, Profile, Props, WriteEndMarker, BufferSize,
+    MemoryLimit, UseMt, UseMt, FullOptimumDecisionCount, ActualThreadCount, Progress,
+    True, HashOutBits, ExpectedDataSize);
+end;
+
+class function TLzmaRawEncoder.RequiredSdkMemoryForInputWithThreads(const Profile: TLzmaEncoderProfile;
+  const Props: TLzmaProps; const InputUpperBound: UInt64; const BufferSize: NativeUInt;
+  const RequestedThreadCount: Integer; const HashOutBits: UInt32;
+  const ExpectedDataSize: UInt64): UInt64;
+begin
+  Result := RequiredMemoryForInputCore(Profile, Props, InputUpperBound, BufferSize, False,
+    True, HashOutBits, ExpectedDataSize);
+  if ResolveThreadCount(Profile, RequestedThreadCount) = 2 then
+    Result := CheckedMemoryAdd(Result, TLzmaMatchFinderPipeline.RequiredMemory);
+end;
+
+class procedure TLzmaRawEncoder.EncodeStreamCore(Source, Destination: TStream;
+  const Profile: TLzmaEncoderProfile; const Props: TLzmaProps;
+  const WriteEndMarker: Boolean; const BufferSize: NativeUInt;
+  const MemoryLimit: UInt64; const UseMatchFinderThread, UseSdkMtHighHash: Boolean;
+  out FullOptimumDecisionCount: UInt64; out ActualThreadCount: Integer;
+  const Progress: TLzma2ProgressEvent; const SdkFinder: Boolean;
+  const HashOutBits: UInt32; const ExpectedDataSize: UInt64);
+var
+  Context: TLzmaEncoderContext;
+  Window: TLzmaEncoderInputWindow;
+  EnableOptimumWindow: Boolean;
+  DecisionCount: UInt64;
+  KernelMemoryLimit, ThreadMemory: UInt64;
+begin
+  FullOptimumDecisionCount := 0;
+  ActualThreadCount := 1;
   if Destination = nil then
-    RaiseLzmaError(SZ_ERROR_PARAM, 'Destination stream is nil');
-  if Props.Lc > 8 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA lc property');
-  if Props.Lp > 4 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA lp property');
-  if Props.Pb > 4 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA pb property');
-
-  InitProbArray(IsMatch, TLzmaEncoderConstants.kNumStates *
-    TLzmaEncoderConstants.kNumPosStatesMax);
-  InitProbArray(IsRep, TLzmaEncoderConstants.kNumStates);
-  InitProbArray(IsRepG0, TLzmaEncoderConstants.kNumStates);
-  InitProbArray(IsRepG1, TLzmaEncoderConstants.kNumStates);
-  InitProbArray(IsRepG2, TLzmaEncoderConstants.kNumStates);
-  InitProbArray(IsRep0Long, TLzmaEncoderConstants.kNumStates *
-    TLzmaEncoderConstants.kNumPosStatesMax);
-  InitProbArray(PosSlot, TLzmaEncoderConstants.kNumLenToPosStates *
-    (UInt32(1) shl TLzmaEncoderConstants.kNumPosSlotBits));
-  InitProbArray(PosDecoders, Length(PosDecoders));
-  InitProbArray(Align, TLzmaEncoderConstants.kAlignTableSize);
-  InitLenEncoder(LenEncoder);
-  InitLenEncoder(RepLenEncoder);
-  if Profile.FastBytes < 5 then
-    EffectiveFastBytes := 5
-  else if Profile.FastBytes > Integer(TLzmaEncoderConstants.kMatchMaxLen) then
-    EffectiveFastBytes := TLzmaEncoderConstants.kMatchMaxLen
-  else
-    EffectiveFastBytes := UInt32(Profile.FastBytes);
-  NumPosStates := UInt32(1) shl Props.Pb;
-  LzmaInitProbPrices(ProbPrices);
-  LzmaInitLenPriceEncoder(LenPrices, EffectiveFastBytes);
-  LzmaInitLenPriceEncoder(RepLenPrices, EffectiveFastBytes);
-  LzmaInitDistancePriceEncoder(DistancePrices, Props.DictionarySize);
-  RefreshOptimumPriceTables;
-  SetLength(Literals, $300 shl (Props.Lc + Props.Lp));
-  if Length(Literals) <> 0 then
-    InitProbArray(Literals[0], Length(Literals));
-  PbMask := (UInt32(1) shl Props.Pb) - 1;
-  LpMask := (UInt32(1) shl Props.Lp) - 1;
-  LcBits := Props.Lc;
-  LcShift := 8 - LcBits;
-  MaxSearchDistance := Profile.CutValue;
-  if MaxSearchDistance < 64 then
-    MaxSearchDistance := 64;
-  if MaxSearchDistance > 4096 then
-    MaxSearchDistance := 4096;
-  if UInt64(MaxSearchDistance) > Props.DictionarySize then
-    MaxSearchDistance := UInt32(Props.DictionarySize);
-  HistoryKeep := UInt64(MaxSearchDistance) + TLzmaEncoderConstants.kMatchMaxLen + 16;
-
-  GreedyFinder := nil;
-  Hc4Finder := nil;
-  Hc5Finder := nil;
-  Bt4Finder := nil;
-  Encoder := TLzmaRangeEncoder.Create(Destination);
+    RaiseLzmaError(SZ_ERROR_PARAM, 'LZMA streaming output is required');
+  if (Props.Lc > 8) or (Props.Lp > 4) or (Props.Pb > 4) then
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported LZMA encoder properties');
+  KernelMemoryLimit := MemoryLimit;
+  if UseMatchFinderThread and (MemoryLimit <> 0) then
+  begin
+    ThreadMemory := TLzmaMatchFinderPipeline.RequiredMemory;
+    // A zero remainder means unlimited to the old allocator; reject it explicitly.
+    ValidateMemoryLimit(CheckedMemoryAdd(ThreadMemory, 1), MemoryLimit);
+    KernelMemoryLimit := MemoryLimit - ThreadMemory;
+  end;
+  Window.Initialize(Source, Profile, Props, Progress, BufferSize, True, KernelMemoryLimit, False, SdkFinder, HashOutBits, ExpectedDataSize);
+  ValidateMemoryLimit(RequiredMemoryCore(Profile, Props, Window.Capacity, False, SdkFinder, HashOutBits, ExpectedDataSize), KernelMemoryLimit);
+  EnableOptimumWindow := (Profile.ParserMode = lpmSdkProfile) and (Profile.Algorithm <> 0);
+  Context := TLzmaEncoderContext.Create(Destination);
   try
-    Encoder.Init;
-    SetLength(Buffer, kStreamBufferSize);
-    PendingBase := 0;
-    PendingSize := 0;
-    FinderInsertedUntil := 0;
-    Processed := 0;
-    NextProgressAt := kProgressInterval;
-    State := 0;
-    Reps[0] := 1;
-    Reps[1] := 1;
-    Reps[2] := 1;
-    Reps[3] := 1;
-    ClearOptimumReplayQueue;
-    MatchFinderDirty := True;
-    InputEof := False;
+    Context.FUseMatchFinderThread := UseMatchFinderThread;
+    Context.FUseSdkMtHighHash := UseSdkMtHighHash;
+    Context.FUseSdkFinder := SdkFinder;
+    Context.FSdkHashOutBits := HashOutBits;
+    Context.FSdkExpectedDataSize := ExpectedDataSize;
     repeat
-      if not InputEof then
-      begin
-        Count := ReadAvailable(Source, Buffer[0], Length(Buffer));
-        if Count = 0 then
-          InputEof := True
-        else
-          AppendPending(Buffer[0], Count);
-      end;
-
-      while PendingAvailable > 0 do
-      begin
-        if (not InputEof) and (PendingAvailable <= TLzmaEncoderConstants.kMatchMaxLen) then
-          Break;
-        EncodeNextDecision;
-        CompactPending;
-      end;
-    until InputEof and (PendingAvailable = 0);
-
-    if WriteEndMarker then
-      EncodeEndMarker;
-    ReportProgress(Progress, Processed, Encoder.FCommittedOutputSize);
-    Encoder.FlushData;
+      if Context.Encoder <> nil then
+        Window.RefillAtBoundary(Context, Context.Encoder.FCommittedOutputSize);
+      Context.Encode(Window.Data, 0, Window.Count, Props, Profile.FastBytes,
+        Profile.CutValue, Profile.MatchFinderKind, WriteEndMarker, EnableOptimumWindow,
+        Progress, @DecisionCount, False, Window.FinalInput);
+      FullOptimumDecisionCount := CheckedMemoryAdd(FullOptimumDecisionCount, DecisionCount);
+      if Context.FMatchFinderThread <> nil then ActualThreadCount := 2;
+    until Window.FinalInput and (Context.Pos = Window.Count);
+    if Context.FMatchFinderThread <> nil then Context.FMatchFinderThread.StopAndCheck;
+    ReportProgress(Progress, Context.Processed, Context.Encoder.FCommittedOutputSize);
   finally
-    FreeMatchFinder;
-    Encoder.Free;
+    Context.Free;
   end;
 end;
 

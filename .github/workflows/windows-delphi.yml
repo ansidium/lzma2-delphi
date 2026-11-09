@@ -19,7 +19,7 @@ on:
 jobs:
   quick:
     name: Win64 quick build, tests, compatibility
-    runs-on: [self-hosted, Windows, X64, Delphi-13.1]
+    runs-on: [self-hosted, Windows, X64, Delphi-13.2]
     env:
       BDS: C:\Program Files (x86)\Embarcadero\Studio\37.0
       LZMA_PERF_WORKROOT: ${{ vars.LZMA_PERF_WORKROOT || 'D:\lzma2-delphi-perf' }}
@@ -57,7 +57,7 @@ jobs:
   release:
     name: Win64 release acceptance
     if: github.event_name == 'workflow_dispatch' && inputs.release == true
-    runs-on: [self-hosted, Windows, X64, Delphi-13.1]
+    runs-on: [self-hosted, Windows, X64, Delphi-13.2]
     env:
       BDS: C:\Program Files (x86)\Embarcadero\Studio\37.0
       LZMA_PERF_WORKROOT: ${{ vars.LZMA_PERF_WORKROOT || 'D:\lzma2-delphi-perf' }}
@@ -95,7 +95,7 @@ jobs:
   soak:
     name: Win64 soak acceptance
     if: github.event_name == 'workflow_dispatch' && inputs.soak == true
-    runs-on: [self-hosted, Windows, X64, Delphi-13.1]
+    runs-on: [self-hosted, Windows, X64, Delphi-13.2]
     env:
       BDS: C:\Program Files (x86)\Embarcadero\Studio\37.0
       LZMA_PERF_WORKROOT: ${{ vars.LZMA_PERF_WORKROOT || 'D:\lzma2-delphi-perf' }}

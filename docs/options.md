@@ -5,14 +5,35 @@
 Native behavior:
 
 - Level `0` emits LZMA2 copy chunks.
-- Levels `1..9` emit native LZMA-compressed LZMA2 chunks. Independent raw
-  chunks carry reset-dictionary/reset-state/properties framing (`$E0..$FF`);
-  safe literal-only continuation chunks can use SDK-style no-props/reset-state
-  framing after the first properties chunk.
+- Levels `1..9` emit native LZMA-compressed LZMA2 frames. A compressed initial
+  frame initializes dictionary, state, and properties (`$E0..$FF`); subsequent
+  frames can preserve dictionary and probability state (`$80..$9F`). A compressed
+  frame following an initial copy frame can supply properties (`$C0..$DF`).
+  MT worker jobs start independent dictionary-reset units.
 
-The native SDK-profile encoder is deterministic and produces standard LZMA2 data. Its active match finder exposes increasing match pairs, SDK CRC-based `h2`/`h3` low hashes, SDK hash-mask sizing for the active window, SDK-style `cutValue` search-depth caps, an HC5 path with `h5` main-chain matches, dictionary-sized cyclic chain storage, and monotonic skip insertion for SDK `numHashBytes = 5` HC profiles, and a BT4 path with `h4` binary-tree traversal that starts from the newest hash head, stops at dictionary-window boundaries, and stores sons in a dictionary-sized cyclic buffer. The HC4 finder remains covered as a low-level regression path and uses the same SDK CRC hash helpers. The encoder mirrors the decoder's rep probability families (`isRepG0/G1/G2`, `isRep0Long`). The SDK-profile parser path uses the native full-optimum state, SDK-style read-and-insert match distances, cached lookahead matches, `ChangePair` match shortening, live state/repetition nodes, additional-offset replay, price-table refresh counters, and relax/replay branches for literal, short-rep, rep, normal match, literal-lookahead, literal-rep0, match-literal-rep0, and rep-literal-rep0 decisions. Fully periodic raw chunks bypass match-finder allocation only when the full-optimum branch is disabled; LZMA2 additionally groups identical phase-reset periodic data into SDK-bounded chunks with later chunks preserving LZMA2 state so that raw fast path remains valid for large repeated inputs. Length probability state uses the SDK flat `low/high` layout, distance probability state uses full SDK `posEncoders` indexing, and helper tables cover SDK-style length, distance, align, literal, matched-literal, match-prefix, rep-branch, literal-vs-short-rep, and rep-vs-normal-match prices. Ratio and speed claims should be based on benchmark artifacts, not diagnostics alone.
+The native SDK-profile encoder is deterministic and produces standard LZMA2
+data. HC5 uses SDK CRC-based `h2`/`h3` low hashes, an `h5` main chain and
+dictionary-sized cyclic links. BT4 uses the low hashes and an `h4` binary tree,
+starting from the newest hash head and stopping at the dictionary and
+`cutValue` limits. Consecutive BT4 read-and-insert operations share one tree
+traversal; nonmonotonic low-level calls retain their separate lookup and insert
+behavior. HC4 remains available through the low-level API.
 
-The low-level raw LZMA encoder now follows the SDK 26.01 defaults for the fields this native encoder uses:
+Algorithm 1 uses a bounded online optimum parser aligned with the SDK 26.06
+query and replay rules. It borrows the live probability models, extends the
+optimum frontier as needed, and observes the fast-byte exit and price-refresh
+rules. Its transitions cover literals, short reps, reps, normal matches and
+the compound literal/rep branches. Algorithm 0 and explicit fast modes use
+the native SDK-style fast parser. Length probabilities use the SDK flat
+`low/high` layout; distance probabilities use full `posEncoders` indexing.
+These implementation details alone do not establish speed, memory or archive
+size parity for every profile.
+
+The low-level one-shot raw encoder can bypass match-finder allocation for fully
+periodic input when the full-optimum branch is disabled. This shortcut does
+not describe the streaming LZMA2 encoder.
+
+The low-level raw LZMA encoder follows the SDK 26.06 profile defaults for the fields this native encoder uses:
 
 - raw dictionary defaults: level `0` = 64 KiB, `1` = 256 KiB, `2` = 1 MiB, `3` = 4 MiB, `4` = 16 MiB, `5` = 32 MiB, `6` = 64 MiB, `7..9` = 128/256/256 MiB;
 - raw `fastBytes`: `32` for levels `< 7`, `64` for levels `7..9`;
@@ -37,13 +58,14 @@ Public tuning and diagnostics controls:
 - `ArchiveFileName` is used by `lc7z` encode. Empty values are normalized to
   `data`; path components are stripped so archives store a single file name.
 - `ParserMode` defaults to `lpmSdkProfile`. This selects SDK-normalized
-  level/profile metadata, match finder profiles, and the isolated native
-  full-optimum parser branch. Ratio and speed parity are measured by benchmarks.
-  `lpmFast` and `lpmHighSpeed` are explicit opt-in modes for
-  future speed/ratio tradeoffs. The `lc7z` stream API remains single-file;
+  level/profile metadata and match finder profiles. Algorithm 0 uses the native
+  SDK-style fast parser; algorithm 1 uses the native full-optimum parser branch.
+  `lpmFast` and `lpmHighSpeed` are explicit opt-in modes that use the fast
+  parser. Their speed and ratio tradeoffs require benchmark evidence.
+  The `lc7z` stream API remains single-file;
   use `TLzma7z.EncodeEntries`, `TLzma7z.List`/`ExtractAll`, or CLI `a/x/e`
   for multi-entry 7z archives.
-- `FastBytes` and `CutValue` default to `0`, which keeps the SDK 26.01 level
+- `FastBytes` and `CutValue` default to `0`, which keeps the SDK 26.06 level
   defaults. Nonzero values override the active encoder `fastBytes`/`niceLen`
   and match-finder cycle cap; `FastBytes` accepts `5..273`.
 - `Lc`, `Lp`, and `Pb` default to `-1`, which keeps the SDK property defaults
@@ -98,7 +120,7 @@ If `StrictValidation = True`, non-exact values are rejected with `ELzmaInvalidPa
 `ThreadCount` is normalized to at least `1`.
 
 - Level `0` copy mode writes sequentially.
-- Levels `1..9` use worker-thread encode jobs when `ThreadCount > 1` and the input is large enough to keep at least two worker batches busy. Each worker encodes independent reset LZMA2 chunks up to the normalized buffer size (maximum 2 MiB, matching the SDK LZMA2 unpack limit) inside larger batches: 64 MiB normally, or 16 MiB when `ThreadCount >= 8`. The main thread writes completed batches in source order so output remains deterministic.
+- Levels `1..9` use worker-thread encode jobs when `ThreadCount > 1` and the input is large enough to keep at least two worker batches busy. Each worker starts an independent dictionary-reset unit, preserves state across its LZMA2 frames, and reads a batch capped near 64 MiB. Frames respect the normalized unpacked buffer limit (maximum 2 MiB) and 64 KiB packed limit. The main thread writes completed batches in source order so output remains deterministic.
 - Decode treats `ThreadCount = 1` as strict single-thread mode. With `ThreadCount > 1`, raw LZMA2 decode attempts to split independent dictionary-reset chunks, and XZ decode attempts to split blocks that store both packed and unpacked sizes in the block header or whose sizes can be recovered from the XZ Index. If the source is non-seekable, contains only one independent unit, omits required XZ block sizes, or would exceed the memory limit, decode falls back to single-thread mode and records the reason in `TLzma2DecodeDiagnostics`. Raw LZMA2 also falls back when the split stream has too little packed work, including high-expansion tiny-packed streams where worker scheduling would dominate decoding.
 - `DecodeDiagnostics` is optional. When assigned, it records the requested thread count, actual worker count, independent unit count, whether MT decode really ran, whether the MT path required an input snapshot, and a fallback reason.
 

@@ -1,0 +1,70 @@
+{
+  "sizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    96,
+    128,
+    256
+  ],
+  "smallMark": "LZ2",
+  "largeMark": "LZMA with rounded background 2",
+  "font": "Segoe UI Semibold outlined; no runtime font dependency",
+  "textHorizontalPadding": 28,
+  "files": [
+    {
+      "path": "source\\assets\\icons\\lzma2-128.png",
+      "bytes": 8632,
+      "sha256": "addf36e5742959ac2afd899245fffd549222e4a84e0174477fb5779648848168"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-16.png",
+      "bytes": 800,
+      "sha256": "393147a0cc2b2f9e46dba95485113b0754f950bc6f37a38b050259e850f79bc9"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-20.png",
+      "bytes": 1044,
+      "sha256": "0ed3521000ef990aca4f1e88d1a7fa2ae5cd3efa81e9581351a44123324f3925"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-24.png",
+      "bytes": 1218,
+      "sha256": "77fb0a541cc6a7dc544be90831e82c6f099d80a0653be8f825f41d44fa90900f"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-256.png",
+      "bytes": 16467,
+      "sha256": "2027002156244f1e98336badf54c0249737aa4a01872da9850c26d1912c5e1a4"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-32.png",
+      "bytes": 1909,
+      "sha256": "5ccd56244921b363de2a20a24fd9d436865878aadbc76adb26152d58b8a75afe"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-40.png",
+      "bytes": 2544,
+      "sha256": "49bf03d7ef19b4fcfb494825a132e1f765bfb4b1e5947d5c7a19913d3e05b63f"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-48.png",
+      "bytes": 3041,
+      "sha256": "87119126d6aa7c399ad21f1b918cfcbcfd06e48fd76b51cc8a91a3a210249e07"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-64.png",
+      "bytes": 4141,
+      "sha256": "612dc0252ac2c9954f2150f30b630004a1b4ea9ec932fefe47802a6ec939110f"
+    },
+    {
+      "path": "source\\assets\\icons\\lzma2-96.png",
+      "bytes": 6371,
+      "sha256": "762be043653f7f26ac08ef85f31878237b21b1dbbf564f9f2eeabcf13f48f745"
+    }
+  ]
+}

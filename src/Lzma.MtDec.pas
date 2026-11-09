@@ -17,6 +17,7 @@ type
 
   TLzmaMtDecode = class
   public
+    class function RequiredMemory(const UnitCount, ThreadCount: Integer): UInt64; static;
     class function DecodeOrdered(const Units: TArray<TBytes>; const ThreadCount: Integer;
       const DecodeProc: TLzmaMtDecodeProc; const WaitProc: TLzmaMtWaitProc = nil): TArray<TBytes>; static;
     class function DecodeOrderedToBytes(const Units: TArray<TBytes>; const OutputOffsets: TArray<UInt64>;
@@ -31,6 +32,7 @@ type
 implementation
 
 uses
+  Lzma.Alloc,
   Lzma.Errors,
   Lzma.Streams,
   Lzma.Types;
@@ -106,6 +108,28 @@ begin
     RaiseLzmaError(SZ_ERROR_OUTPUT_EOF, 'MT decode output slice seek is out of range');
   FPosition := UInt64(NewPosition);
   Result := NewPosition;
+end;
+
+class function TLzmaMtDecode.RequiredMemory(const UnitCount, ThreadCount: Integer): UInt64;
+var
+  Workers: Integer;
+  WorkerObjects: UInt64;
+begin
+  if (UnitCount < 0) or (ThreadCount < 0) then
+    RaiseLzmaError(SZ_ERROR_PARAM, 'Invalid MT decode memory dimensions');
+  if UnitCount = 0 then Exit(0);
+  Workers := ThreadCount;
+  if Workers < 1 then Workers := 1;
+  if Workers > UnitCount then Workers := UnitCount;
+  if Workers = 1 then Exit(TLzmaSliceWriteStream.InstanceSize);
+  Result := CheckedMemoryMultiply(UInt64(UnitCount), SizeOf(TLzmaMtOutputUnit));
+  Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Workers), SizeOf(TThread)));
+  Result := CheckedMemoryAdd(Result, TObject.InstanceSize);
+  Result := CheckedMemoryAdd(Result, TEvent.InstanceSize);
+  // RTL37 TAnonymousThread adds only FProc to TThread; kernel thread resources are excluded.
+  WorkerObjects := CheckedMemoryAdd(TThread.InstanceSize, SizeOf(TProc));
+  WorkerObjects := CheckedMemoryAdd(WorkerObjects, TLzmaSliceWriteStream.InstanceSize);
+  Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Workers), WorkerObjects));
 end;
 
 class function TLzmaMtDecode.DecodeOrdered(const Units: TArray<TBytes>; const ThreadCount: Integer;
@@ -610,12 +634,19 @@ var
         Data := Outputs[NextToWrite].Data;
         SetLength(Outputs[NextToWrite].Data, 0);
         Outputs[NextToWrite].Ready := False;
-        Inc(NextToWrite);
       finally
         TMonitor.Exit(Lock);
       end;
 
       WriteBytes(Destination, Data);
+      // Release the writer's array before a worker can reuse its admitted slot.
+      SetLength(Data, 0);
+      TMonitor.Enter(Lock);
+      try
+        Inc(NextToWrite);
+      finally
+        TMonitor.Exit(Lock);
+      end;
       if Assigned(AfterWriteProc) then
         AfterWriteProc(WrittenIndex);
       DoneEvent.SetEvent;
@@ -681,6 +712,7 @@ var
               if not HasError then
               begin
                 Outputs[Index].Data := Decoded;
+                SetLength(Decoded, 0);
                 Outputs[Index].Ready := True;
               end;
             finally

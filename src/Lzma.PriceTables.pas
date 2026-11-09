@@ -54,6 +54,8 @@ type
     AlignPrices: TLzmaAlignPrices;
   end;
 
+// Slot for an unsigned, zero-based LZMA distance.
+function LzmaGetPosSlot(const Dist: UInt32): UInt32;
 procedure LzmaInitProbPrices(var Prices: TLzmaProbPrices);
 function LzmaBitPrice(const Prices: TLzmaProbPrices; const Prob: CLzmaProb; const Bit: UInt32): UInt32; inline;
 procedure LzmaInitLenProbs(var Low: TLzmaLenLowProbs; var High: TLzmaLenHighProbs);
@@ -63,7 +65,7 @@ procedure LzmaUpdateLenPrices(var Prices: TLzmaLenPrices; const Low: TLzmaLenLow
 procedure LzmaInitLenPriceEncoder(var Encoder: TLzmaLenPriceEncoder; const FastBytes: UInt32);
 procedure LzmaUpdateLenPriceEncoder(var Encoder: TLzmaLenPriceEncoder; const Low: TLzmaLenLowProbs;
   const High: TLzmaLenHighProbs; const NumPosStates: UInt32; const ProbPrices: TLzmaProbPrices);
-function LzmaLenPrice(const Encoder: TLzmaLenPriceEncoder; const PosState, Len: UInt32): UInt32;
+function LzmaLenPrice(const Encoder: TLzmaLenPriceEncoder; const PosState, Len: UInt32): UInt32; inline;
 procedure LzmaInitDistanceProbs(var PosSlot: TLzmaPosSlotProbs; var PosDecoders: TLzmaPosDecoderProbs;
   var Align: TLzmaAlignProbs);
 procedure LzmaInitDistancePriceEncoder(var Encoder: TLzmaDistancePriceEncoder; const DictionarySize: UInt64);
@@ -72,9 +74,9 @@ procedure LzmaUpdateDistancePriceEncoder(var Encoder: TLzmaDistancePriceEncoder;
   const Align: TLzmaAlignProbs; const ProbPrices: TLzmaProbPrices);
 function LzmaAlignPrice(const Encoder: TLzmaDistancePriceEncoder; const Align: UInt32): UInt32;
 function LzmaReducedDistancePrice(const Encoder: TLzmaDistancePriceEncoder; const LenState,
-  ReducedDistance: UInt32): UInt32;
+  ReducedDistance: UInt32): UInt32; inline;
 function LzmaMatchDistancePrice(const Encoder: TLzmaDistancePriceEncoder; const Len,
-  ActualDistance: UInt32): UInt32;
+  ActualDistance: UInt32): UInt32; inline;
 procedure LzmaInitLiteralProbs(var Probs: TLzmaLiteralProbs);
 function LzmaLiteralPrice(const Probs: TLzmaLiteralProbs; const Value: Byte;
   const ProbPrices: TLzmaProbPrices): UInt32;
@@ -103,23 +105,56 @@ begin
   Result := Prices[(Prob xor (LZMA_BIT_MODEL_TOTAL - 1)) shr LZMA_NUM_MOVE_REDUCING_BITS];
 end;
 
-function GetPosSlot(const Dist: UInt32): UInt32;
+function LzmaGetPosSlot(const Dist: UInt32): UInt32;
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+asm
+        CMP     ECX,2
+        JB      @@small
+        BSR     EDX,ECX
+        DEC     EDX
+        MOV     EAX,ECX
+        MOV     ECX,EDX
+        SHR     EAX,CL
+        LEA     EAX,[RAX+RDX*2]
+        JMP     @@done
+@@small:
+        MOV     EAX,ECX
+@@done:
+end;
+{$ELSE}
 var
-  Z: UInt32;
-  V: UInt32;
+  Z, V: UInt32;
 begin
   if Dist < 2 then
     Exit(Dist);
   Z := 0;
   V := Dist;
-  while V > 1 do
+  if V >= UInt32(1) shl 16 then
   begin
-    V := V shr 1;
-    Inc(Z);
+    V := V shr 16;
+    Inc(Z, 16);
   end;
+  if V >= UInt32(1) shl 8 then
+  begin
+    V := V shr 8;
+    Inc(Z, 8);
+  end;
+  if V >= UInt32(1) shl 4 then
+  begin
+    V := V shr 4;
+    Inc(Z, 4);
+  end;
+  if V >= UInt32(1) shl 2 then
+  begin
+    V := V shr 2;
+    Inc(Z, 2);
+  end;
+  if V >= UInt32(1) shl 1 then
+    Inc(Z);
   Dec(Z);
   Result := (Z shl 1) + (Dist shr Z);
 end;
+{$ENDIF}
 
 procedure SetPrices3(const Probs: TLzmaLenLowProbs; const ProbOffset: NativeInt;
   const StartPrice: UInt32; var Prices: TLzmaLenPrices; const PosState, PriceOffset: UInt32;
@@ -134,8 +169,9 @@ begin
   begin
     Price := StartPrice;
     Price := Price + LzmaBitPrice(ProbPrices, Probs[ProbOffset + 1], I shr 2);
-    Price := Price + LzmaBitPrice(ProbPrices, Probs[ProbOffset + 2 + (I shr 2)], (I shr 1) and 1);
-    Prob := Probs[ProbOffset + 4 + (I shr 1)];
+    Price := Price + LzmaBitPrice(ProbPrices,
+      Probs[ProbOffset + 2 + NativeInt(I shr 2)], (I shr 1) and 1);
+    Prob := Probs[ProbOffset + 4 + NativeInt(I shr 1)];
     Prices[PosState][PriceOffset + I] := Price + Price0(ProbPrices, Prob);
     Prices[PosState][PriceOffset + I + 1] := Price + Price1(ProbPrices, Prob);
     Inc(I, 2);
@@ -172,7 +208,7 @@ function LzmaBitPrice(const Prices: TLzmaProbPrices; const Prob: CLzmaProb; cons
 var
   Mask: UInt32;
 begin
-  Mask := UInt32(0) - (Bit and 1);
+  Mask := UInt32(-Int32(Bit and 1));
   Result := Prices[(UInt32(Prob) xor (Mask and (LZMA_BIT_MODEL_TOTAL - 1))) shr
     LZMA_NUM_MOVE_REDUCING_BITS];
 end;
@@ -262,7 +298,7 @@ begin
   Encoder.NumPosStates := NumPosStates;
 end;
 
-function LzmaLenPrice(const Encoder: TLzmaLenPriceEncoder; const PosState, Len: UInt32): UInt32;
+function LzmaLenPrice(const Encoder: TLzmaLenPriceEncoder; const PosState, Len: UInt32): UInt32; inline;
 var
   Symbol: UInt32;
 begin
@@ -362,7 +398,7 @@ var
 begin
   for I := LZMA_START_POS_MODEL_INDEX div 2 to (LZMA_NUM_FULL_DISTANCES div 2) - 1 do
   begin
-    PosSlotValue := GetPosSlot(I);
+    PosSlotValue := LzmaGetPosSlot(I);
     FooterBits := (PosSlotValue shr 1) - 1;
     Base := (UInt32(2) or (PosSlotValue and 1)) shl FooterBits;
     ProbOffset := Base * 2;
@@ -435,7 +471,7 @@ begin
     I := 4;
     while I < LZMA_NUM_FULL_DISTANCES do
     begin
-      SlotPrice := Encoder.PosSlotPrices[Lps][GetPosSlot(I)];
+      SlotPrice := Encoder.PosSlotPrices[Lps][LzmaGetPosSlot(I)];
       Encoder.DistancePrices[Lps][I] := SlotPrice + TempPrices[I];
       Encoder.DistancePrices[Lps][I + 1] := SlotPrice + TempPrices[I + 1];
       Inc(I, 2);
@@ -461,7 +497,7 @@ begin
 end;
 
 function LzmaReducedDistancePrice(const Encoder: TLzmaDistancePriceEncoder; const LenState,
-  ReducedDistance: UInt32): UInt32;
+  ReducedDistance: UInt32): UInt32; inline;
 var
   Slot: UInt32;
 begin
@@ -470,14 +506,14 @@ begin
   if ReducedDistance < LZMA_NUM_FULL_DISTANCES then
     Exit(Encoder.DistancePrices[LenState][ReducedDistance]);
 
-  Slot := GetPosSlot(ReducedDistance);
+  Slot := LzmaGetPosSlot(ReducedDistance);
   if Slot >= Encoder.DistTableSize then
     raise EArgumentOutOfRangeException.Create('LZMA distance price is outside the initialized table');
   Result := Encoder.PosSlotPrices[LenState][Slot] +
     Encoder.AlignPrices[ReducedDistance and (LZMA_ALIGN_TABLE_SIZE - 1)];
 end;
 
-function LzmaLenToPosState(const Len: UInt32): UInt32;
+function LzmaLenToPosState(const Len: UInt32): UInt32; inline;
 begin
   if Len < 2 then
     raise EArgumentOutOfRangeException.Create('Invalid LZMA match length');
@@ -488,7 +524,7 @@ begin
 end;
 
 function LzmaMatchDistancePrice(const Encoder: TLzmaDistancePriceEncoder; const Len,
-  ActualDistance: UInt32): UInt32;
+  ActualDistance: UInt32): UInt32; inline;
 begin
   if ActualDistance = 0 then
     raise EArgumentOutOfRangeException.Create('Invalid LZMA match distance');

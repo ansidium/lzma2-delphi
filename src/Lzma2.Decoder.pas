@@ -11,6 +11,7 @@ uses
 type
   TLzma2Decoder = class
   public
+    class function RequiredMemory(const DictionarySize: UInt64): UInt64; static;
     class procedure DecodeRaw(Source: TStream; Destination: TStream; const Options: TLzma2Options;
       const Progress: TLzma2ProgressEvent = nil); static;
     class procedure DecodeRawEmbedded(Source: TStream; Destination: TStream; const Options: TLzma2Options;
@@ -248,7 +249,7 @@ end;
 
 procedure SplitRawLzma2IndependentUnitsFromStream(const Source: TStream; const CapturePayloads: Boolean;
   out Units: TArray<TBytes>; out OutputSizes: TArray<UInt64>; out InputSizes: TArray<UInt64>;
-  out PackedInputSize: UInt64);
+  out PackedInputSize: UInt64; const MemoryLimit: UInt64 = 0);
 var
   CurrentUnit: TBytes;
   SegmentOutputSize: UInt64;
@@ -264,25 +265,48 @@ var
   UnpackSize: UInt64;
   Payload: TBytes;
   Tail: Byte;
+  CapturedBytes: UInt64;
+
+  function CurrentMemory: UInt64;
+  begin
+    Result := CheckedMemoryAdd(CapturedBytes, UInt64(Length(CurrentUnit)));
+    Result := CheckedMemoryAdd(Result, UInt64(Length(Payload)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(Units)), SizeOf(TBytes)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(OutputSizes)), SizeOf(UInt64)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(InputSizes)), SizeOf(UInt64)));
+  end;
+
+  procedure ValidateGrowth(const NewBytes: UInt64);
+  begin
+    if MemoryLimit <> 0 then
+      ValidateMemoryLimit(CheckedMemoryAdd(CurrentMemory, NewBytes), MemoryLimit);
+  end;
 
   procedure AddCurrentUnit(const AppendEof: Boolean);
   var
     OldLen: Integer;
   begin
+    if SegmentInputSize = 0 then Exit;
+    if CapturePayloads and AppendEof then
+    begin
+      ValidateGrowth(CheckedMemoryAdd(UInt64(Length(CurrentUnit)), 1));
+      AppendRawByte(CurrentUnit, LZMA2_CONTROL_EOF);
+    end;
+    OldLen := Length(Units);
+    if OldLen = High(Integer) then
+      RaiseLzmaError(SZ_ERROR_MEM, 'Too many raw LZMA2 decode units');
+    ValidateGrowth(CheckedMemoryMultiply(UInt64(OldLen) + 1, SizeOf(TBytes)));
+    SetLength(Units, OldLen + 1);
+    ValidateGrowth(CheckedMemoryMultiply(UInt64(OldLen) + 1, SizeOf(UInt64)));
+    SetLength(OutputSizes, OldLen + 1);
+    ValidateGrowth(CheckedMemoryMultiply(UInt64(OldLen) + 1, SizeOf(UInt64)));
+    SetLength(InputSizes, OldLen + 1);
     if CapturePayloads then
     begin
-      AddRawUnitBytes(Units, OutputSizes, InputSizes, CurrentUnit, SegmentOutputSize,
-        SegmentInputSize, AppendEof);
-      Exit;
+      Units[OldLen] := CurrentUnit;
+      CapturedBytes := CheckedMemoryAdd(CapturedBytes, UInt64(Length(CurrentUnit)));
+      SetLength(CurrentUnit, 0);
     end;
-
-    if SegmentInputSize = 0 then
-      Exit;
-    OldLen := Length(Units);
-    SetLength(Units, OldLen + 1);
-    SetLength(OutputSizes, OldLen + 1);
-    SetLength(InputSizes, OldLen + 1);
-    Units[OldLen] := nil;
     OutputSizes[OldLen] := SegmentOutputSize;
     InputSizes[OldLen] := SegmentInputSize;
   end;
@@ -300,7 +324,10 @@ var
   procedure AppendInputByte(const Value: Byte);
   begin
     if CapturePayloads then
+    begin
+      ValidateGrowth(CheckedMemoryAdd(UInt64(Length(CurrentUnit)), 1));
       AppendRawByte(CurrentUnit, Value);
+    end;
     NoteInput(1);
   end;
 
@@ -314,8 +341,13 @@ var
       RaiseLzmaError(SZ_ERROR_MEM, 'Raw LZMA2 MT decode payload is too large for this process');
     if CapturePayloads then
     begin
-      SetLength(Payload, Integer(Count));
+      if NativeUInt(Length(Payload)) <> Count then
+      begin
+        ValidateGrowth(Count);
+        SetLength(Payload, Integer(Count));
+      end;
       ReadExact(Source, Payload[0], Count);
+      ValidateGrowth(CheckedMemoryAdd(UInt64(Length(CurrentUnit)), Count));
       AppendRawBytes(CurrentUnit, Payload, Count);
     end
     else
@@ -341,6 +373,7 @@ begin
   SegmentOutputSize := 0;
   SegmentInputSize := 0;
   PackedInputSize := 0;
+  CapturedBytes := 0;
 
   while True do
   begin
@@ -523,41 +556,6 @@ begin
   end;
 end;
 
-function TryAddMemoryUse(var Total: UInt64; const Value: UInt64; const Limit: UInt64): Boolean;
-begin
-  if Limit = 0 then
-  begin
-    if Value > High(UInt64) - Total then
-      Exit(False);
-    Inc(Total, Value);
-    Exit(True);
-  end;
-  if (Total > Limit) or (Value > Limit - Total) then
-    Exit(False);
-  Inc(Total, Value);
-  Result := True;
-end;
-
-function FitsMtDecodeMemoryLimit(const InputSize, OutputSize, PerWorkerSize: UInt64;
-  const WorkerCount: Integer; const MemoryLimit: UInt64): Boolean;
-var
-  Total: UInt64;
-  WorkerMemory: UInt64;
-begin
-  if OutputSize > UInt64(High(Integer)) then
-    Exit(False);
-  if MemoryLimit = 0 then
-    Exit(True);
-  if (WorkerCount > 0) and (PerWorkerSize > High(UInt64) div UInt64(WorkerCount)) then
-    Exit(False);
-  WorkerMemory := UInt64(WorkerCount) * PerWorkerSize;
-  Total := 0;
-  Result :=
-    TryAddMemoryUse(Total, InputSize, MemoryLimit) and
-    TryAddMemoryUse(Total, OutputSize, MemoryLimit) and
-    TryAddMemoryUse(Total, WorkerMemory, MemoryLimit);
-end;
-
 function HasSufficientRawMtDecodeWork(const PackedInputSize, OutputSize: UInt64;
   const WorkerCount: Integer): Boolean;
 const
@@ -582,7 +580,6 @@ procedure DecodeRawInternal(Source: TStream; Destination: TStream; const Options
   out ConsumedBytes: UInt64; out ProducedBytes: UInt64);
 var
   Buffer: TBytes;
-  PackData: TBytes;
   Control: Byte;
   SizeHi: Byte;
   SizeLo: Byte;
@@ -616,7 +613,7 @@ begin
   DictSize := Options.DictionarySize;
   if DictSize = 0 then
     DictSize := DefaultDictionaryForLevel(Options.Level);
-  ValidateMemoryLimit(DictSize, Options.MemoryLimit);
+  ValidateMemoryLimit(TLzma2Decoder.RequiredMemory(DictSize), Options.MemoryLimit);
   SetLength(Buffer, LZMA2_COPY_CHUNK_SIZE);
   InTotal := 0;
   OutTotal := 0;
@@ -692,10 +689,9 @@ begin
       if (Control >= $A0) and ((Control and $40) = 0) then
         Decoder.ResetState;
 
-      SetLength(PackData, PackSize);
-      ReadExact(Source, PackData[0], PackSize);
+      ReadExact(Source, Buffer[0], PackSize);
       Inc(InTotal, PackSize);
-      Decoder.DecodeChunk(PackData, 0, PackSize, UnpackSize, Destination);
+      Decoder.DecodeChunk(Buffer, 0, PackSize, UnpackSize, Destination);
       Inc(OutTotal, UnpackSize);
       NeedInitLevel := 0;
       ReportProgress(Progress, InTotal, OutTotal);
@@ -721,11 +717,42 @@ var
   MaxUnitOutputSize: UInt64;
   PackedInputSize: UInt64;
   WorkerOutputMemory: UInt64;
+  WorkerMemory, MetadataMemory, StoredPackedSize, MaxPackedUnit, PackedUnitSize: UInt64;
+  CaptureMemory, DecodeRetainedMemory: UInt64;
   CancelRequested: Integer;
   WorkerProgress: TLzma2ProgressEvent;
   WaitProc: TLzmaMtWaitProc;
   OriginalUnitCount: Integer;
   I: Integer;
+
+  function FitsCurrentDecodePlan(const Captured: Boolean): Boolean;
+  var
+    UnitIndex: Integer;
+  begin
+    MaxUnitOutputSize := 0;
+    StoredPackedSize := 0;
+    for UnitIndex := 0 to High(Units) do
+    begin
+      if OutputSizes[UnitIndex] > MaxUnitOutputSize then
+        MaxUnitOutputSize := OutputSizes[UnitIndex];
+      if Captured then
+        StoredPackedSize := CheckedMemoryAdd(StoredPackedSize, UInt64(Length(Units[UnitIndex])));
+    end;
+    if not Captured then
+      StoredPackedSize := CheckedMemoryAdd(PackedInputSize, UInt64(Length(Units) - 1));
+    if (Workers > 0) and (MaxUnitOutputSize > High(UInt64) div UInt64(Workers)) then
+      WorkerOutputMemory := High(UInt64)
+    else
+      WorkerOutputMemory := UInt64(Workers) * MaxUnitOutputSize;
+    DecodeRetainedMemory := CheckedMemoryAdd(StoredPackedSize, MetadataMemory);
+    DecodeRetainedMemory := CheckedMemoryAdd(DecodeRetainedMemory,
+      TLzmaMtDecode.RequiredMemory(Length(Units), Workers));
+    DecodeRetainedMemory := CheckedMemoryAdd(DecodeRetainedMemory,
+      CheckedMemoryMultiply(UInt64(Workers), TBytesStream.InstanceSize));
+    WorkerMemory := TLzma2Decoder.RequiredMemory(DictSize);
+    Result := FitsMtDecodeMemoryLimit(DecodeRetainedMemory, WorkerOutputMemory, WorkerMemory,
+      Workers, Options.MemoryLimit);
+  end;
 
 begin
   Result := False;
@@ -741,8 +768,18 @@ begin
     Exit;
   end;
 
-  SplitRawLzma2IndependentUnitsFromStream(Source, Options.MemoryLimit = 0, Units, OutputSizes,
-    InputSizes, PackedInputSize);
+  try
+    SplitRawLzma2IndependentUnitsFromStream(Source, Options.MemoryLimit = 0, Units, OutputSizes,
+      InputSizes, PackedInputSize, Options.MemoryLimit);
+  except
+    on E: ELzmaMemoryError do
+    begin
+      if Options.MemoryLimit = 0 then raise;
+      RestoreStreamPosition(Source, StartPosition);
+      SetLzma2DecodeDiagnostics(Options, 1, Length(Units), False, ldfrMemoryLimit);
+      Exit;
+    end;
+  end;
   OriginalUnitCount := Length(Units);
   if Length(Units) <= 1 then
   begin
@@ -778,24 +815,27 @@ begin
   DecodeOptions := Options;
   DecodeOptions.ThreadCount := 1;
   DecodeOptions.DecodeDiagnostics := nil;
-  TotalOutputSize := 0;
-  MaxUnitOutputSize := 0;
-  for I := 0 to High(Units) do
-  begin
-    if OutputSizes[I] > MaxUnitOutputSize then
-      MaxUnitOutputSize := OutputSizes[I];
-    if OutputSizes[I] > High(UInt64) - TotalOutputSize then
-      RaiseLzmaError(SZ_ERROR_MEM, 'Raw LZMA2 MT decode output size overflow');
-    Inc(TotalOutputSize, OutputSizes[I]);
-  end;
   DictSize := Options.DictionarySize;
   if DictSize = 0 then
     DictSize := DefaultDictionaryForLevel(Options.Level);
-  if (Workers > 0) and (MaxUnitOutputSize > High(UInt64) div UInt64(Workers)) then
-    WorkerOutputMemory := High(UInt64)
-  else
-    WorkerOutputMemory := UInt64(Workers) * MaxUnitOutputSize;
-  if not FitsMtDecodeMemoryLimit(PackedInputSize, WorkerOutputMemory, DictSize, Workers, Options.MemoryLimit) then
+  MetadataMemory := CheckedMemoryMultiply(UInt64(Length(Units)),
+    SizeOf(TBytes) + 2 * SizeOf(UInt64));
+  StoredPackedSize := CheckedMemoryAdd(PackedInputSize, UInt64(Length(Units) - 1));
+  MaxPackedUnit := 0;
+  for I := 0 to High(InputSizes) do
+  begin
+    PackedUnitSize := InputSizes[I];
+    if I < High(InputSizes) then PackedUnitSize := CheckedMemoryAdd(PackedUnitSize, 1);
+    if PackedUnitSize > MaxPackedUnit then MaxPackedUnit := PackedUnitSize;
+  end;
+  CaptureMemory := CheckedMemoryAdd(StoredPackedSize, MaxPackedUnit);
+  CaptureMemory := CheckedMemoryAdd(CaptureMemory, LZMA2_COPY_CHUNK_SIZE);
+  CaptureMemory := CheckedMemoryAdd(CaptureMemory, MetadataMemory);
+  // Only one metadata array resizes at a time during capture.
+  CaptureMemory := CheckedMemoryAdd(CaptureMemory,
+    CheckedMemoryMultiply(UInt64(Length(Units) - 1), SizeOf(UInt64)));
+  if ((Options.MemoryLimit <> 0) and (CaptureMemory > Options.MemoryLimit)) or
+    not FitsCurrentDecodePlan(False) then
   begin
     RestoreStreamPosition(Source, StartPosition);
     SetLzma2DecodeDiagnostics(Options, 1, OriginalUnitCount, False, ldfrMemoryLimit);
@@ -805,9 +845,27 @@ begin
   if Options.MemoryLimit <> 0 then
   begin
     RestoreStreamPosition(Source, StartPosition);
-    SplitRawLzma2IndependentUnitsFromStream(Source, True, Units, OutputSizes, InputSizes, PackedInputSize);
+    try
+      SplitRawLzma2IndependentUnitsFromStream(Source, True, Units, OutputSizes, InputSizes,
+        PackedInputSize, Options.MemoryLimit);
+    except
+      on E: ELzmaMemoryError do
+      begin
+        RestoreStreamPosition(Source, StartPosition);
+        SetLzma2DecodeDiagnostics(Options, 1, OriginalUnitCount, False, ldfrMemoryLimit);
+        Exit;
+      end;
+    end;
     if Length(Units) <> OriginalUnitCount then
       RaiseLzmaError(SZ_ERROR_DATA, 'Raw LZMA2 MT decode preflight changed while reading payloads');
+    // Rewind may expose different valid data from a mutable caller-owned stream.
+    // Admit the captured arrays and their actual output sizes before workers allocate.
+    if not FitsCurrentDecodePlan(True) then
+    begin
+      RestoreStreamPosition(Source, StartPosition);
+      SetLzma2DecodeDiagnostics(Options, 1, OriginalUnitCount, False, ldfrMemoryLimit);
+      Exit;
+    end;
   end;
 
   CancelRequested := 0;
@@ -862,6 +920,12 @@ begin
     end);
 
   Result := True;
+end;
+
+class function TLzma2Decoder.RequiredMemory(const DictionarySize: UInt64): UInt64;
+begin
+  Result := CheckedMemoryAdd(TLzmaDecoderState.RequiredLzma2Memory(DictionarySize),
+    LZMA2_COPY_CHUNK_SIZE);
 end;
 
 class procedure TLzma2Decoder.DecodeRaw(Source: TStream; Destination: TStream; const Options: TLzma2Options;

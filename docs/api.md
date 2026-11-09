@@ -48,7 +48,7 @@ begin
 end;
 ```
 
-Set `EndMarker` to `True` when writing an SDK end-marker stream instead of a
+Set `LzmaEndMarker` to `True` when writing an SDK end-marker stream instead of a
 known unpack-size standalone LZMA stream.
 
 ### Single-File 7z
@@ -113,7 +113,7 @@ Decode diagnostics are opt-in through `TLzma2Options.DecodeDiagnostics`:
 var
   Diagnostics: TLzma2DecodeDiagnostics;
 
-FillChar(Diagnostics, SizeOf(Diagnostics), 0);
+Diagnostics := Default(TLzma2DecodeDiagnostics);
 Options.ThreadCount := 4;
 Options.DecodeDiagnostics := @Diagnostics;
 TLzma2.Decompress(SourceStream, DestinationStream, Options);
@@ -161,8 +161,9 @@ Advanced and low-level modules expose:
   still honoring partial `ISeqOutStream.Write` progress and preserving non-OK
   callback `SRes` values. That streaming raw LZMA facade path keeps probability
   state across bounded input chunks and routes decisions through the requested
-  HC4/HC5/BT4 native match finder. SDK-profile requests use the native optimum
-  window/replay helpers; high-speed requests use the greedy parser. This path is
+  HC4/HC5/BT4 native match finder. SDK-profile algorithm 1 requests use the native
+  optimum window/replay helpers; algorithm 0 and the explicit fast parser modes
+  use the native SDK-style fast parser. This path is
   still not claimed as byte-identical SDK `LzmaEnc.c` full-optimum compression
   parity. `TLzmaSdkLzmaDec` and
   `TLzmaSdkLzma2Dec` expose SDK-style allocate/init/decode-to-buf/decode-to-dic

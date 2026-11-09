@@ -1,48 +1,15 @@
-# Release Scope
+# Release scope
 
-Version `26.01` tracks the LZMA SDK 26.01 baseline.
+Version 26.06 targets [LZMA SDK 26.06](https://www.7-zip.org/sdk.html). The encoder and decoder sources and API headers used by the Delphi port match those in SDK 26.05. Upstream's Linux `split` change applies to the [7-Zip archive handler](https://github.com/ip7z/7zip/compare/26.05...26.06).
 
-## Runtime Scope
+## Formats and tools
 
-The runtime is pure Delphi source code. It does not load `7z.dll`, `lzma.dll`,
-`liblzma`, C/C++ object files, import libraries, or external compressor helper
-processes.
+The library handles raw LZMA and LZMA2, standalone `.lzma`, XZ with one LZMA2 filter per block, and 7z archives with LZMA or LZMA2 folders. The 7z subset excludes encrypted archives, other coders, and arbitrary filter chains.
 
-Supported public surfaces:
+`TLzma2` is the stream API. The SDK-style interfaces cover encoder and decoder handles, property records, LzmaLib, Lzma86, and the multithreaded LZMA2 pull decoder. See the [function registry](sdk-completion.md).
 
-- `Lzma.Api.TLzma2` stream API.
-- Raw LZMA2 encode/decode.
-- Standalone `.lzma` encode/decode.
-- XZ encode/decode with one LZMA2 filter per block.
-- Limited 7z encode/decode/list/extract for LZMA/LZMA2 archives.
-- Win64 command-line and VCL GUI tools.
+Each Windows package contains `Lzma2.exe`, `Lzma2_GUI.exe`, and the license notices. The VCL interface uses Windows Direct2D and includes compression, extraction, and a benchmark.
 
-Out of scope:
+## Verification
 
-- encrypted 7z archives;
-- non-LZMA/LZMA2 7z coders;
-- arbitrary multi-coder filter graphs;
-- ZIP, TAR, gzip, bzip2, zstd, PPMd, AES, and unrelated archive formats.
-
-## Public Release Assets
-
-The public binary release contains:
-
-- `lzma2-delphi-26.01-win64.zip`
-- `lzma2-delphi-26.01-win64.zip.sha256`
-
-The ZIP contains only:
-
-- `Lzma2.exe`
-- `Lzma2_GUI.exe`
-- `sk4d.dll`
-- `LICENSE`
-- `THIRD-PARTY-NOTICES.md`
-
-Source archives are provided by GitHub from the `v26.01` tag.
-
-## Validation Boundary
-
-`quick` mode does not run `tests/run-performance.ps1`; release and soak modes
-own the full benchmark matrix. Release packages must keep graph images out of
-the public artifact set, including absence of `lzma2-delphi-graph.*` files.
+The 26.06 codec checks compared 43,168 cases with the upstream C SDK across Win32 and Win64. They covered single and multithreaded builds, 16- and 32-bit probabilities, and checked and release builds. The comparison covered the tested API behavior and output bytes. Benchmark parity is a separate measurement.

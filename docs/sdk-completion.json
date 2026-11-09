@@ -1,0 +1,2263 @@
+{
+  "status": "SDK_API_COMPARED",
+  "referenceTag": "26.06",
+  "functions": [
+    {
+      "sdk": "LzmaEncProps_Init",
+      "header": "C/LzmaEnc.h",
+      "line": 41,
+      "prototype": "void LzmaEncProps_Init(CLzmaEncProps *p);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEncProps_Init",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 53,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEncProps_Normalize",
+      "header": "C/LzmaEnc.h",
+      "line": 42,
+      "prototype": "void LzmaEncProps_Normalize(CLzmaEncProps *p);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEncProps_Normalize",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 55,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEncProps_GetDictSize",
+      "header": "C/LzmaEnc.h",
+      "line": 43,
+      "prototype": "UInt32 LzmaEncProps_GetDictSize(const CLzmaEncProps *props2);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEncProps_GetDictSize",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 57,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_Create",
+      "header": "C/LzmaEnc.h",
+      "line": 63,
+      "prototype": "CLzmaEncHandle LzmaEnc_Create(ISzAllocPtr alloc);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_Create",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 59,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_Destroy",
+      "header": "C/LzmaEnc.h",
+      "line": 64,
+      "prototype": "void LzmaEnc_Destroy(CLzmaEncHandle p, ISzAllocPtr alloc, ISzAllocPtr allocBig);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_Destroy",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 61,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_SetProps",
+      "header": "C/LzmaEnc.h",
+      "line": 66,
+      "prototype": "SRes LzmaEnc_SetProps(CLzmaEncHandle p, const CLzmaEncProps *props);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_SetProps",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 63,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_SetDataSize",
+      "header": "C/LzmaEnc.h",
+      "line": 67,
+      "prototype": "void LzmaEnc_SetDataSize(CLzmaEncHandle p, UInt64 expectedDataSiize);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_SetDataSize",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 65,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_WriteProperties",
+      "header": "C/LzmaEnc.h",
+      "line": 68,
+      "prototype": "SRes LzmaEnc_WriteProperties(CLzmaEncHandle p, Byte *properties, SizeT *size);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_WriteProperties",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 67,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_IsWriteEndMark",
+      "header": "C/LzmaEnc.h",
+      "line": 69,
+      "prototype": "unsigned LzmaEnc_IsWriteEndMark(CLzmaEncHandle p);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_IsWriteEndMark",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 69,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_Encode",
+      "header": "C/LzmaEnc.h",
+      "line": 71,
+      "prototype": "SRes LzmaEnc_Encode(CLzmaEncHandle p, ISeqOutStreamPtr outStream, ISeqInStreamPtr inStream, ICompressProgressPtr progress, ISzAllocPtr alloc, ISzAllocPtr allocBig);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_Encode",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 87,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEnc_MemEncode",
+      "header": "C/LzmaEnc.h",
+      "line": 73,
+      "prototype": "SRes LzmaEnc_MemEncode(CLzmaEncHandle p, Byte *dest, SizeT *destLen, const Byte *src, SizeT srcLen, int writeEndMark, ICompressProgressPtr progress, ISzAllocPtr alloc, ISzAllocPtr allocBig);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEnc_MemEncode",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 93,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaEncode",
+      "header": "C/LzmaEnc.h",
+      "line": 79,
+      "prototype": "SRes LzmaEncode(Byte *dest, SizeT *destLen, const Byte *src, SizeT srcLen, const CLzmaEncProps *props, Byte *propsEncoded, SizeT *propsSize, int writeEndMark, ICompressProgressPtr progress, ISzAllocPtr alloc, ISzAllocPtr allocBig);",
+      "counterpart": "Lzma.Sdk.Encoder26.LzmaEncode",
+      "nativeFile": "src/Lzma.Sdk.Encoder26.pas",
+      "nativeLine": 99,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2EncProps_Init",
+      "header": "C/Lzma2Enc.h",
+      "line": 24,
+      "prototype": "void Lzma2EncProps_Init(CLzma2EncProps *p);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2EncProps_Init",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 12,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2EncProps_Normalize",
+      "header": "C/Lzma2Enc.h",
+      "line": 25,
+      "prototype": "void Lzma2EncProps_Normalize(CLzma2EncProps *p);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2EncProps_Normalize",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 13,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Enc_Create",
+      "header": "C/Lzma2Enc.h",
+      "line": 44,
+      "prototype": "CLzma2EncHandle Lzma2Enc_Create(ISzAllocPtr alloc, ISzAllocPtr allocBig);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2Enc_Create",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 14,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Enc_Destroy",
+      "header": "C/Lzma2Enc.h",
+      "line": 45,
+      "prototype": "void Lzma2Enc_Destroy(CLzma2EncHandle p);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2Enc_Destroy",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 15,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Enc_SetProps",
+      "header": "C/Lzma2Enc.h",
+      "line": 46,
+      "prototype": "SRes Lzma2Enc_SetProps(CLzma2EncHandle p, const CLzma2EncProps *props);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2Enc_SetProps",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 16,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Enc_SetDataSize",
+      "header": "C/Lzma2Enc.h",
+      "line": 47,
+      "prototype": "void Lzma2Enc_SetDataSize(CLzma2EncHandle p, UInt64 expectedDataSiize);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2Enc_SetDataSize",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 17,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Enc_WriteProperties",
+      "header": "C/Lzma2Enc.h",
+      "line": 48,
+      "prototype": "Byte Lzma2Enc_WriteProperties(CLzma2EncHandle p);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2Enc_WriteProperties",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 18,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Enc_Encode2",
+      "header": "C/Lzma2Enc.h",
+      "line": 49,
+      "prototype": "SRes Lzma2Enc_Encode2(CLzma2EncHandle p, ISeqOutStreamPtr outStream, Byte *outBuf, size_t *outBufSize, ISeqInStreamPtr inStream, const Byte *inData, size_t inDataSize, ICompressProgressPtr progress);",
+      "counterpart": "Lzma2.Sdk.Encoder26.Lzma2Enc_Encode2",
+      "nativeFile": "src/Lzma2.Sdk.Encoder26.pas",
+      "nativeLine": 19,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaProps_Decode",
+      "header": "C/LzmaDec.h",
+      "line": 43,
+      "prototype": "SRes LzmaProps_Decode(CLzmaProps *p, const Byte *data, unsigned size);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaProps_Decode",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 42,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_Init",
+      "header": "C/LzmaDec.h",
+      "line": 79,
+      "prototype": "void LzmaDec_Init(CLzmaDec *p);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_Init",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 45,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_AllocateProbs",
+      "header": "C/LzmaDec.h",
+      "line": 140,
+      "prototype": "SRes LzmaDec_AllocateProbs(CLzmaDec *p, const Byte *props, unsigned propsSize, ISzAllocPtr alloc);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_AllocateProbs",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 46,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_FreeProbs",
+      "header": "C/LzmaDec.h",
+      "line": 141,
+      "prototype": "void LzmaDec_FreeProbs(CLzmaDec *p, ISzAllocPtr alloc);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_FreeProbs",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 50,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_Allocate",
+      "header": "C/LzmaDec.h",
+      "line": 143,
+      "prototype": "SRes LzmaDec_Allocate(CLzmaDec *p, const Byte *props, unsigned propsSize, ISzAllocPtr alloc);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_Allocate",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 48,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_Free",
+      "header": "C/LzmaDec.h",
+      "line": 144,
+      "prototype": "void LzmaDec_Free(CLzmaDec *p, ISzAllocPtr alloc);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_Free",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 51,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_DecodeToDic",
+      "header": "C/LzmaDec.h",
+      "line": 188,
+      "prototype": "SRes LzmaDec_DecodeToDic(CLzmaDec *p, SizeT dicLimit, const Byte *src, SizeT *srcLen, ELzmaFinishMode finishMode, ELzmaStatus *status);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_DecodeToDic",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 52,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_DecodeToBuf",
+      "header": "C/LzmaDec.h",
+      "line": 205,
+      "prototype": "SRes LzmaDec_DecodeToBuf(CLzmaDec *p, Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, ELzmaFinishMode finishMode, ELzmaStatus *status);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_DecodeToBuf",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 54,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDecode",
+      "header": "C/LzmaDec.h",
+      "line": 231,
+      "prototype": "SRes LzmaDecode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, const Byte *propData, unsigned propSize, ELzmaFinishMode finishMode, ELzmaStatus *status, ISzAllocPtr alloc);",
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDecode",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 56,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_AllocateProbs",
+      "header": "C/Lzma2Dec.h",
+      "line": 30,
+      "prototype": "SRes Lzma2Dec_AllocateProbs(CLzma2Dec *p, Byte prop, ISzAllocPtr alloc);",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_AllocateProbs",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 21,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_Allocate",
+      "header": "C/Lzma2Dec.h",
+      "line": 31,
+      "prototype": "SRes Lzma2Dec_Allocate(CLzma2Dec *p, Byte prop, ISzAllocPtr alloc);",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_Allocate",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 22,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_Init",
+      "header": "C/Lzma2Dec.h",
+      "line": 32,
+      "prototype": "void Lzma2Dec_Init(CLzma2Dec *p);",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_Init",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 23,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_DecodeToDic",
+      "header": "C/Lzma2Dec.h",
+      "line": 49,
+      "prototype": "SRes Lzma2Dec_DecodeToDic(CLzma2Dec *p, SizeT dicLimit, const Byte *src, SizeT *srcLen, ELzmaFinishMode finishMode, ELzmaStatus *status);",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_DecodeToDic",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 24,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_DecodeToBuf",
+      "header": "C/Lzma2Dec.h",
+      "line": 52,
+      "prototype": "SRes Lzma2Dec_DecodeToBuf(CLzma2Dec *p, Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, ELzmaFinishMode finishMode, ELzmaStatus *status);",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_DecodeToBuf",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 26,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_Parse",
+      "header": "C/Lzma2Dec.h",
+      "line": 79,
+      "prototype": "ELzma2ParseStatus Lzma2Dec_Parse(CLzma2Dec *p, SizeT outSize, const Byte *src, SizeT *srcLen, int checkFinishBlock );",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_Parse",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 28,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Decode",
+      "header": "C/Lzma2Dec.h",
+      "line": 116,
+      "prototype": "SRes Lzma2Decode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, Byte prop, ELzmaFinishMode finishMode, ELzmaStatus *status, ISzAllocPtr alloc);",
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Decode",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 30,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2DecMtProps_Init",
+      "header": "C/Lzma2DecMt.h",
+      "line": 25,
+      "prototype": "void Lzma2DecMtProps_Init(CLzma2DecMtProps *p);",
+      "counterpart": "Lzma2.Sdk.DecoderMt26.Lzma2DecMtProps_Init",
+      "nativeFile": "src/Lzma2.Sdk.DecoderMt26.pas",
+      "nativeLine": 19,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2DecMt_Create",
+      "header": "C/Lzma2DecMt.h",
+      "line": 45,
+      "prototype": "CLzma2DecMtHandle Lzma2DecMt_Create(ISzAllocPtr alloc, ISzAllocPtr allocMid);",
+      "counterpart": "Lzma2.Sdk.DecoderMt26.Lzma2DecMt_Create",
+      "nativeFile": "src/Lzma2.Sdk.DecoderMt26.pas",
+      "nativeLine": 20,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2DecMt_Destroy",
+      "header": "C/Lzma2DecMt.h",
+      "line": 46,
+      "prototype": "void Lzma2DecMt_Destroy(CLzma2DecMtHandle p);",
+      "counterpart": "Lzma2.Sdk.DecoderMt26.Lzma2DecMt_Destroy",
+      "nativeFile": "src/Lzma2.Sdk.DecoderMt26.pas",
+      "nativeLine": 21,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2DecMt_Decode",
+      "header": "C/Lzma2DecMt.h",
+      "line": 48,
+      "prototype": "SRes Lzma2DecMt_Decode(CLzma2DecMtHandle p, Byte prop, const CLzma2DecMtProps *props, ISeqOutStreamPtr outStream, const UInt64 *outDataSize, int finishMode, ISeqInStreamPtr inStream, UInt64 *inProcessed, int *isMT, ICompressProgressPtr progress);",
+      "counterpart": "Lzma2.Sdk.DecoderMt26.Lzma2DecMt_Decode",
+      "nativeFile": "src/Lzma2.Sdk.DecoderMt26.pas",
+      "nativeLine": 27,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2DecMt_Init",
+      "header": "C/Lzma2DecMt.h",
+      "line": 68,
+      "prototype": "SRes Lzma2DecMt_Init(CLzma2DecMtHandle pp, Byte prop, const CLzma2DecMtProps *props, const UInt64 *outDataSize, int finishMode, ISeqInStreamPtr inStream);",
+      "counterpart": "Lzma2.Sdk.DecoderMt26.Lzma2DecMt_Init",
+      "nativeFile": "src/Lzma2.Sdk.DecoderMt26.pas",
+      "nativeLine": 22,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2DecMt_Read",
+      "header": "C/Lzma2DecMt.h",
+      "line": 74,
+      "prototype": "SRes Lzma2DecMt_Read(CLzma2DecMtHandle pp, Byte *data, size_t *outSize, UInt64 *inStreamProcessed);",
+      "counterpart": "Lzma2.Sdk.DecoderMt26.Lzma2DecMt_Read",
+      "nativeFile": "src/Lzma2.Sdk.DecoderMt26.pas",
+      "nativeLine": 25,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaCompress",
+      "header": "C/LzmaLib.h",
+      "line": 103,
+      "prototype": "Z7_STDAPI LzmaCompress(unsigned char *dest, size_t *destLen, const unsigned char *src, size_t srcLen, unsigned char *outProps, size_t *outPropsSize, int level, unsigned dictSize, int lc, int lp, int pb, int fb, int numThreads );",
+      "counterpart": "Lzma.Sdk.Lib26.LzmaCompress",
+      "nativeFile": "src/Lzma.Sdk.Lib26.pas",
+      "nativeLine": 14,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaUncompress",
+      "header": "C/LzmaLib.h",
+      "line": 133,
+      "prototype": "Z7_STDAPI LzmaUncompress(unsigned char *dest, size_t *destLen, const unsigned char *src, SizeT *srcLen, const unsigned char *props, size_t propsSize);",
+      "counterpart": "Lzma.Sdk.Lib26.LzmaUncompress",
+      "nativeFile": "src/Lzma.Sdk.Lib26.pas",
+      "nativeLine": 17,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma86_Encode",
+      "header": "C/Lzma86.h",
+      "line": 71,
+      "prototype": "SRes Lzma86_Encode(Byte *dest, size_t *destLen, const Byte *src, size_t srcLen, int level, UInt32 dictSize, int filterMode);",
+      "counterpart": "Lzma.Sdk.Lib26.Lzma86_Encode",
+      "nativeFile": "src/Lzma.Sdk.Lib26.pas",
+      "nativeLine": 19,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma86_GetUnpackSize",
+      "header": "C/Lzma86.h",
+      "line": 87,
+      "prototype": "SRes Lzma86_GetUnpackSize(const Byte *src, SizeT srcLen, UInt64 *unpackSize);",
+      "counterpart": "Lzma.Sdk.Lib26.Lzma86_GetUnpackSize",
+      "nativeFile": "src/Lzma.Sdk.Lib26.pas",
+      "nativeLine": 21,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma86_Decode",
+      "header": "C/Lzma86.h",
+      "line": 107,
+      "prototype": "SRes Lzma86_Decode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen);",
+      "counterpart": "Lzma.Sdk.Lib26.Lzma86_Decode",
+      "nativeFile": "src/Lzma.Sdk.Lib26.pas",
+      "nativeLine": 22,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    }
+  ],
+  "functionMacros": [
+    {
+      "sdk": "LzmaDec_CONSTRUCT",
+      "header": "C/LzmaDec.h",
+      "line": 76,
+      "prototype": null,
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_Construct",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 43,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "LzmaDec_Construct",
+      "header": "C/LzmaDec.h",
+      "line": 77,
+      "prototype": null,
+      "counterpart": "Lzma.Sdk.Decoder26.LzmaDec_Construct",
+      "nativeFile": "src/Lzma.Sdk.Decoder26.pas",
+      "nativeLine": 43,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_CONSTRUCT",
+      "header": "C/Lzma2Dec.h",
+      "line": 25,
+      "prototype": null,
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_Construct",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 18,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_Construct",
+      "header": "C/Lzma2Dec.h",
+      "line": 26,
+      "prototype": null,
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_Construct",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 18,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_FreeProbs",
+      "header": "C/Lzma2Dec.h",
+      "line": 27,
+      "prototype": null,
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_FreeProbs",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 19,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_Free",
+      "header": "C/Lzma2Dec.h",
+      "line": 28,
+      "prototype": null,
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_Free",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 20,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    },
+    {
+      "sdk": "Lzma2Dec_GetUnpackExtra",
+      "header": "C/Lzma2Dec.h",
+      "line": 94,
+      "prototype": null,
+      "counterpart": "Lzma2.Sdk.Decoder26.Lzma2Dec_GetUnpackExtra",
+      "nativeFile": "src/Lzma2.Sdk.Decoder26.pas",
+      "nativeLine": 29,
+      "status": "IMPLEMENTED_FINITE_CONTRACT_TESTED"
+    }
+  ],
+  "functionCount": 47,
+  "functionMacroCount": 7,
+  "remainingUnportedPublicFunctions": [],
+  "properties": {
+    "CLzmaEncProps": [
+      "level",
+      "dictSize",
+      "lc",
+      "lp",
+      "pb",
+      "algo",
+      "fb",
+      "btMode",
+      "numHashBytes",
+      "numHashOutBits",
+      "mc",
+      "writeEndMark",
+      "numThreads",
+      "affinityGroup",
+      "reduceSize",
+      "affinity",
+      "affinityInGroup"
+    ],
+    "CLzma2EncProps": [
+      "lzmaProps",
+      "blockSize",
+      "numBlockThreads_Reduced",
+      "numBlockThreads_Max",
+      "numTotalThreads",
+      "numThreadGroups"
+    ],
+    "CLzma2DecMtProps": [
+      "inBufSize_ST",
+      "outStep_ST",
+      "numThreads",
+      "inBufSize_MT",
+      "outBlockMax",
+      "inBlockMax"
+    ]
+  },
+  "missingProperties": [],
+  "internalComponents": [
+    {
+      "sdk": {
+        "path": "C/LzmaEnc.c",
+        "bytes": 80759,
+        "sha256": "67f23656339b5e19015acac41acbcf36ea7787a8419907dce91c1dd336a2fb0f"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Encoder26.pas",
+          "bytes": 21934,
+          "sha256": "81e0e3cd0f9740a864e139c768ca5cda84d01ecc30487ba64c7624ee6b6166ef"
+        },
+        {
+          "path": "src/Lzma.Sdk.Encoder26.Code.inc",
+          "bytes": 9177,
+          "sha256": "fe553d946a505614c7b83759796b8e02a92283b81349db389fd03ababc6100d4"
+        },
+        {
+          "path": "src/Lzma.Sdk.Encoder26.Parse.inc",
+          "bytes": 16663,
+          "sha256": "4015f5d90b200170746453a441be01462c90aad4eb5c36a51ce488262729ae64"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "LzmaEncProps_Init",
+          "line": 57
+        },
+        {
+          "name": "LzmaEncProps_Normalize",
+          "line": 70
+        },
+        {
+          "name": "LzmaEncProps_GetDictSize",
+          "line": 112
+        },
+        {
+          "name": "GetPosSlot1",
+          "line": 197
+        },
+        {
+          "name": "LzmaEnc_FastPosInit",
+          "line": 213
+        },
+        {
+          "name": "LzmaEnc_SaveState",
+          "line": 519
+        },
+        {
+          "name": "LzmaEnc_RestoreState",
+          "line": 526
+        },
+        {
+          "name": "LzmaEnc_SetProps",
+          "line": 535
+        },
+        {
+          "name": "LzmaEnc_SetDataSize",
+          "line": 613
+        },
+        {
+          "name": "RangeEnc_Construct",
+          "line": 637
+        },
+        {
+          "name": "RangeEnc_Alloc",
+          "line": 648
+        },
+        {
+          "name": "RangeEnc_Free",
+          "line": 660
+        },
+        {
+          "name": "RangeEnc_Init",
+          "line": 666
+        },
+        {
+          "name": "RangeEnc_FlushStream",
+          "line": 679
+        },
+        {
+          "name": "RangeEnc_ShiftLow",
+          "line": 691
+        },
+        {
+          "name": "RangeEnc_FlushData",
+          "line": 726
+        },
+        {
+          "name": "RangeEnc_EncodeBit_0",
+          "line": 789
+        },
+        {
+          "name": "LitEnc_Encode",
+          "line": 798
+        },
+        {
+          "name": "LitEnc_EncodeMatched",
+          "line": 815
+        },
+        {
+          "name": "LzmaEnc_InitPriceTables",
+          "line": 839
+        },
+        {
+          "name": "LitEnc_GetPrice",
+          "line": 877
+        },
+        {
+          "name": "LitEnc_Matched_GetPrice",
+          "line": 892
+        },
+        {
+          "name": "RcTree_ReverseEncode",
+          "line": 909
+        },
+        {
+          "name": "LenEnc_Init",
+          "line": 928
+        },
+        {
+          "name": "LenEnc_Encode",
+          "line": 937
+        },
+        {
+          "name": "SetPrices_3",
+          "line": 973
+        },
+        {
+          "name": "LenPriceEnc_UpdateTables",
+          "line": 989
+        },
+        {
+          "name": "ReadMatchDistances",
+          "line": 1090
+        },
+        {
+          "name": "GetPrice_PureRep",
+          "line": 1153
+        },
+        {
+          "name": "Backward",
+          "line": 1178
+        },
+        {
+          "name": "GetOptimum",
+          "line": 1230
+        },
+        {
+          "name": "GetOptimumFast",
+          "line": 1981
+        },
+        {
+          "name": "WriteEndMarker",
+          "line": 2111
+        },
+        {
+          "name": "CheckErrors",
+          "line": 2172
+        },
+        {
+          "name": "Flush",
+          "line": 2201
+        },
+        {
+          "name": "FillAlignPrices",
+          "line": 2213
+        },
+        {
+          "name": "FillDistancesPrices",
+          "line": 2237
+        },
+        {
+          "name": "LzmaEnc_Construct",
+          "line": 2332
+        },
+        {
+          "name": "LzmaEnc_Create",
+          "line": 2357
+        },
+        {
+          "name": "LzmaEnc_FreeLits",
+          "line": 2365
+        },
+        {
+          "name": "LzmaEnc_Destruct",
+          "line": 2373
+        },
+        {
+          "name": "LzmaEnc_Destroy",
+          "line": 2384
+        },
+        {
+          "name": "LzmaEnc_CodeOneBlock",
+          "line": 2393
+        },
+        {
+          "name": "LzmaEnc_Alloc",
+          "line": 2696
+        },
+        {
+          "name": "LzmaEnc_Init",
+          "line": 2772
+        },
+        {
+          "name": "LzmaEnc_InitPrices",
+          "line": 2843
+        },
+        {
+          "name": "LzmaEnc_AllocAndInit",
+          "line": 2861
+        },
+        {
+          "name": "LzmaEnc_Prepare",
+          "line": 2879
+        },
+        {
+          "name": "LzmaEnc_PrepareForLzma2",
+          "line": 2890
+        },
+        {
+          "name": "LzmaEnc_MemPrepare",
+          "line": 2899
+        },
+        {
+          "name": "LzmaEnc_Finish",
+          "line": 2910
+        },
+        {
+          "name": "SeqOutStreamBuf_Write",
+          "line": 2930
+        },
+        {
+          "name": "LzmaEnc_GetNumAvailableBytes",
+          "line": 2949
+        },
+        {
+          "name": "LzmaEnc_GetCurBuf",
+          "line": 2956
+        },
+        {
+          "name": "LzmaEnc_CodeOneMemBlock",
+          "line": 2964
+        },
+        {
+          "name": "LzmaEnc_Encode2",
+          "line": 3000
+        },
+        {
+          "name": "LzmaEnc_Encode",
+          "line": 3038
+        },
+        {
+          "name": "LzmaEnc_WriteProperties",
+          "line": 3047
+        },
+        {
+          "name": "LzmaEnc_IsWriteEndMark",
+          "line": 3083
+        },
+        {
+          "name": "LzmaEnc_MemEncode",
+          "line": 3090
+        },
+        {
+          "name": "LzmaEncode",
+          "line": 3122
+        },
+        {
+          "name": "LzmaEnc_GetLzThreads",
+          "line": 3147
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/LzFind.c",
+        "bytes": 42886,
+        "sha256": "f73da68845094a85b006a0d2da80b3ecdec92a1ca0f85df637e565c642e8d5ba"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.MatchFinder26.pas",
+          "bytes": 26395,
+          "sha256": "6adf08228d4ffc6ed27f0175c109378833533ea54d0dd36f698484e9aa6f6d23"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "LzInWindow_Free",
+          "line": 68
+        },
+        {
+          "name": "LzInWindow_Create2",
+          "line": 78
+        },
+        {
+          "name": "MatchFinder_GetPointerToCurrentPos",
+          "line": 111
+        },
+        {
+          "name": "MatchFinder_GetNumAvailableBytes",
+          "line": 116
+        },
+        {
+          "name": "MatchFinder_ReadBlock",
+          "line": 123
+        },
+        {
+          "name": "MatchFinder_MoveBlock",
+          "line": 190
+        },
+        {
+          "name": "MatchFinder_NeedMove",
+          "line": 208
+        },
+        {
+          "name": "MatchFinder_ReadIfRequired",
+          "line": 217
+        },
+        {
+          "name": "MatchFinder_SetDefaultSettings",
+          "line": 225
+        },
+        {
+          "name": "MatchFinder_Construct",
+          "line": 237
+        },
+        {
+          "name": "MatchFinder_FreeThisClassMemory",
+          "line": 260
+        },
+        {
+          "name": "MatchFinder_Free",
+          "line": 266
+        },
+        {
+          "name": "AllocRefs",
+          "line": 272
+        },
+        {
+          "name": "GetBlockSize",
+          "line": 286
+        },
+        {
+          "name": "MatchFinder_GetHashMask2",
+          "line": 321
+        },
+        {
+          "name": "MatchFinder_GetHashMask",
+          "line": 347
+        },
+        {
+          "name": "MatchFinder_Create",
+          "line": 376
+        },
+        {
+          "name": "MatchFinder_SetLimits",
+          "line": 500
+        },
+        {
+          "name": "MatchFinder_Init_LowHash",
+          "line": 539
+        },
+        {
+          "name": "MatchFinder_Init_HighHash",
+          "line": 549
+        },
+        {
+          "name": "MatchFinder_Init_4",
+          "line": 559
+        },
+        {
+          "name": "MatchFinder_Init",
+          "line": 580
+        },
+        {
+          "name": "MatchFinder_Normalize3",
+          "line": 795
+        },
+        {
+          "name": "MatchFinder_CheckLimits",
+          "line": 832
+        },
+        {
+          "name": "Hc_GetMatchesSpec",
+          "line": 880
+        },
+        {
+          "name": "GetMatchesSpec1",
+          "line": 962
+        },
+        {
+          "name": "SkipMatchesSpec",
+          "line": 1032
+        },
+        {
+          "name": "MatchFinder_MovePos",
+          "line": 1101
+        },
+        {
+          "name": "Bt2_MatchFinder_GetMatches",
+          "line": 1151
+        },
+        {
+          "name": "Bt3Zip_MatchFinder_GetMatches",
+          "line": 1161
+        },
+        {
+          "name": "Bt3_MatchFinder_GetMatches",
+          "line": 1177
+        },
+        {
+          "name": "Bt4_MatchFinder_GetMatches",
+          "line": 1219
+        },
+        {
+          "name": "Bt5_MatchFinder_GetMatches",
+          "line": 1288
+        },
+        {
+          "name": "Hc4_MatchFinder_GetMatches",
+          "line": 1362
+        },
+        {
+          "name": "Hc5_MatchFinder_GetMatches",
+          "line": 1431
+        },
+        {
+          "name": "Hc3Zip_MatchFinder_GetMatches",
+          "line": 1505
+        },
+        {
+          "name": "Bt2_MatchFinder_Skip",
+          "line": 1515
+        },
+        {
+          "name": "Bt3Zip_MatchFinder_Skip",
+          "line": 1527
+        },
+        {
+          "name": "Bt3_MatchFinder_Skip",
+          "line": 1538
+        },
+        {
+          "name": "Bt4_MatchFinder_Skip",
+          "line": 1554
+        },
+        {
+          "name": "Bt5_MatchFinder_Skip",
+          "line": 1571
+        },
+        {
+          "name": "Hc4_MatchFinder_Skip",
+          "line": 1619
+        },
+        {
+          "name": "Hc5_MatchFinder_Skip",
+          "line": 1635
+        },
+        {
+          "name": "Hc3Zip_MatchFinder_Skip",
+          "line": 1652
+        },
+        {
+          "name": "MatchFinder_CreateVTable",
+          "line": 1664
+        },
+        {
+          "name": "LzFindPrepare",
+          "line": 1706
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/LzFindOpt.c",
+        "bytes": 14646,
+        "sha256": "c8ac04141e38d825e74984e924842e76fc903d74472dd8354470f23ecbfd853a"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.MatchFinderMt26.Opt.inc",
+          "bytes": 4497,
+          "sha256": "aea49b9b3c00cd39a6c18dd9b9987ad5d34c17e4d12063a49e4d02cfa1484a53"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "GetMatchesSpecN_1",
+          "line": 45
+        },
+        {
+          "name": "GetMatchesSpecN_2",
+          "line": 223
+        },
+        {
+          "name": "GetMatchesSpecN_3",
+          "line": 407
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/LzFindMt.c",
+        "bytes": 36562,
+        "sha256": "6b04cd48e97c14a26f01865adde16440160f367e72a7b1ffda8ca084472ae223"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.MatchFinderMt26.pas",
+          "bytes": 20827,
+          "sha256": "ba99b08586ea63fbc96e1c45d7dac892d7f6d9b617102f7ccec3fc87b19ded06"
+        },
+        {
+          "path": "src/Lzma.Sdk.MatchFinderMt26.Sync.inc",
+          "bytes": 3623,
+          "sha256": "fa0aa4bb23c6f711acae2a83ff2f8c22d667d0ad5bf58255d26dfa39504425b7"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "MtSync_Construct",
+          "line": 83
+        },
+        {
+          "name": "MtSync_GetNextBlock",
+          "line": 122
+        },
+        {
+          "name": "MtSync_StopWriting",
+          "line": 153
+        },
+        {
+          "name": "MtSync_Destruct",
+          "line": 191
+        },
+        {
+          "name": "MtSync_Init",
+          "line": 230
+        },
+        {
+          "name": "MtSync_Create_WRes",
+          "line": 243
+        },
+        {
+          "name": "MtSync_Create",
+          "line": 282
+        },
+        {
+          "name": "HashThreadFunc",
+          "line": 448
+        },
+        {
+          "name": "BtGetMatches",
+          "line": 579
+        },
+        {
+          "name": "BtFillBlock",
+          "line": 740
+        },
+        {
+          "name": "BtThreadFunc",
+          "line": 761
+        },
+        {
+          "name": "MatchFinderMt_Construct",
+          "line": 797
+        },
+        {
+          "name": "MatchFinderMt_FreeMem",
+          "line": 804
+        },
+        {
+          "name": "MatchFinderMt_Destruct",
+          "line": 810
+        },
+        {
+          "name": "HashThreadFunc2",
+          "line": 843
+        },
+        {
+          "name": "BtThreadFunc2",
+          "line": 844
+        },
+        {
+          "name": "MatchFinderMt_Create",
+          "line": 856
+        },
+        {
+          "name": "MatchFinderMt_InitMt",
+          "line": 881
+        },
+        {
+          "name": "MatchFinderMt_Init",
+          "line": 888
+        },
+        {
+          "name": "MatchFinderMt_ReleaseStream",
+          "line": 944
+        },
+        {
+          "name": "MatchFinderMt_GetNextBlock_Bt",
+          "line": 954
+        },
+        {
+          "name": "MatchFinderMt_GetPointerToCurrentPos",
+          "line": 993
+        },
+        {
+          "name": "MatchFinderMt_GetNumAvailableBytes",
+          "line": 1003
+        },
+        {
+          "name": "MixMatches2",
+          "line": 1015
+        },
+        {
+          "name": "MixMatches3",
+          "line": 1039
+        },
+        {
+          "name": "MatchFinderMt_GetMatches_Bt4",
+          "line": 1087
+        },
+        {
+          "name": "MixMatches4",
+          "line": 1177
+        },
+        {
+          "name": "MatchFinderMt2_GetMatches",
+          "line": 1257
+        },
+        {
+          "name": "MatchFinderMt_GetMatches",
+          "line": 1282
+        },
+        {
+          "name": "MatchFinderMt0_Skip",
+          "line": 1331
+        },
+        {
+          "name": "MatchFinderMt2_Skip",
+          "line": 1338
+        },
+        {
+          "name": "MatchFinderMt3_Skip",
+          "line": 1348
+        },
+        {
+          "name": "MatchFinderMt4_Skip",
+          "line": 1364
+        },
+        {
+          "name": "MatchFinderMt_CreateVTable",
+          "line": 1378
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Threads.c",
+        "bytes": 20878,
+        "sha256": "db0a1f73472032a3e8a41372dd59606f07133c366cc0dd9c4e92e1e12f51e747"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Threads26.pas",
+          "bytes": 8372,
+          "sha256": "49a03ff87f3aceb8a5fbf6f60f607c5dd002965d164a53272cff98c509428994"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "GetError",
+          "line": 14
+        },
+        {
+          "name": "HandleToWRes",
+          "line": 20
+        },
+        {
+          "name": "BOOLToWRes",
+          "line": 21
+        },
+        {
+          "name": "HandlePtr_Close",
+          "line": 23
+        },
+        {
+          "name": "Handle_WaitObject",
+          "line": 34
+        },
+        {
+          "name": "Thread_Wait_Close",
+          "line": 55
+        },
+        {
+          "name": "PrintProcess_Info",
+          "line": 116
+        },
+        {
+          "name": "Thread_Create",
+          "line": 167
+        },
+        {
+          "name": "Thread_Create_With_Affinity",
+          "line": 227
+        },
+        {
+          "name": "Thread_Create_With_Group",
+          "line": 275
+        },
+        {
+          "name": "Event_Create",
+          "line": 352
+        },
+        {
+          "name": "Event_Set",
+          "line": 358
+        },
+        {
+          "name": "Event_Reset",
+          "line": 359
+        },
+        {
+          "name": "ManualResetEvent_Create",
+          "line": 361
+        },
+        {
+          "name": "AutoResetEvent_Create",
+          "line": 362
+        },
+        {
+          "name": "ManualResetEvent_CreateNotSignaled",
+          "line": 363
+        },
+        {
+          "name": "AutoResetEvent_CreateNotSignaled",
+          "line": 364
+        },
+        {
+          "name": "Semaphore_Create",
+          "line": 367
+        },
+        {
+          "name": "Semaphore_OptCreateInit",
+          "line": 374
+        },
+        {
+          "name": "Semaphore_Release",
+          "line": 385
+        },
+        {
+          "name": "Semaphore_ReleaseN",
+          "line": 387
+        },
+        {
+          "name": "Semaphore_Release1",
+          "line": 389
+        },
+        {
+          "name": "CriticalSection_Init",
+          "line": 391
+        },
+        {
+          "name": "Thread_Create_With_CpuSet",
+          "line": 448
+        },
+        {
+          "name": "Thread_Create",
+          "line": 516
+        },
+        {
+          "name": "Thread_Create_With_Group",
+          "line": 522
+        },
+        {
+          "name": "Thread_Create_With_Affinity",
+          "line": 529
+        },
+        {
+          "name": "Thread_Close",
+          "line": 549
+        },
+        {
+          "name": "Thread_Wait_Close",
+          "line": 563
+        },
+        {
+          "name": "Event_Create",
+          "line": 580
+        },
+        {
+          "name": "ManualResetEvent_Create",
+          "line": 590
+        },
+        {
+          "name": "ManualResetEvent_CreateNotSignaled",
+          "line": 592
+        },
+        {
+          "name": "AutoResetEvent_Create",
+          "line": 594
+        },
+        {
+          "name": "AutoResetEvent_CreateNotSignaled",
+          "line": 596
+        },
+        {
+          "name": "Event_Set",
+          "line": 605
+        },
+        {
+          "name": "Event_Reset",
+          "line": 616
+        },
+        {
+          "name": "Event_Wait",
+          "line": 623
+        },
+        {
+          "name": "Event_Close",
+          "line": 640
+        },
+        {
+          "name": "Semaphore_Create",
+          "line": 653
+        },
+        {
+          "name": "Semaphore_OptCreateInit",
+          "line": 666
+        },
+        {
+          "name": "Semaphore_ReleaseN",
+          "line": 686
+        },
+        {
+          "name": "Semaphore_Wait",
+          "line": 708
+        },
+        {
+          "name": "Semaphore_Close",
+          "line": 719
+        },
+        {
+          "name": "CriticalSection_Init",
+          "line": 733
+        },
+        {
+          "name": "CriticalSection_Enter",
+          "line": 741
+        },
+        {
+          "name": "CriticalSection_Leave",
+          "line": 751
+        },
+        {
+          "name": "CriticalSection_Delete",
+          "line": 761
+        },
+        {
+          "name": "InterlockedIncrement",
+          "line": 771
+        },
+        {
+          "name": "InterlockedDecrement",
+          "line": 787
+        },
+        {
+          "name": "AutoResetEvent_OptCreate_And_Reset",
+          "line": 801
+        },
+        {
+          "name": "ThreadNextGroup_Init",
+          "line": 808
+        },
+        {
+          "name": "ThreadNextGroup_GetNext",
+          "line": 818
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/LzmaDec.c",
+        "bytes": 38207,
+        "sha256": "4e6ec665a6df01f1722e2b2fc36dc5e3aa7c3890e0f8cb11c6a07c9a01f3309b"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Decoder26.pas",
+          "bytes": 21276,
+          "sha256": "dc38a12fd4615c0a840c9f8d9a6d66d18ef168faf9b73bb505611b9d07894a6b"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "LZMA_DECODE_REAL",
+          "line": 234
+        },
+        {
+          "name": "LzmaDec_WriteRem",
+          "line": 618
+        },
+        {
+          "name": "LzmaDec_DecodeReal2",
+          "line": 688
+        },
+        {
+          "name": "LzmaDec_TryDummy",
+          "line": 717
+        },
+        {
+          "name": "LzmaDec_InitDicAndState",
+          "line": 911
+        },
+        {
+          "name": "LzmaDec_Init",
+          "line": 926
+        },
+        {
+          "name": "LzmaDec_DecodeToDic",
+          "line": 956
+        },
+        {
+          "name": "LzmaDec_DecodeToBuf",
+          "line": 1204
+        },
+        {
+          "name": "LzmaDec_FreeProbs",
+          "line": 1244
+        },
+        {
+          "name": "LzmaDec_FreeDict",
+          "line": 1250
+        },
+        {
+          "name": "LzmaDec_Free",
+          "line": 1256
+        },
+        {
+          "name": "LzmaProps_Decode",
+          "line": 1262
+        },
+        {
+          "name": "LzmaDec_AllocateProbs2",
+          "line": 1288
+        },
+        {
+          "name": "LzmaDec_AllocateProbs",
+          "line": 1303
+        },
+        {
+          "name": "LzmaDec_Allocate",
+          "line": 1312
+        },
+        {
+          "name": "LzmaDecode",
+          "line": 1344
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Lzma2Dec.c",
+        "bytes": 12879,
+        "sha256": "3d691d30e4a1f4b661d56fc483db702167ff6a91781d143a017c793c1860476f"
+      },
+      "native": [
+        {
+          "path": "src/Lzma2.Sdk.Decoder26.pas",
+          "bytes": 11535,
+          "sha256": "daa577dd351d5eeb181eb82ec3496f4909c38243f06398741a7a26bf8567c30c"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "Lzma2Dec_GetOldProps",
+          "line": 57
+        },
+        {
+          "name": "Lzma2Dec_AllocateProbs",
+          "line": 71
+        },
+        {
+          "name": "Lzma2Dec_Allocate",
+          "line": 78
+        },
+        {
+          "name": "Lzma2Dec_Init",
+          "line": 85
+        },
+        {
+          "name": "Lzma2Dec_UpdateState",
+          "line": 97
+        },
+        {
+          "name": "LzmaDec_UpdateWithUncompressed",
+          "line": 166
+        },
+        {
+          "name": "Lzma2Dec_DecodeToDic",
+          "line": 178
+        },
+        {
+          "name": "Lzma2Dec_Parse",
+          "line": 309
+        },
+        {
+          "name": "Lzma2Dec_DecodeToBuf",
+          "line": 430
+        },
+        {
+          "name": "Lzma2Decode",
+          "line": 471
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Lzma2Enc.c",
+        "bytes": 18931,
+        "sha256": "4f53b9c04a7eca3c688b77ad869df26e5ed1d41f7e026295c642398457fbc6cc"
+      },
+      "native": [
+        {
+          "path": "src/Lzma2.Sdk.Encoder26.pas",
+          "bytes": 17705,
+          "sha256": "9480ce561e615e80d1be15de1ce4e6a6418ad51cebc8257d6a22c76c84a78b3d"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "LimitedSeqInStream_Init",
+          "line": 49
+        },
+        {
+          "name": "LimitedSeqInStream_Read",
+          "line": 56
+        },
+        {
+          "name": "Lzma2EncInt_InitStream",
+          "line": 92
+        },
+        {
+          "name": "Lzma2EncInt_InitBlock",
+          "line": 106
+        },
+        {
+          "name": "Lzma2EncInt_EncodeSubblock",
+          "line": 129
+        },
+        {
+          "name": "Lzma2EncProps_Init",
+          "line": 223
+        },
+        {
+          "name": "Lzma2EncProps_Normalize",
+          "line": 233
+        },
+        {
+          "name": "Progress",
+          "line": 340
+        },
+        {
+          "name": "Lzma2Enc_Create",
+          "line": 378
+        },
+        {
+          "name": "Lzma2Enc_FreeOutBufs",
+          "line": 411
+        },
+        {
+          "name": "Lzma2Enc_Destroy",
+          "line": 427
+        },
+        {
+          "name": "Lzma2Enc_SetProps",
+          "line": 458
+        },
+        {
+          "name": "Lzma2Enc_SetDataSize",
+          "line": 471
+        },
+        {
+          "name": "Lzma2Enc_WriteProperties",
+          "line": 478
+        },
+        {
+          "name": "Lzma2Enc_EncodeMt1",
+          "line": 490
+        },
+        {
+          "name": "Lzma2Enc_MtCallback_Code",
+          "line": 650
+        },
+        {
+          "name": "Lzma2Enc_MtCallback_Write",
+          "line": 688
+        },
+        {
+          "name": "Lzma2Enc_Encode2",
+          "line": 709
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Lzma2DecMt.c",
+        "bytes": 23612,
+        "sha256": "9be6852324b9fb6d9f365590a273c9dbeb33f084ed01e2382981033a531f0f5e"
+      },
+      "native": [
+        {
+          "path": "src/Lzma2.Sdk.DecoderMt26.pas",
+          "bytes": 20578,
+          "sha256": "dd7426c338f06531bd2f962cb12a8d3fdf9c1d04edab3ae57d49cd6f3739f4fa"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "Lzma2DecMtProps_Init",
+          "line": 36
+        },
+        {
+          "name": "Lzma2DecMt_Create",
+          "line": 124
+        },
+        {
+          "name": "Lzma2DecMt_FreeOutBufs",
+          "line": 164
+        },
+        {
+          "name": "Lzma2DecMt_FreeSt",
+          "line": 182
+        },
+        {
+          "name": "Lzma2DecMt_Destroy",
+          "line": 200
+        },
+        {
+          "name": "Lzma2DecMt_MtCallback_Parse",
+          "line": 237
+        },
+        {
+          "name": "Lzma2DecMt_MtCallback_PreCode",
+          "line": 416
+        },
+        {
+          "name": "Lzma2DecMt_MtCallback_Code",
+          "line": 456
+        },
+        {
+          "name": "Lzma2DecMt_MtCallback_Write",
+          "line": 529
+        },
+        {
+          "name": "Lzma2Dec_Prepare_ST",
+          "line": 611
+        },
+        {
+          "name": "Lzma2Dec_Decode_ST",
+          "line": 637
+        },
+        {
+          "name": "Lzma2DecMt_Decode",
+          "line": 802
+        },
+        {
+          "name": "Lzma2DecMt_Init",
+          "line": 984
+        },
+        {
+          "name": "Lzma2DecMt_Read",
+          "line": 1019
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/MtCoder.c",
+        "bytes": 13896,
+        "sha256": "bbb952acf0bb36ff2c7d5a79204696a3a7d8ac53ba3588d093541a5e016798d0"
+      },
+      "native": [
+        {
+          "path": "src/Lzma2.Sdk.Encoder26.pas",
+          "bytes": 17705,
+          "sha256": "9480ce561e615e80d1be15de1ce4e6a6418ad51cebc8257d6a22c76c84a78b3d"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "MtProgressThunk_Progress",
+          "line": 10
+        },
+        {
+          "name": "MtProgressThunk_CreateVTable",
+          "line": 29
+        },
+        {
+          "name": "MtCoderThread_CreateAndStart",
+          "line": 42
+        },
+        {
+          "name": "MtCoderThread_Destruct",
+          "line": 74
+        },
+        {
+          "name": "ThreadFunc2",
+          "line": 101
+        },
+        {
+          "name": "ThreadFunc",
+          "line": 331
+        },
+        {
+          "name": "MtCoder_Construct",
+          "line": 362
+        },
+        {
+          "name": "MtCoder_Free",
+          "line": 411
+        },
+        {
+          "name": "MtCoder_Destruct",
+          "line": 436
+        },
+        {
+          "name": "MtCoder_Code",
+          "line": 445
+        }
+      ],
+      "mapping": "Equivalent RTL scheduling/ownership integration; generic C helper records are internal, not a C binary ABI."
+    },
+    {
+      "sdk": {
+        "path": "C/MtDec.c",
+        "bytes": 28592,
+        "sha256": "0ebeaf78be22e016702865507afbd1c94e6e76dbfd4e1d8a123e4c41e9bdcbcf"
+      },
+      "native": [
+        {
+          "path": "src/Lzma2.Sdk.DecoderMt26.pas",
+          "bytes": 20578,
+          "sha256": "dd7426c338f06531bd2f962cb12a8d3fdf9c1d04edab3ae57d49cd6f3739f4fa"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "MtProgress_Init",
+          "line": 27
+        },
+        {
+          "name": "MtProgress_Progress_ST",
+          "line": 36
+        },
+        {
+          "name": "MtProgress_ProgressAdd",
+          "line": 45
+        },
+        {
+          "name": "MtProgress_GetError",
+          "line": 62
+        },
+        {
+          "name": "MtProgress_SetError",
+          "line": 72
+        },
+        {
+          "name": "MtDecThread_CreateEvents",
+          "line": 100
+        },
+        {
+          "name": "MtDecThread_CreateAndStart",
+          "line": 113
+        },
+        {
+          "name": "MtDecThread_FreeInBufs",
+          "line": 129
+        },
+        {
+          "name": "MtDecThread_CloseThread",
+          "line": 146
+        },
+        {
+          "name": "MtDec_CloseThreads",
+          "line": 159
+        },
+        {
+          "name": "MtDecThread_Destruct",
+          "line": 166
+        },
+        {
+          "name": "MtDec_GetError_Spec",
+          "line": 174
+        },
+        {
+          "name": "MtDec_Progress_GetError_Spec",
+          "line": 184
+        },
+        {
+          "name": "MtDec_Interrupt",
+          "line": 203
+        },
+        {
+          "name": "MtDec_GetCrossBuff",
+          "line": 214
+        },
+        {
+          "name": "MtDec_ThreadFunc2",
+          "line": 237
+        },
+        {
+          "name": "MtDec_ThreadFunc1",
+          "line": 822
+        },
+        {
+          "name": "MtDec_ThreadFunc",
+          "line": 848
+        },
+        {
+          "name": "MtDec_PrepareRead",
+          "line": 859
+        },
+        {
+          "name": "MtDec_Read",
+          "line": 882
+        },
+        {
+          "name": "MtDec_Construct",
+          "line": 946
+        },
+        {
+          "name": "MtDec_Free",
+          "line": 990
+        },
+        {
+          "name": "MtDec_Destruct",
+          "line": 1009
+        },
+        {
+          "name": "MtDec_Code",
+          "line": 1017
+        }
+      ],
+      "mapping": "Equivalent RTL scheduling/ownership integration; generic C helper records are internal, not a C binary ABI."
+    },
+    {
+      "sdk": {
+        "path": "C/LzmaLib.c",
+        "bytes": 1305,
+        "sha256": "a0b3c4dc02e1f4aefd634bd537886aa73b55e504a571a845a929779464c2d1e1"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Lib26.pas",
+          "bytes": 4801,
+          "sha256": "b8629e053c852b42b00f924b1c88edd27cfcdd8d70a299ae44c3c1b33386727a"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "LzmaCompress",
+          "line": 11
+        },
+        {
+          "name": "LzmaUncompress",
+          "line": 37
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Lzma86Enc.c",
+        "bytes": 2588,
+        "sha256": "a505dbd33a3a9c692291761faac350799dd1eac6f01545977d3cc5f50809267d"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Lib26.pas",
+          "bytes": 4801,
+          "sha256": "b8629e053c852b42b00f924b1c88edd27cfcdd8d70a299ae44c3c1b33386727a"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "Lzma86_Encode",
+          "line": 14
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Lzma86Dec.c",
+        "bytes": 1261,
+        "sha256": "554fc29e3e45575cf02b79527ff0864bcf6cc626bb10b1abbbad67d217125018"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Lib26.pas",
+          "bytes": 4801,
+          "sha256": "b8629e053c852b42b00f924b1c88edd27cfcdd8d70a299ae44c3c1b33386727a"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "Lzma86_GetUnpackSize",
+          "line": 12
+        },
+        {
+          "name": "Lzma86_Decode",
+          "line": 23
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Bra86.c",
+        "bytes": 4885,
+        "sha256": "0925d655955bdd2b7b25a01bbb3d2d395e5bac6d572f2cfd273141d1896af0ec"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Bcj26.pas",
+          "bytes": 2785,
+          "sha256": "2dda86f8fdc977b16f4b1a50648475c2e140f9b2bd4cc4c15aeded80659229c6"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "Z7_BRANCH_CONV_ST",
+          "line": 47
+        }
+      ],
+      "mapping": "Native scalar codec implementation"
+    },
+    {
+      "sdk": {
+        "path": "C/Alloc.c",
+        "bytes": 18472,
+        "sha256": "b23e008fdaca355bc566e696223655ecf5758e0233d644449946bb7c93127f71"
+      },
+      "native": [
+        {
+          "path": "src/Lzma.Sdk.Contracts.pas",
+          "bytes": 2129,
+          "sha256": "4d995c3f77bbc656e0e3bcb94d9e9260a63bafd2a39178a9697d9a7bc57fa5bc"
+        },
+        {
+          "path": "src/Lzma.Sdk.Memory.pas",
+          "bytes": 1855,
+          "sha256": "c5594baf5e2c60850d6b66376020c1c9a16bab514a2e8effcd3866ec20484279"
+        }
+      ],
+      "definitions": [
+        {
+          "name": "ConvertUInt64ToString",
+          "line": 47
+        },
+        {
+          "name": "ConvertUInt64ToHex",
+          "line": 54
+        },
+        {
+          "name": "Print",
+          "line": 76
+        },
+        {
+          "name": "PrintAligned",
+          "line": 81
+        },
+        {
+          "name": "PrintLn",
+          "line": 94
+        },
+        {
+          "name": "PrintHex",
+          "line": 99
+        },
+        {
+          "name": "PrintDec",
+          "line": 106
+        },
+        {
+          "name": "PrintAddr",
+          "line": 113
+        },
+        {
+          "name": "MyAlloc",
+          "line": 170
+        },
+        {
+          "name": "MyFree",
+          "line": 189
+        },
+        {
+          "name": "MyRealloc",
+          "line": 196
+        },
+        {
+          "name": "MidAlloc",
+          "line": 221
+        },
+        {
+          "name": "MidFree",
+          "line": 239
+        },
+        {
+          "name": "BigAlloc",
+          "line": 267
+        },
+        {
+          "name": "BigFree",
+          "line": 298
+        },
+        {
+          "name": "SzAlloc",
+          "line": 308
+        },
+        {
+          "name": "SzFree",
+          "line": 309
+        },
+        {
+          "name": "SzMidAlloc",
+          "line": 313
+        },
+        {
+          "name": "SzMidFree",
+          "line": 314
+        },
+        {
+          "name": "SzBigAlloc",
+          "line": 319
+        },
+        {
+          "name": "SzBigFree",
+          "line": 320
+        },
+        {
+          "name": "posix_memalign",
+          "line": 385
+        },
+        {
+          "name": "z7_AlignedAlloc",
+          "line": 410
+        },
+        {
+          "name": "z7_AlignedFree",
+          "line": 456
+        },
+        {
+          "name": "SzAlignedAlloc",
+          "line": 467
+        },
+        {
+          "name": "SzAlignedFree",
+          "line": 474
+        },
+        {
+          "name": "BigAlloc",
+          "line": 530
+        },
+        {
+          "name": "BigFree",
+          "line": 594
+        },
+        {
+          "name": "z7_LargePage_Set",
+          "line": 603
+        },
+        {
+          "name": "PrintPtr",
+          "line": 681
+        },
+        {
+          "name": "AlignOffsetAlloc_Alloc",
+          "line": 697
+        },
+        {
+          "name": "AlignOffsetAlloc_Free",
+          "line": 752
+        },
+        {
+          "name": "AlignOffsetAlloc_CreateVTable",
+          "line": 770
+        }
+      ],
+      "mapping": "Equivalent RTL scheduling/ownership integration; generic C helper records are internal, not a C binary ABI."
+    }
+  ],
+  "internalEncoderHelpers": [
+    "LzmaEnc_PrepareForLzma2",
+    "LzmaEnc_MemPrepare",
+    "LzmaEnc_CodeOneMemBlock",
+    "LzmaEnc_GetCurBuf",
+    "LzmaEnc_SaveState",
+    "LzmaEnc_RestoreState",
+    "LzmaEnc_Finish"
+  ],
+  "limits": [
+    {
+      "area": "Raw LZMA models",
+      "value": "lc 0..8, lp/pb 0..4; all 225 property bytes, including lc+lp > 4"
+    },
+    {
+      "area": "LZMA2 models",
+      "value": "lc+lp <= 4; dictionary property 0..40; all reset/control states"
+    },
+    {
+      "area": "Native encoder dictionary",
+      "value": "SDK default build: Win64 clamps to 0xF0000000; Win32 default FastPos rejects >128 MiB before handle mutation. These are SDK codec bounds, not CPU/thread or GUI limits."
+    },
+    {
+      "area": "Threads",
+      "value": "LZMA numThreads >1 selects real hash/BT/LZ pipeline when algorithm/BT permit; fast/HC remain ST as in SDK. LZMA2 block max 256; raw MT decoder max 32; Z7_ST max 1."
+    },
+    {
+      "area": "GUI/benchmark",
+      "value": "Auto follows effective process affinity and available memory. Ordinary choices end at effective logical CPU count; Other preserves positive Integer values, including >128. Packing dictionary presets reach 3840 MiB; benchmark reaches 4096 MiB."
+    },
+    {
+      "area": "Memory",
+      "value": "size_t stays unsigned. Native caller allocators own actual handles, dictionaries, tables, rings and block buffers. High-level MemoryLimit and GUI admission retained. No codec CPU-count admission cap."
+    },
+    {
+      "area": "MT decoder inBlockMax",
+      "value": "Reserved/unused by SDK 26.06 Lzma2DecMt.c. Preserved field, no invented input limit; output-block overflow/allocation failure falls back to ST."
+    },
+    {
+      "area": "SDK raw MT finish behavior",
+      "value": "Matches SDK, including its permissive result on some truncated input/oversized expected-output cases. The high-level container validators remain separate and strict."
+    },
+    {
+      "area": "ABI",
+      "value": "Native Delphi API/interfaces and unchanged legacy 48/64-byte records/GUIDs. Not a C-callable DLL ABI. Full SDK property records are separate native types."
+    },
+    {
+      "area": "Compile/runtime scope",
+      "value": "Delphi 13.2/RTL, Windows x86/x64, Z7_ST and 16/32-bit probabilities qualified. Native scalar behavior replaces optional SIMD/assembly speed paths. Benchmark parity is outside this validation."
+    },
+    {
+      "area": "Normalization domain",
+      "value": "As in C, callers must avoid signed-overflow/zero-division normalization inputs. Defaults, valid properties, invalid codec parameters and bounded I/O are covered."
+    },
+    {
+      "area": "Hardware qualification",
+      "value": "One six-vCPU, one-group Win10 VM. Group-0 routing/real process affinity tested; physical multi-group hardware and kernel exhaustion not claimed. Win64 >2-GiB copy tested; Win32 largest contiguous region measured and allocation failure retained; >2-GiB Win32 physical copy not claimed."
+    }
+  ],
+  "speedParityDeferred": true,
+  "referenceCommit": "d3296e39e1f1f92c7b41c0c3848e65640428d42d",
+  "referenceArchiveSha256": "1d9da340870b12712e9068be178a4436fbad785486b62aed6e2aa88ea1e3bb65",
+  "sourceTextEol": "LF",
+  "validation": {
+    "cases": 43168,
+    "comparedBytes": 1267329696,
+    "successfulMtDecodeCases": 1392
+  }
+}

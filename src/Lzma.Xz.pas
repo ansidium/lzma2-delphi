@@ -11,6 +11,8 @@ uses
 type
   TLzmaXz = class
   public
+    class function RequiredDecodeMemory(const DictionarySize: UInt64; const Check: TLzma2Check;
+      const BlockCount: NativeUInt = 1): UInt64; static;
     class procedure Encode(Source: TStream; Destination: TStream; const Options: TLzma2Options;
       const Progress: TLzma2ProgressEvent = nil); static;
     class procedure Decode(Source: TStream; Destination: TStream; const Options: TLzma2Options;
@@ -113,13 +115,16 @@ type
     FDestination: TStream;
     FCheck: TXzCheckState;
     FBytesWritten: UInt64;
+    FOutputLimit: UInt64;
+    FOutputLimitExceeded: Boolean;
   public
-    constructor Create(const Destination: TStream; const CheckId: Byte);
+    constructor Create(const Destination: TStream; const CheckId: Byte; const OutputLimit: UInt64);
     function Read(var Buffer; Count: Longint): Longint; override;
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
     function Digest: TBytes;
     property BytesWritten: UInt64 read FBytesWritten;
+    property OutputLimitExceeded: Boolean read FOutputLimitExceeded;
   end;
 
 procedure TXzCheckState.Init(const CheckId: Byte);
@@ -311,7 +316,8 @@ begin
   Result := Int64(FBytesWritten);
 end;
 
-constructor TCheckedWriteStream.Create(const Destination: TStream; const CheckId: Byte);
+constructor TCheckedWriteStream.Create(const Destination: TStream; const CheckId: Byte;
+  const OutputLimit: UInt64);
 begin
   inherited Create;
   if Destination = nil then
@@ -319,6 +325,8 @@ begin
   FDestination := Destination;
   FCheck.Init(CheckId);
   FBytesWritten := 0;
+  FOutputLimit := OutputLimit;
+  FOutputLimitExceeded := False;
 end;
 
 function TCheckedWriteStream.Read(var Buffer; Count: Longint): Longint;
@@ -333,6 +341,11 @@ begin
     Exit(0);
   if UInt64(Count) > High(UInt64) - FBytesWritten then
     RaiseLzmaError(SZ_ERROR_MEM, 'XZ block output size overflow');
+  if UInt64(Count) > FOutputLimit - FBytesWritten then
+  begin
+    FOutputLimitExceeded := True;
+    RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ block output exceeds its declared unpack size');
+  end;
   WriteExact(FDestination, Buffer, Count);
   FCheck.Update(Buffer, Count);
   Inc(FBytesWritten, UInt64(Count));
@@ -600,7 +613,8 @@ begin
   IndexOffset := FooterOffset - IndexSize;
 end;
 
-procedure ParseIndex(const Data: TBytes; const IndexOffset, IndexSize: NativeUInt; out Records: TXzIndexRecords);
+procedure ParseIndex(const Data: TBytes; const IndexOffset, IndexSize: NativeUInt; out Records: TXzIndexRecords;
+  const MemoryLimit: UInt64 = 0; const RetainedMemory: UInt64 = 0);
 var
   Index: TBytes;
   Pos: NativeUInt;
@@ -611,6 +625,8 @@ var
   I: Integer;
 begin
   SetLength(Records, 0);
+  if MemoryLimit <> 0 then
+    ValidateMemoryLimit(CheckedMemoryAdd(RetainedMemory, IndexSize), MemoryLimit);
   Index := SliceBytes(Data, IndexOffset, IndexSize);
   if IndexSize < 4 then
     RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ index is too small');
@@ -637,6 +653,9 @@ begin
     end;
     Exit;
   end;
+  if MemoryLimit <> 0 then
+    ValidateMemoryLimit(CheckedMemoryAdd(RetainedMemory, CheckedMemoryAdd(UInt64(Length(Index)),
+      CheckedMemoryMultiply(NumRecords, SizeOf(TXzIndexRecord)))), MemoryLimit);
   SetLength(Records, Integer(NumRecords));
   for I := 0 to High(Records) do
   begin
@@ -655,7 +674,8 @@ begin
   end;
 end;
 
-function XzReadVarIntFromStream(const Source: TStream; var IndexBytes: TBytes; out Value: UInt64): Boolean;
+function XzReadVarIntFromStream(const Source: TStream; var IndexBytes: TBytes; out Value: UInt64;
+  const MemoryLimit: UInt64 = 0; const RetainedMemory: UInt64 = 0): Boolean;
 var
   I: Integer;
   B: Byte;
@@ -666,6 +686,9 @@ begin
   while I < 9 do
   begin
     B := ReadByteRequired(Source);
+    if MemoryLimit <> 0 then
+      ValidateMemoryLimit(CheckedMemoryAdd(RetainedMemory,
+        CheckedMemoryAdd(UInt64(Length(IndexBytes)), UInt64(Length(IndexBytes)) + 1)), MemoryLimit);
     AppendByte(IndexBytes, B);
     Value := Value or (UInt64(B and $7F) shl (7 * I));
     Inc(I);
@@ -677,7 +700,8 @@ begin
   end;
 end;
 
-procedure ParseIndexForward(const Source: TStream; out Records: TXzIndexRecords; out IndexSize: NativeUInt);
+procedure ParseIndexForward(const Source: TStream; out Records: TXzIndexRecords; out IndexSize: NativeUInt;
+  const MemoryLimit: UInt64 = 0; const RetainedMemory: UInt64 = 0);
 var
   IndexBytes: TBytes;
   CrcBytes: array[0..3] of Byte;
@@ -689,21 +713,27 @@ var
 begin
   SetLength(Records, 0);
   SetLength(IndexBytes, 0);
+  if MemoryLimit <> 0 then ValidateMemoryLimit(CheckedMemoryAdd(RetainedMemory, 1), MemoryLimit);
   AppendByte(IndexBytes, 0);
 
-  if not XzReadVarIntFromStream(Source, IndexBytes, NumRecords) then
+  if not XzReadVarIntFromStream(Source, IndexBytes, NumRecords, MemoryLimit, RetainedMemory) then
     RaiseLzmaError(SZ_ERROR_ARCHIVE, 'Invalid XZ index record count');
   if NumRecords > UInt64(High(Integer)) then
     RaiseLzmaError(SZ_ERROR_MEM, 'XZ index has too many records for this process');
 
+  if MemoryLimit <> 0 then
+    ValidateMemoryLimit(CheckedMemoryAdd(RetainedMemory, CheckedMemoryAdd(UInt64(Length(IndexBytes)),
+      CheckedMemoryMultiply(NumRecords, SizeOf(TXzIndexRecord)))), MemoryLimit);
   SetLength(Records, Integer(NumRecords));
   for I := 0 to High(Records) do
   begin
-    if not XzReadVarIntFromStream(Source, IndexBytes, Records[I].UnpaddedSize) then
+    if not XzReadVarIntFromStream(Source, IndexBytes, Records[I].UnpaddedSize, MemoryLimit,
+      CheckedMemoryAdd(RetainedMemory, CheckedMemoryMultiply(UInt64(Length(Records)), SizeOf(TXzIndexRecord)))) then
       RaiseLzmaError(SZ_ERROR_ARCHIVE, 'Invalid XZ index unpadded size');
     if Records[I].UnpaddedSize = 0 then
       RaiseLzmaError(SZ_ERROR_ARCHIVE, 'Invalid XZ index zero unpadded size');
-    if not XzReadVarIntFromStream(Source, IndexBytes, Records[I].UnpackSize) then
+    if not XzReadVarIntFromStream(Source, IndexBytes, Records[I].UnpackSize, MemoryLimit,
+      CheckedMemoryAdd(RetainedMemory, CheckedMemoryMultiply(UInt64(Length(Records)), SizeOf(TXzIndexRecord)))) then
       RaiseLzmaError(SZ_ERROR_ARCHIVE, 'Invalid XZ index unpack size');
   end;
 
@@ -712,6 +742,10 @@ begin
     PadByte := ReadByteRequired(Source);
     if PadByte <> 0 then
       RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ index padding is not zero');
+    if MemoryLimit <> 0 then
+      ValidateMemoryLimit(CheckedMemoryAdd(RetainedMemory, CheckedMemoryAdd(
+        CheckedMemoryMultiply(UInt64(Length(Records)), SizeOf(TXzIndexRecord)),
+        CheckedMemoryAdd(UInt64(Length(IndexBytes)), UInt64(Length(IndexBytes)) + 1))), MemoryLimit);
     AppendByte(IndexBytes, PadByte);
   end;
 
@@ -876,41 +910,6 @@ begin
   end;
 end;
 
-function TryAddMemoryUse(var Total: UInt64; const Value: UInt64; const Limit: UInt64): Boolean;
-begin
-  if Limit = 0 then
-  begin
-    if Value > High(UInt64) - Total then
-      Exit(False);
-    Inc(Total, Value);
-    Exit(True);
-  end;
-  if (Total > Limit) or (Value > Limit - Total) then
-    Exit(False);
-  Inc(Total, Value);
-  Result := True;
-end;
-
-function FitsMtDecodeMemoryLimit(const InputSize, OutputSize, PerWorkerSize: UInt64;
-  const WorkerCount: Integer; const MemoryLimit: UInt64): Boolean;
-var
-  Total: UInt64;
-  WorkerMemory: UInt64;
-begin
-  if OutputSize > UInt64(High(Integer)) then
-    Exit(False);
-  if MemoryLimit = 0 then
-    Exit(True);
-  if (WorkerCount > 0) and (PerWorkerSize > High(UInt64) div UInt64(WorkerCount)) then
-    Exit(False);
-  WorkerMemory := UInt64(WorkerCount) * PerWorkerSize;
-  Total := 0;
-  Result :=
-    TryAddMemoryUse(Total, InputSize, MemoryLimit) and
-    TryAddMemoryUse(Total, OutputSize, MemoryLimit) and
-    TryAddMemoryUse(Total, WorkerMemory, MemoryLimit);
-end;
-
 procedure AppendMtBlock(var Blocks: TXzMtBlocks; const Block: TXzMtBlock);
 var
   OldLen: Integer;
@@ -1070,7 +1069,8 @@ function TryPrepareXzMtBlocksFromStream(const Source: TStream; const StartPositi
   const CapturePayloads: Boolean;
   out CheckId: Byte; out Blocks: TXzMtBlocks; out IndexRecords: TXzIndexRecords;
   out ObservedBlockCount: Integer; out FallbackReason: TLzma2DecodeFallbackReason;
-  out PackedInputSize: UInt64; out StreamEndPosition: Int64): Boolean;
+  out PackedInputSize: UInt64; out StreamEndPosition: Int64;
+  const MemoryLimit: UInt64 = 0): Boolean;
 var
   SourceSize: Int64;
   LimitPosition: Int64;
@@ -1097,7 +1097,27 @@ var
   J: Integer;
   Block: TXzMtBlock;
   IndexRecord: TXzIndexRecord;
+  CapturedBytes, CurrentPayloadBytes: UInt64;
+
+  function CurrentMemory: UInt64;
+  begin
+    Result := CheckedMemoryAdd(UInt64(Length(Footer)), UInt64(Length(IndexData)));
+    Result := CheckedMemoryAdd(Result, UInt64(Length(Header)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(IndexRecords)), SizeOf(TXzIndexRecord)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(Blocks)), SizeOf(TXzMtBlock)));
+    Result := CheckedMemoryAdd(Result, CapturedBytes);
+    Result := CheckedMemoryAdd(Result, CurrentPayloadBytes);
+  end;
+
+  procedure ValidateGrowth(const NewBytes: UInt64);
+  begin
+    if MemoryLimit <> 0 then
+      ValidateMemoryLimit(CheckedMemoryAdd(CurrentMemory, NewBytes), MemoryLimit);
+  end;
+
 begin
+  CapturedBytes := 0;
+  CurrentPayloadBytes := 0;
   Result := False;
   FallbackReason := ldfrUnsupportedLayout;
   ObservedBlockCount := 0;
@@ -1115,13 +1135,16 @@ begin
   if SourceSize < StartPosition + XZ_STREAM_HEADER_SIZE + XZ_STREAM_FOOTER_SIZE then
     RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ stream is truncated');
 
-  ValidateHeader(ReadStreamBytesAt(Source, StartPosition, XZ_STREAM_HEADER_SIZE), CheckId);
+  ValidateGrowth(XZ_STREAM_HEADER_SIZE);
+  Header := ReadStreamBytesAt(Source, StartPosition, XZ_STREAM_HEADER_SIZE);
+  ValidateHeader(Header, CheckId);
   CheckSize := XzCheckSizeById(CheckId);
   LimitPosition := XzStreamLimitWithoutPadding(Source, StartPosition, SourceSize);
   if LimitPosition < StartPosition + XZ_STREAM_HEADER_SIZE + XZ_STREAM_FOOTER_SIZE then
     RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ stream is truncated');
 
   FooterOffset := LimitPosition - XZ_STREAM_FOOTER_SIZE;
+  ValidateGrowth(XZ_STREAM_FOOTER_SIZE);
   Footer := ReadStreamBytesAt(Source, FooterOffset, XZ_STREAM_FOOTER_SIZE);
   IndexSize64 := UInt64(ReadUi32LE(@Footer[4]) + 1) * 4;
   if IndexSize64 > UInt64(FooterOffset - StartPosition - XZ_STREAM_HEADER_SIZE) then
@@ -1131,8 +1154,9 @@ begin
   IndexSize := NativeUInt(IndexSize64);
   ValidateFooterBytes(Footer, CheckId, IndexSize);
   IndexOffset := FooterOffset - Int64(IndexSize);
+  ValidateGrowth(IndexSize);
   IndexData := ReadStreamBytesAt(Source, IndexOffset, IndexSize);
-  ParseIndex(IndexData, 0, IndexSize, IndexRecords);
+  ParseIndex(IndexData, 0, IndexSize, IndexRecords, MemoryLimit, CurrentMemory);
 
   Offset := StartPosition + XZ_STREAM_HEADER_SIZE;
   while Offset < IndexOffset do
@@ -1142,6 +1166,7 @@ begin
       Break;
 
     HeaderSize := NativeUInt(FirstByte) * 4 + 4;
+    ValidateGrowth(HeaderSize);
     Header := ReadStreamBytesAt(Source, Offset, HeaderSize);
     ParseBlockHeaderBytes(Header, HeaderSize, HeaderPackSize, HeaderUnpackSize, Lzma2Prop);
     if ObservedBlockCount >= Length(IndexRecords) then
@@ -1201,8 +1226,12 @@ begin
 
     if CapturePayloads then
     begin
+      ValidateGrowth(EffectivePackSize);
       Block.RawData := ReadStreamBytesAt(Source, PayloadOffset, NativeUInt(EffectivePackSize));
+      CurrentPayloadBytes := UInt64(Length(Block.RawData));
+      ValidateGrowth(CheckSize);
       Block.ExpectedDigest := ReadStreamBytesAt(Source, CheckOffset, CheckSize);
+      CurrentPayloadBytes := CheckedMemoryAdd(CurrentPayloadBytes, UInt64(Length(Block.ExpectedDigest)));
     end
     else
     begin
@@ -1216,7 +1245,10 @@ begin
     Block.HeaderSize := HeaderSize;
     Block.PackSize := EffectivePackSize;
     Block.HeaderUnpackSize := EffectiveUnpackSize;
+    ValidateGrowth(CheckedMemoryMultiply(UInt64(Length(Blocks)) + 1, SizeOf(TXzMtBlock)));
     AppendMtBlock(Blocks, Block);
+    CapturedBytes := CheckedMemoryAdd(CapturedBytes, CurrentPayloadBytes);
+    CurrentPayloadBytes := 0;
     if EffectivePackSize > High(UInt64) - PackedInputSize then
       RaiseLzmaError(SZ_ERROR_MEM, 'XZ MT decode packed size overflow');
     Inc(PackedInputSize, EffectivePackSize);
@@ -1264,6 +1296,7 @@ var
   PackedInputSize: UInt64;
   StreamEndPosition: Int64;
   ReadLock: TObject;
+  MetadataMemory, WorkerMemory, DecodeRetainedMemory: UInt64;
   I: Integer;
 
   function TryPrepareMtBlocks(const CapturePayloads: Boolean): Boolean;
@@ -1271,18 +1304,22 @@ var
     try
       Result := TryPrepareXzMtBlocksFromStream(Source, StartPosition, CapturePayloads,
         CheckId, Blocks, IndexRecords,
-        ObservedBlockCount, FallbackReason, PackedInputSize, StreamEndPosition);
+        ObservedBlockCount, FallbackReason, PackedInputSize, StreamEndPosition, Options.MemoryLimit);
     except
       on E: ELzmaError do
       begin
-        if E.ResultCode <> SZ_ERROR_ARCHIVE then
+        if (E.ResultCode <> SZ_ERROR_ARCHIVE) and
+          not ((Options.MemoryLimit <> 0) and (E.ResultCode = SZ_ERROR_MEM)) then
           raise;
         SetLength(Blocks, 0);
         SetLength(IndexRecords, 0);
         ObservedBlockCount := 0;
         PackedInputSize := 0;
         StreamEndPosition := StartPosition;
-        FallbackReason := ldfrUnsupportedLayout;
+        if E.ResultCode = SZ_ERROR_MEM then
+          FallbackReason := ldfrMemoryLimit
+        else
+          FallbackReason := ldfrUnsupportedLayout;
         Result := False;
       end;
     end;
@@ -1329,18 +1366,25 @@ begin
       MaxBlockDictionarySize := Lzma2DictionaryFromProperty(Blocks[I].Lzma2Prop);
   end;
 
-  SetLength(Units, Length(Blocks));
-  SetLength(OutputSizes, Length(Blocks));
   TotalOutputSize := 0;
   for I := 0 to High(Blocks) do
-  begin
-    Units[I] := Blocks[I].RawData;
-    OutputSizes[I] := Blocks[I].HeaderUnpackSize;
-    if OutputSizes[I] > High(UInt64) - TotalOutputSize then
-      RaiseLzmaError(SZ_ERROR_MEM, 'XZ MT decode output size overflow');
-    Inc(TotalOutputSize, OutputSizes[I]);
-  end;
-  if not FitsMtDecodeMemoryLimit(PackedInputSize, TotalOutputSize, MaxBlockDictionarySize, Workers,
+    TotalOutputSize := CheckedMemoryAdd(TotalOutputSize, Blocks[I].HeaderUnpackSize);
+  MetadataMemory := CheckedMemoryMultiply(UInt64(Length(Blocks)), SizeOf(TXzMtBlock));
+  MetadataMemory := CheckedMemoryAdd(MetadataMemory,
+    CheckedMemoryMultiply(UInt64(Length(IndexRecords)), SizeOf(TXzIndexRecord)));
+  MetadataMemory := CheckedMemoryAdd(MetadataMemory,
+    CheckedMemoryMultiply(UInt64(Length(Blocks)), SizeOf(TBytes) + SizeOf(UInt64)));
+  // ActualRecords grows one record at a time while the immutable index remains retained.
+  MetadataMemory := CheckedMemoryAdd(MetadataMemory,
+    CheckedMemoryMultiply(UInt64(Length(Blocks)) * 2 - 1, SizeOf(TXzIndexRecord)));
+  MetadataMemory := CheckedMemoryAdd(MetadataMemory, TObject.InstanceSize);
+  MetadataMemory := CheckedMemoryAdd(MetadataMemory, TLzmaMtDecode.RequiredMemory(Length(Blocks), Workers));
+  DecodeRetainedMemory := CheckedMemoryAdd(PackedInputSize, MetadataMemory);
+  WorkerMemory := TLzma2Decoder.RequiredMemory(MaxBlockDictionarySize);
+  WorkerMemory := CheckedMemoryAdd(WorkerMemory, TBytesStream.InstanceSize);
+  WorkerMemory := CheckedMemoryAdd(WorkerMemory, TCheckedWriteStream.InstanceSize);
+  WorkerMemory := CheckedMemoryAdd(WorkerMemory, CheckedMemoryMultiply(XzCheckSizeById(CheckId), 2));
+  if not FitsMtDecodeMemoryLimit(DecodeRetainedMemory, TotalOutputSize, WorkerMemory, Workers,
     Options.MemoryLimit) then
   begin
     RestoreStreamPosition(Source, StartPosition);
@@ -1348,8 +1392,13 @@ begin
     Exit;
   end;
 
+  SetLength(Units, Length(Blocks));
+  SetLength(OutputSizes, Length(Blocks));
   for I := 0 to High(Blocks) do
-    SetLength(Units[I], 0);
+  begin
+    Units[I] := Blocks[I].RawData;
+    OutputSizes[I] := Blocks[I].HeaderUnpackSize;
+  end;
 
   DecodeOptions := Options;
   DecodeOptions.ThreadCount := 1;
@@ -1412,9 +1461,18 @@ begin
       if Length(ExpectedDigest) = 0 then
         ExpectedDigest := Blocks[Index].ExpectedDigest;
       InStream := TBytesStream.Create(Payload);
-      CheckedOutput := TCheckedWriteStream.Create(OutputSlice, CheckId);
+      CheckedOutput := TCheckedWriteStream.Create(OutputSlice, CheckId, Blocks[Index].HeaderUnpackSize);
       try
-        TLzma2Decoder.DecodeRaw(InStream, CheckedOutput, BlockOptions, WorkerProgress);
+        try
+          TLzma2Decoder.DecodeRaw(InStream, CheckedOutput, BlockOptions, WorkerProgress);
+        except
+          on E: ELzmaWriteError do
+          begin
+            if CheckedOutput.OutputLimitExceeded then
+              RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ block output exceeds its declared unpack size');
+            raise;
+          end;
+        end;
         Digest := CheckedOutput.Digest;
         if not BytesEqualAt(Digest, ExpectedDigest) then
           RaiseLzmaError(SZ_ERROR_CRC, 'XZ block check mismatch');
@@ -1490,6 +1548,7 @@ var
     TotalCopyFastPathCount: Integer;
     TotalFullOptimumDecisionCount: UInt64;
     TotalIncompressibleFastPathCount: Integer;
+    TotalOptimumParserEnabled: Boolean;
   begin
     if Normalized.XzBlockSize > UInt64(High(Integer)) then
       RaiseLzmaError(SZ_ERROR_MEM, 'XZ block size is too large for this process');
@@ -1523,6 +1582,7 @@ var
     TotalCopyFastPathCount := 0;
     TotalFullOptimumDecisionCount := 0;
     TotalIncompressibleFastPathCount := 0;
+    TotalOptimumParserEnabled := False;
     while True do
     begin
       SetLength(Chunk, BlockSize);
@@ -1549,6 +1609,7 @@ var
         Inc(TotalCopyFastPathCount, RawDiagnostics.CopyFastPathCount);
         Inc(TotalFullOptimumDecisionCount, RawDiagnostics.FullOptimumDecisionCount);
         Inc(TotalIncompressibleFastPathCount, RawDiagnostics.IncompressibleFastPathCount);
+        TotalOptimumParserEnabled := TotalOptimumParserEnabled or RawDiagnostics.OptimumParserEnabled;
       end;
       BlockDigest := CheckState.Finish;
       BlockHeader := BuildSizedBlockHeader(Info.PropertyByte, UInt64(Length(Raw)), UInt64(ReadTotal));
@@ -1589,8 +1650,7 @@ var
       Normalized.EncodeDiagnostics^.ParserMode := Profile.ParserMode;
       Normalized.EncodeDiagnostics^.MatchFinderProfile := Profile.MatchFinderProfile;
       Normalized.EncodeDiagnostics^.NumHashBytes := Profile.NumHashBytes;
-      Normalized.EncodeDiagnostics^.OptimumParserEnabled :=
-        TotalFullOptimumDecisionCount > 0;
+      Normalized.EncodeDiagnostics^.OptimumParserEnabled := TotalOptimumParserEnabled;
       Normalized.EncodeDiagnostics^.FullOptimumDecisionCount := TotalFullOptimumDecisionCount;
       Normalized.EncodeDiagnostics^.CopyFastPathCount := TotalCopyFastPathCount;
       Normalized.EncodeDiagnostics^.IncompressibleFastPathCount := TotalIncompressibleFastPathCount;
@@ -1654,6 +1714,30 @@ begin
   ReportProgress(Progress, UnpackSize, OutTotal);
 end;
 
+class function TLzmaXz.RequiredDecodeMemory(const DictionarySize: UInt64;
+  const Check: TLzma2Check; const BlockCount: NativeUInt): UInt64;
+var
+  CheckBytes, FixedBytes, RecordsBytes, IndexBytes, KernelPeak, IndexPeak: UInt64;
+begin
+  if BlockCount > NativeUInt(High(Integer)) then
+    RaiseLzmaError(SZ_ERROR_MEM, 'XZ index has too many records for this process');
+  CheckBytes := XzCheckSizeById(XzCheckId(Check));
+  FixedBytes := CheckedMemoryAdd(XZ_STREAM_HEADER_SIZE, XZ_BLOCK_HEADER_SIZE_MAX);
+  FixedBytes := CheckedMemoryAdd(FixedBytes, CheckedMemoryMultiply(CheckBytes, 2));
+  RecordsBytes := CheckedMemoryMultiply(BlockCount, SizeOf(TXzIndexRecord));
+  KernelPeak := CheckedMemoryAdd(FixedBytes, RecordsBytes);
+  KernelPeak := CheckedMemoryAdd(KernelPeak, TCheckedWriteStream.InstanceSize);
+  KernelPeak := CheckedMemoryAdd(KernelPeak, TLimitedReadStream.InstanceSize);
+  KernelPeak := CheckedMemoryAdd(KernelPeak, TLzma2Decoder.RequiredMemory(DictionarySize));
+  // Marker, record-count VLI, two VLIs per record, and at most three padding bytes.
+  IndexBytes := CheckedMemoryAdd(1 + 9 + 3, CheckedMemoryMultiply(BlockCount, 2 * 9));
+  IndexPeak := CheckedMemoryAdd(FixedBytes, CheckedMemoryMultiply(RecordsBytes, 2));
+  IndexPeak := CheckedMemoryAdd(IndexPeak, CheckedMemoryMultiply(IndexBytes, 2));
+  IndexPeak := CheckedMemoryAdd(IndexPeak, XZ_STREAM_FOOTER_SIZE);
+  Result := KernelPeak;
+  if IndexPeak > Result then Result := IndexPeak;
+end;
+
 class procedure TLzmaXz.Decode(Source: TStream; Destination: TStream; const Options: TLzma2Options;
   const Progress: TLzma2ProgressEvent);
 var
@@ -1689,6 +1773,40 @@ var
   J: Integer;
   PaddingSize: NativeUInt;
   ReadCount: Integer;
+  PayloadOptions: TLzma2Options;
+  BlockRetainedMemory: UInt64;
+
+  function CurrentMemory: UInt64;
+  begin
+    Result := CheckedMemoryAdd(UInt64(Length(StreamHeader)), UInt64(Length(Footer)));
+    Result := CheckedMemoryAdd(Result, UInt64(Length(BlockHeader)));
+    Result := CheckedMemoryAdd(Result, UInt64(Length(Digest)));
+    Result := CheckedMemoryAdd(Result, UInt64(Length(ExpectedDigest)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(IndexRecords)), SizeOf(TXzIndexRecord)));
+    Result := CheckedMemoryAdd(Result, CheckedMemoryMultiply(UInt64(Length(ActualRecords)), SizeOf(TXzIndexRecord)));
+  end;
+
+  procedure ValidateGrowth(const NewBytes: UInt64);
+  begin
+    if Options.MemoryLimit <> 0 then
+      ValidateMemoryLimit(CheckedMemoryAdd(CurrentMemory, NewBytes), Options.MemoryLimit);
+  end;
+
+  procedure DecodeBlockPayload(const Input: TStream);
+  begin
+    try
+      TLzma2Decoder.DecodeRawEmbedded(Input, BlockOutput, PayloadOptions,
+        ConsumedBytes, ProducedBytes, RawProgress);
+    except
+      on E: ELzmaWriteError do
+      begin
+        if BlockOutput.OutputLimitExceeded then
+          RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ block output exceeds its declared unpack size');
+        raise;
+      end;
+    end;
+  end;
+
 begin
   if Source = nil then
     RaiseLzmaError(SZ_ERROR_PARAM, 'Source stream is nil');
@@ -1698,6 +1816,7 @@ begin
   if DecodeXzMt(Source, Destination, Options, Progress) then
     Exit;
 
+  ValidateGrowth(XZ_STREAM_HEADER_SIZE);
   SetLength(StreamHeader, XZ_STREAM_HEADER_SIZE);
   ReadExact(Source, StreamHeader[0], Length(StreamHeader));
   InTotal := Length(StreamHeader);
@@ -1710,6 +1829,11 @@ begin
       RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported XZ check type');
     CheckSize := XzCheckSizeById(CheckId);
     SetLength(ActualRecords, 0);
+    SetLength(IndexRecords, 0);
+    SetLength(Footer, 0);
+    SetLength(BlockHeader, 0);
+    SetLength(Digest, 0);
+    SetLength(ExpectedDigest, 0);
 
     while True do
     begin
@@ -1721,7 +1845,11 @@ begin
       HeaderSize := NativeUInt(FirstByte) * 4 + 4;
       if (HeaderSize < 8) or (HeaderSize > XZ_BLOCK_HEADER_SIZE_MAX) then
         RaiseLzmaError(SZ_ERROR_ARCHIVE, 'Invalid XZ block header size');
-      SetLength(BlockHeader, HeaderSize);
+      if NativeUInt(Length(BlockHeader)) <> HeaderSize then
+      begin
+        ValidateGrowth(HeaderSize);
+        SetLength(BlockHeader, HeaderSize);
+      end;
       BlockHeader[0] := FirstByte;
       ReadExact(Source, BlockHeader[1], HeaderSize - 1);
       Inc(InTotal, HeaderSize - 1);
@@ -1736,20 +1864,28 @@ begin
         begin
           ReportProgress(Progress, BlockInStart + RawInBytes, BlockOutStart + RawOutBytes);
         end;
-      BlockOutput := TCheckedWriteStream.Create(Destination, CheckId);
+      BlockRetainedMemory := CheckedMemoryAdd(CurrentMemory, TCheckedWriteStream.InstanceSize);
+      if HeaderPackSize <> UInt64(-1) then
+        BlockRetainedMemory := CheckedMemoryAdd(BlockRetainedMemory, TLimitedReadStream.InstanceSize);
+      PayloadOptions := DecodeOptions;
+      if Options.MemoryLimit <> 0 then
+      begin
+        ValidateMemoryLimit(CheckedMemoryAdd(BlockRetainedMemory,
+          TLzma2Decoder.RequiredMemory(DecodeOptions.DictionarySize)), Options.MemoryLimit);
+        PayloadOptions.MemoryLimit := Options.MemoryLimit - BlockRetainedMemory;
+      end;
+      BlockOutput := TCheckedWriteStream.Create(Destination, CheckId, HeaderUnpackSize);
       try
         if HeaderPackSize = UInt64(-1) then
         begin
-          TLzma2Decoder.DecodeRawEmbedded(Source, BlockOutput, DecodeOptions,
-            ConsumedBytes, ProducedBytes, RawProgress);
+          DecodeBlockPayload(Source);
           PackSize := ConsumedBytes;
         end
         else
         begin
           LimitedInput := TLimitedReadStream.Create(Source, HeaderPackSize);
           try
-            TLzma2Decoder.DecodeRawEmbedded(LimitedInput, BlockOutput, DecodeOptions,
-              ConsumedBytes, ProducedBytes, RawProgress);
+            DecodeBlockPayload(LimitedInput);
             if LimitedInput.Position64 <> HeaderPackSize then
               RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes inside XZ block payload');
           finally
@@ -1763,6 +1899,7 @@ begin
           RaiseLzmaError(SZ_ERROR_MEM, 'XZ block packed size is too large for this process');
         if (HeaderUnpackSize <> UInt64(-1)) and (HeaderUnpackSize <> ProducedBytes) then
           RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ block header unpack size does not match decoded data');
+        ValidateGrowth(CheckedMemoryAdd(TCheckedWriteStream.InstanceSize, CheckSize));
         ExpectedDigest := BlockOutput.Digest;
       finally
         BlockOutput.Free;
@@ -1774,7 +1911,11 @@ begin
           RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ block padding is not zero');
       Inc(InTotal, Pad);
 
-      SetLength(Digest, CheckSize);
+      if NativeUInt(Length(Digest)) <> CheckSize then
+      begin
+        ValidateGrowth(CheckSize);
+        SetLength(Digest, CheckSize);
+      end;
       if CheckSize <> 0 then
         ReadExact(Source, Digest[0], CheckSize);
       Inc(InTotal, CheckSize);
@@ -1785,15 +1926,18 @@ begin
       Inc(OutTotal, ProducedBytes);
       RecordInfo.UnpaddedSize := UInt64(HeaderSize) + PackSize + UInt64(CheckSize);
       RecordInfo.UnpackSize := ProducedBytes;
+      ValidateGrowth(CheckedMemoryMultiply(UInt64(Length(ActualRecords)) + 1, SizeOf(TXzIndexRecord)));
       AppendIndexRecord(ActualRecords, RecordInfo);
       ReportProgress(Progress, InTotal, OutTotal);
     end;
 
-    ParseIndexForward(Source, IndexRecords, IndexSize);
+    // The previous stream's index was released before this stream began.
+    ParseIndexForward(Source, IndexRecords, IndexSize, Options.MemoryLimit, CurrentMemory);
     Inc(InTotal, IndexSize - 1);
     if not IndexRecordsEqual(IndexRecords, ActualRecords) then
       RaiseLzmaError(SZ_ERROR_ARCHIVE, 'XZ index records do not match decoded blocks');
 
+    ValidateGrowth(XZ_STREAM_FOOTER_SIZE);
     SetLength(Footer, XZ_STREAM_FOOTER_SIZE);
     ReadExact(Source, Footer[0], Length(Footer));
     Inc(InTotal, Length(Footer));

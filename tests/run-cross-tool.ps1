@@ -403,7 +403,27 @@ function Invoke-CliSmoke {
   New-RepeatingFile $source 131072
   Remove-Item -LiteralPath $archive -ErrorAction SilentlyContinue
 
-  $progress = & $CliExe a $archive $source '-txz' '-mx=1' '--progress' 2>&1 | Out-String
+  $overflowArchive = Join-Path $work 'cli-memory-limit-overflow.xz'
+  Remove-Item -LiteralPath $overflowArchive -ErrorAction SilentlyContinue
+  Get-ChildItem -LiteralPath $work -Filter 'cli-memory-limit-overflow.xz.tmp.*' -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+  $overflow = & $CliExe a $overflowArchive $source '-txz' '-mx=1' '--memory-limit=17179869184g' 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 1) {
+    throw "CLI overflowing memory limit expected command-line exit 1, got $LASTEXITCODE. Output: $overflow"
+  }
+  $overflowPartial = @(Get-ChildItem -LiteralPath $work -Filter 'cli-memory-limit-overflow.xz.tmp.*' -File -ErrorAction SilentlyContinue)
+  if ((Test-Path -LiteralPath $overflowArchive) -or $overflowPartial.Count -ne 0) {
+    throw 'CLI overflowing memory limit must reject before creating output.'
+  }
+  $script:Cases += [ordered]@{
+    name = 'cli-memory-limit-overflow-rejected'
+    encoder = 'Delphi'
+    verifier = 'Delphi'
+    container = 'xz'
+    status = 'passed'
+  }
+
+  $progress = & $CliExe a $archive $source '-txz' '-mx=1' '--memory-limit=0' '--progress' 2>&1 | Out-String
   if ($LASTEXITCODE -ne 0) { throw "CLI progress encode failed with exit code $LASTEXITCODE" }
   if ($progress -notmatch 'Progress:') {
     throw "CLI progress encode did not emit a visible progress line."

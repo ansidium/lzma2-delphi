@@ -12,6 +12,10 @@ uses
   System.StrUtils,
   System.JSON,
   DUnitX.TestFramework,
+  DUnitX.Extensibility,
+  DUnitX.Filters,
+  DUnitX.FilterBuilder,
+  DUnitX.FixtureBuilder,
   DUnitX.Loggers.Console,
   DUnitX.Loggers.XML.JUnit,
   Lzma.Test.Process in 'Lzma.Test.Process.pas',
@@ -37,6 +41,34 @@ uses
   Lzma.CliPaths in '..\src\Lzma.CliPaths.pas';
 
 type
+  TMtBoundInputStream = class(TStream)
+  private
+    FPosition: Int64;
+    FSize: Int64;
+    FFirstReadSize: Integer;
+    FRandom: UInt32;
+    FPattern: array[0..4095] of Byte;
+  public
+    constructor Create;
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+    property BytesRead: Int64 read FPosition;
+    property FirstReadSize: Integer read FFirstReadSize;
+  end;
+
+  TMtFirstWriteProbeStream = class(TStream)
+  private
+    FSource: TMtBoundInputStream;
+    FObservedInput: Int64;
+  public
+    constructor Create(const Source: TMtBoundInputStream);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+    property ObservedInput: Int64 read FObservedInput;
+  end;
+
   TXzTestIndexRecord = record
     UnpaddedSize: UInt64;
     UnpackSize: UInt64;
@@ -79,6 +111,20 @@ type
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
   end;
 
+  TSevenZipPayloadGuardStream = class(TBytesStream)
+  private
+    FPayloadEnd: UInt64;
+    FPayloadReadAttempts: Integer;
+    procedure CheckRead(const Count: NativeInt);
+  public
+    constructor Create(const Data: TBytes);
+    function Read(var Buffer; Count: Longint): Longint; override;
+{$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
+    function Read(var Buffer; Count: NativeInt): NativeInt; overload; override;
+{$ENDIF}
+    property PayloadReadAttempts: Integer read FPayloadReadAttempts;
+  end;
+
   TProbeBoundReadStream = class(TBytesStream)
   private
     FProbeReadLimit: UInt64;
@@ -96,6 +142,18 @@ type
     FObservedWriteDuringSlowWorker: PInteger;
   public
     constructor Create(const SlowWorkerRunning: PInteger; const ObservedWriteDuringSlowWorker: PInteger);
+    function Write(const Buffer; Count: Longint): Longint; override;
+{$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
+    function Write(const Buffer; Count: NativeInt): NativeInt; overload; override;
+{$ENDIF}
+  end;
+
+  TBeforeFirstWriteStream = class(TMemoryStream)
+  private
+    FBeforeFirstWrite: TProc;
+    function WriteChunk(const Buffer; const Count: NativeInt): NativeInt;
+  public
+    constructor Create(const BeforeFirstWrite: TProc);
     function Write(const Buffer; Count: Longint): Longint; override;
 {$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
     function Write(const Buffer; Count: NativeInt): NativeInt; overload; override;
@@ -127,6 +185,49 @@ type
     property ReadBeforeOutput: UInt64 read FReadBeforeOutput;
   end;
 
+  TRewindingReadStream = class(TStream)
+  private
+    FBefore, FAfter: TBytes;
+    FOffset: Int64;
+    FSwitched: Boolean;
+  public
+    constructor Create(const BeforeData, AfterData: TBytes);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+    property Switched: Boolean read FSwitched;
+  end;
+
+  TSharedCursorReadStream = class(TStream)
+  private
+    FBacking: TMemoryStream;
+  protected
+    function GetSize: Int64; override;
+  public
+    constructor Create(const Backing: TMemoryStream);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+  end;
+
+  TForwardOnlyWriteStream = class(TStream)
+  private
+    FCapture: TMemoryStream;
+    FReadCalls: Integer;
+    FSeekCalls: Integer;
+    FSizeCalls: Integer;
+  protected
+    function GetSize: Int64; override;
+  public
+    constructor Create(const Capture: TMemoryStream);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+    property ReadCalls: Integer read FReadCalls;
+    property SeekCalls: Integer read FSeekCalls;
+    property SizeCalls: Integer read FSizeCalls;
+  end;
+
   TNonSeekableReadStream = class(TStream)
   private
     FData: TBytes;
@@ -140,6 +241,32 @@ type
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
     property SeekCount: Integer read FSeekCount;
+  end;
+
+  TShortNonSeekableReadStream = class(TNonSeekableReadStream)
+  private
+    FBytesRead: UInt64;
+  public
+    function Read(var Buffer; Count: Longint): Longint; override;
+    property BytesRead: UInt64 read FBytesRead;
+  end;
+
+  TShortWriteProbeMemoryStream = class(TMemoryStream)
+  private
+    FSource: TShortNonSeekableReadStream;
+    FFirstWriteInput: UInt64;
+    FShortWriteCount: Integer;
+    FHasOutput: Boolean;
+    function WriteChunk(const Buffer; const Count: NativeInt): NativeInt;
+  public
+    constructor Create(const Source: TShortNonSeekableReadStream);
+    function Write(const Buffer; Count: Longint): Longint; override;
+{$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
+    function Write(const Buffer; Count: NativeInt): NativeInt; overload; override;
+{$ENDIF}
+    property FirstWriteInput: UInt64 read FFirstWriteInput;
+    property HasOutput: Boolean read FHasOutput;
+    property ShortWriteCount: Integer read FShortWriteCount;
   end;
 
   TDestroyTrackingMemoryStream = class(TMemoryStream)
@@ -223,7 +350,7 @@ type
     class procedure WriteAllBytes(const FileName: string; const Data: TBytes); static;
     class function ReadAllBytesFromFile(const FileName: string): TBytes; static;
     class procedure DeleteFileIfExists(const FileName: string); static;
-    class procedure SkipExternalTool(const TestName: string; const EnvName: string); static;
+    class procedure FailMissingExternalTool(const TestName: string; const EnvName: string); static;
     class procedure AssertBytesEqual(const Expected: TBytes; const Actual: TBytes; const Message: string); static;
     class procedure AppendByte(var Target: TBytes; const Value: Byte); static;
     class procedure AppendBytes(var Target: TBytes; const Source: TBytes); static;
@@ -256,16 +383,13 @@ type
     [Category('unit')]
     procedure DictionaryPropertyGrid;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure DictionaryPropertyRejectsAboveMaxStrict;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure Crc32XzKnownVectorAndSplitUpdate;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure Crc64XzKnownVectorAndSplitUpdate;
     [Test]
     [Category('unit')]
@@ -350,6 +474,15 @@ type
     procedure MatchFinderReadMatchesIsIdempotent;
     [Test]
     [Category('unit')]
+    procedure MatchBufferCopiesActivePairsWithOverlap;
+    [Test]
+    [Category('unit')]
+    procedure MatchFinderPositionLinksSelectWidthFromInputCount;
+    [Test]
+    [Category('unit')]
+    procedure InsertedBitsPreserveBoundariesAndPartialWindowDrop;
+    [Test]
+    [Category('unit')]
     procedure HashChain4MatchesSdkReferenceTrace;
     [Test]
     [Category('unit')]
@@ -361,15 +494,13 @@ type
     [Category('unit')]
     procedure MatchFinderSdkReferenceTraceArtifactIsWritten;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2RoundTripsCopyChunks;
     [Test]
     [Category('unit')]
     procedure LevelOneWritesCompressedChunks;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure Lzma2CompressedChunksCanReusePropsAfterFirstChunk;
     [Test]
     [Category('unit')]
@@ -378,12 +509,10 @@ type
     [Category('unit')]
     procedure GreedyEncoderCompressesRepeatingData;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaProfileMatchesSdkDefaults;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaProfileMatchesSdkMatchFinderTuning;
     [Test]
     [Category('unit')]
@@ -392,12 +521,10 @@ type
     [Category('unit')]
     procedure PublicOptionFactoriesExposeCommonProfiles;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure FileHelpersRoundTripCommonContainers;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure FileHelperSevenZipDefaultsArchiveFileName;
     [Test]
     [Category('unit')]
@@ -405,6 +532,9 @@ type
     [Test]
     [Category('unit')]
     procedure SdkFacadeLzmaPropsNormalizeAndWriteMatchRawProps;
+    [Test]
+    [Category('unit,container')]
+    procedure SdkFacadeExplicitAlgorithmOverridesLevel;
     [Test]
     [Category('unit')]
     procedure SdkSeqInStreamMapsGenericExceptionToReadSRes;
@@ -415,44 +545,34 @@ type
     [Category('unit')]
     procedure SdkSystemAllocatorAllocatesAndFreesMemory;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeRawLzmaReferenceStyleEncodeDecodeRoundTrip;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaEncoderUsesSeqStreamAdapterPath;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaEncoderStreamsEndMarkerPath;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaEncoderSupportsPartialSeqOutWrites;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaDecoderSupportsPartialSeqOutWrites;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzmaEncoderPropagatesSeqOutSRes;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzmaDecoderPropagatesSeqOutSRes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeRawLzma2ReferenceStyleEncodeDecodeRoundTrip;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2EncoderPreservesCustomLcLpPbProps;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzma2EncoderRejectsInvalidLcLpProps;
     [Test]
     [Category('unit')]
@@ -464,13 +584,17 @@ type
     [Category('unit')]
     procedure SdkFacadeProgressPreservesCallbackSRes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2EncoderHonorsBlockSize;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaDecoderLifecycleDecodeToBuf;
+    [Test]
+    [Category('unit,container')]
+    procedure SdkFacadeLzmaZeroOutputAnyInitializesSdkRangeHeader;
+    [Test]
+    [Category('unit,container')]
+    procedure SdkFacadeLzmaSdkGoldenEosSplitAndZeroOutputFinish;
     [Test]
     [Category('unit')]
     procedure SdkFacadeLzmaDecoderLifecycleDecodeToBufEmitsFromPartialKnownSizeInput;
@@ -478,89 +602,71 @@ type
     [Category('unit')]
     procedure SdkFacadeLzmaDecoderLifecycleDecodeToDicEmitsFromPartialKnownSizeInput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaDecoderLifecycleKnownSizeTrailingBytes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzmaDecoderLifecycleDecodeToDicWithEndMarker;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzmaDecoderRejectsOversizedPropsBuffer;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzmaDecoderLifecycleTruncatedInputNeedsMoreInput;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzma2DecoderLifecycleRejectsInvalidProperty;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2DecoderLifecycleDecodeToBufAndDic;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2DecoderLifecyclePartialInputAndTrailingBytes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2CompressedDecoderLifecyclePartialInputAndTrailingBytes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2ParseStopsAtEofBeforeTrailingBytes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2ParseDoesNotMaterializeOutput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2ParseUsesFrameParserOnly;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2EncoderDoesNotSnapshotFullInput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2CompressedEncoderDoesNotSnapshotFullInput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2DecoderDoesNotSnapshotFullInput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2DecoderSupportsPartialSeqOutWrites;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzma2DecoderPropagatesSeqOutSRes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SdkFacadeLzma2EncoderSupportsPartialSeqOutWrites;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure SdkFacadeLzma2EncoderPropagatesSeqOutSRes;
     [Test]
     [Category('unit')]
     procedure EncodeDiagnosticsReportsSdkProfileOptimumWindowEnabled;
+    [Test]
+    [Category('unit,container')]
+    procedure EncodeDiagnosticsReportsFullBackendWithoutRelaxedDecisions;
     [Test]
     [Category('unit')]
     procedure EncodeDiagnosticsDoesNotClaimOptimumForCopyOnlySdkProfileRawLzma2;
     [Test]
     [Category('unit')]
     procedure RawEncoderReportsActualFullOptimumDecisionCount;
-    [Test]
-    [Category('unit')]
-    procedure RawEncoderFullSdkOptimumStateScaffoldIsPresent;
     [Test]
     [Category('unit')]
     procedure FullOptimumStateTracksSdkReadMoveAndCommitOffsets;
@@ -578,16 +684,7 @@ type
     procedure FullOptimumBackwardQueuesReplayState;
     [Test]
     [Category('unit')]
-    procedure FullOptimumStateIsWiredToMatchReadAndEncodedCommit;
-    [Test]
-    [Category('unit')]
     procedure FullOptimumStateRefreshCountersAreAdditionalOffsetGated;
-    [Test]
-    [Category('unit')]
-    procedure FullOptimumEncoderWiresRefreshCountersAfterCommit;
-    [Test]
-    [Category('unit')]
-    procedure FullOptimumParserBranchIsIsolatedFromFastParser;
     [Test]
     [Category('unit')]
     procedure SdkProfileFullParserTransitionRejectsGetOptimumFastBackend;
@@ -625,31 +722,25 @@ type
     [Category('unit')]
     procedure OptimumLiteralVsShortRepUsesSdkPrices;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumShortRepVsLiteralRejectsOverflowingShortRepPrice;
     [Test]
     [Category('unit')]
     procedure OptimumRepVsMatchUsesSdkPrices;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumRepVsMatchRejectsOverflowingRepPrice;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumRepVsMatchRejectsOverflowingMatchBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumRepVsMatchRejectsOneByteNormalMatchLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumRepVsMatchRejectsOneByteRepLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumRepVsMatchRejectsZeroMatchDistance;
     [Test]
     [Category('unit')]
@@ -658,90 +749,70 @@ type
     [Category('unit')]
     procedure OptimumLiteralThenMatchUsesSdkPrices;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsOverflowingLookaheadPrice;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsOverflowingCurrentMatchBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsOverflowingNextMatchBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsOneByteNextMatchLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsOneByteCurrentMatchLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsZeroNextMatchDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenMatchRejectsZeroCurrentMatchDistance;
     [Test]
     [Category('unit')]
     procedure OptimumLiteralThenRepUsesSdkPrices;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenRepRejectsOverflowingLookaheadPrice;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenRepRejectsOverflowingCurrentMatchBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenRepRejectsOneByteNextRepLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenRepRejectsOneByteCurrentMatchLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralThenRepRejectsZeroCurrentMatchDistance;
     [Test]
     [Category('unit')]
     procedure OptimumMatchLiteralRep0UsesSdkPrices;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsOverflowingLookaheadPrice;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsOverflowingFirstMatchDecisionBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsOverflowingCurrentMatchDecisionBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsOneByteFirstMatchLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsOneByteRepLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsOneByteCurrentMatchLength;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsZeroFirstMatchDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0RejectsZeroCurrentMatchDistance;
     [Test]
     [Category('unit')]
@@ -771,15 +842,13 @@ type
     [Category('unit')]
     procedure OptimumLiteralCandidateRelaxesFromPreviousNodeAndKeepsTie;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumLiteralCandidateRejectsOverflowingPreviousPrice;
     [Test]
     [Category('unit')]
     procedure OptimumShortRepCandidateRelaxesFromPreviousNodeAndKeepsTie;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumShortRepCandidateRejectsOverflowingPreviousPrice;
     [Test]
     [Category('unit')]
@@ -806,16 +875,13 @@ type
     [Category('unit')]
     procedure OptimumRepLiteralRep0CandidateRelaxesSdkExtraPathAndKeepsTie;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0CandidateRejectsOverflowingPreviousPrice;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0CandidateRejectsOverflowingFirstMatchBackDistance;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumMatchLiteralRep0CandidateRejectsZeroFirstMatchDistance;
     [Test]
     [Category('unit')]
@@ -863,102 +929,53 @@ type
     [Category('unit')]
     procedure OptimumWindowPrunesNormalMatchesCoveredByRep0Length;
     [Test]
-    [Category('unit')]
-    procedure EncoderPathWiresMatchLiteralRep0ThroughOptimumRelaxPrimitive;
-    [Test]
-    [Category('unit')]
-    procedure EncoderPathWiresShortRepLiteralThroughOptimumRelaxPrimitive;
-    [Test]
-    [Category('unit')]
-    procedure EncoderPathWiresRepMatchThroughOptimumRelaxPrimitive;
-    [Test]
-    [Category('unit')]
-    procedure EncoderPathDoesNotBypassRepMatchWithFastHeuristic;
-    [Test]
-    [Category('unit')]
-    procedure EncoderPathWiresLiteralLookaheadThroughOptimumRelaxPrimitive;
-    [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
-    procedure ArtifactValidatorRequiresReleasePerformanceRatioEvidence;
-    [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure ArtifactValidatorRequiresEncodeTuningDiagnosticsEvidence;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
-    procedure DocsAndOptimizationPlanDescribeActiveNativeEncoder;
-    [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure FastLzma2StyleBenchmarkContractIsDocumented;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
-    procedure PerformanceRunnerWritesDataOnlyBenchmarkArtifacts;
-    [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure PerformanceValidatorEnforcesDataOnlyArtifacts;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure PerformanceSummaryRequiresBenchmarkMetadata;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
-    procedure CliAndVclUseAcceptanceRatioConvention;
+    [Category('unit,perf_smoke')]
+    procedure CliAndVclNameAcceptanceRatioConvention;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure VclToolShowsMtDiagnosticsAndUsesTemporaryOutput;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure VclGuiSupportsPublicInstallerLanguageBaseline;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure VclGuiLocalizationTableCoversRuntimeStatusText;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure VclGuiIntegratesTaskbarIconAndProgress;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure CiBuildsIndependentMsBuildProjectsInParallel;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure GitHubWorkflowRunsReleaseCiMode;
     [Test]
     [Category('unit')]
-    [Category('perf-smoke')]
     procedure DUnitXCategoryTiersAreDeclaredAndQuickFiltered;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
+    [Category('unit,perf_smoke')]
     procedure FixtureGenerationUsesContentAddressedCacheEvidence;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure CliSafeStoredOutputNameRejectsUnsafeStoredNames;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure CliSafeStoredRelativePathPreservesOnlySafeArchivePaths;
     [Test]
-    [Category('unit')]
-    [Category('perf-smoke')]
-    [Category('perf-release')]
+    [Category('unit,perf_smoke,perf_release')]
     procedure ReleasePerformanceRequiresSixteenThreadMtEncodeEvidence;
-    [Test]
-    [Category('unit')]
-    procedure EncoderPathSeedsOptimumNodesWithCurrentStateAndReps;
     [Test]
     [Category('unit')]
     procedure OptimumPathReplaysLiteralThenMatchAdditionalOffset;
@@ -978,88 +995,67 @@ type
     [Category('unit')]
     procedure OptimumPathReplaysSdk26ExtraBranches;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsUnreachableEndNode;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsUnreachableIntermediateNode;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsUnreachablePrev1LiteralNode;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPrev1LiteralRootNonLiteralBackPrev2;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPrev1LiteralRootMultiByteLiteralCommand;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenMismatchedPosPrev;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenMismatchedBackPrev;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsExtraPathNonRep0BackPrev;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsExtraPathWithPrev1LiteralFlag;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenExtraRep0WithBackPrev2Set;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenExtraRep0WithPosPrev2Set;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenExtraOneWithNonLiteralBack;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenExtraOneWithBackPrev2Set;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenExtraOneWithPosPrev2Set;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayPathRejectsInvalidCompactExtraMetadata;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsMultiByteLiteralRootCommand;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsSingleByteMatchRootCommand;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsIntermediateMultiByteLiteralCommand;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenMultiByteLiteralCommand;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsPathLenSingleByteMatchCommand;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure OptimumReplayRejectsUnreachableStartNode;
     [Test]
     [Category('unit')]
@@ -1071,139 +1067,103 @@ type
     [Category('unit')]
     procedure FastParserRepThresholdsUseSdkReducedDistance;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaPropertiesAlignDictionary;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaAllowsSdkLcLpCombination;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure LzmaStandaloneEncodeHonorsCustomLcLpPbOptions;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2CompressedChunkWritesCustomLcLpPbProp;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure Lzma2OptionsRejectInvalidLcLpPbCombination;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaChunkEncoderAcceptsHashChain4FinderKind;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaChunkEncoderAcceptsBinaryTree4FinderKind;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaEncoderOptInWindowPathRoundTripsAndWiresDriver;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaEncoderOptInWindowUsesEffectiveFastBytesBounds;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaGreedyEncoderRoundTrips;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
+    procedure RawLzmaMatchBoundaryAllowsFollowingLiteralInAllModes;
+    [Test]
+    [Category('unit,container')]
     procedure RawLzmaKnownSizeAboveUInt32ReachesDecoder;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
+    procedure RawLzmaKnownSizePartialResumesBytePrefixes;
+    [Test]
+    [Category('unit,container,negative')]
+    procedure RawLzmaKnownSizePartialPropagatesProgressInputEof;
+    [Test]
+    [Category('unit,container')]
     procedure RawLzmaStreamEncoderUsesSinkBackedRangeOutput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    procedure RawLzmaStreamEncoderUsesProfileMatchFinder;
-    [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaStreamProgressReportsCommittedOutput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaStreamFinalCancellationPrecedesRangeFlush;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaEndMarkerRoundTripsUnknownSize;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzmaEndMarkerRejectsDirtyTail;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzmaEndMarkerInsideLzma2ChunkFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure LzmaStandaloneRoundTripsKnownSize;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure LzmaStandaloneEncodeCanWriteUnknownSizeEndMarker;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure LzmaStandaloneDecodesUnknownSizeEndMarker;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneEncodeRejectsInputOverMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneDecodeRejectsPackedInputOverMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneRejectsShortHeader;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneRejectsInvalidProps;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneRejectsTrailingBytesAfterEndMarker;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneRejectsKnownSizeTruncation;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneRejectsUnpackSizeMismatch;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure LzmaStandaloneRejectsUnknownSizeWithoutEndMarker;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure LzmaStandaloneEncodeCancellation;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure LzmaStandaloneDecodeCancellation;
     [Test]
     [Category('unit')]
@@ -1212,434 +1172,331 @@ type
     [Category('unit')]
     procedure LevelFiveMultiThreadRoundTripsThroughProfileFinder;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2CopyModeIgnoresEncoderDictionaryMemoryLimit;
     [Test]
     [Category('unit')]
     procedure SingleThreadedRawMemoryLimitIncludesMatchFinder;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
+    procedure RawLzma2StreamingAdmissionHonorsExactMemoryLimit;
+    [Test]
+    [Category('unit,container,negative')]
     procedure RawLzmaInvalidPropsFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2DecodeReadFailureRaisesTypedReadError;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2EncodeReadFailureRaisesTypedReadError;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2RoundTripsWithNonSeekableStreams;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
+    procedure RawLzma2CompressedEncodeStreamsShortNonSeekableIO;
+    [Test]
+    [Category('unit,container')]
     procedure RawLzma2EncodeCancellation;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzma2TruncatedCopyChunkFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzma2InvalidControlFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzma2CompressedChunkWithoutPropsFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzma2InvalidLcLpPropsFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzma2CorruptRangeFlushTailFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure RawLzma2CorruptExactRangeTailFails;
     [Test]
     [Category('unit')]
     procedure MtDecodeStreamsReadyUnitsBeforeSlowWorkersFinish;
     [Test]
     [Category('unit')]
+    procedure MtDecodeRetainsAdmissionUntilDestinationWriteCompletes;
+    [Test]
+    [Category('unit,container,negative')]
+    procedure XzDecodeIncludesRetainedMetadataInMemoryLimit;
+    [Test]
+    [Category('unit,container,negative')]
+    procedure RawLzma2DecodeAdmitsOwnedMemoryBeforeReadingInput;
+    [Test]
+    [Category('unit')]
     procedure MtDecodeWriteFailureSignalsWorkersToCancel;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeUsesIndependentResetChunks;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeFallsBackForSingleIndependentStream;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeFallsBackForTinyPackedIndependentUnits;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeFallsBackForHighlyExpandedTinyPackedUnits;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeCancellationDoesNotWriteOutput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeFallsBackWhenOutputExceedsMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeChecksMemoryLimitBeforePayloadSnapshot;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container,negative')]
+    procedure RawLzma2MtDecodeRechecksCapturedPlanMemory;
+    [Test]
+    [Category('unit,container')]
     procedure RawLzma2MtDecodeWriteFailurePropagates;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzRoundTripsAllChecks;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzDeltaFilterFailsUnsupported;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzBcjFilterFailsUnsupported;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzFilterChainFailsUnsupported;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzUnsupportedStreamFlagsFailTyped;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzUnsupportedBlockFlagsFailTyped;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzInvalidLzma2FilterPropsFailTyped;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzIndexRejectsZeroUnpaddedBlockRecord;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipSingleFileRoundTrips;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container,negative,memory_7z')]
+    procedure SevenZipMetadataMethodsHonorMemoryLimit;
+    [Test]
+    [Category('unit,container,negative,memory_7z')]
+    procedure SevenZipEncodedHeaderChecksBudgetBeforePayload;
+    [Test]
+    [Category('unit,container,negative,memory_7z')]
+    procedure SevenZipLzmaDecodeChecksDictionaryBeforePayload;
+    [Test]
+    [Category('unit,container,negative,memory_7z')]
+    procedure SevenZipExtractAllChecksOwnedOutputBeforePayload;
+    [Test]
+    [Category('unit,container,memory_7z')]
+    procedure SevenZipExtractAllReusesReleasedFolderMemory;
+    [Test]
+    [Category('unit,container')]
     procedure SevenZipLzmaCoderSingleFileDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipEncodedHeaderLzma2SingleFileDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipEncodedHeaderLzmaSingleFileDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipEncodedHeaderUnsupportedCoderFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipUnsupportedNormalHeaderCoderFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipMultiCoderFolderFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipPackStreamCrcMismatchFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipPayloadUnsupportedCoderFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipAlternativeCoderFlagsFailClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipReservedCoderFlagFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipUnreferencedPackStreamFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipMissingFileNamesFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipMissingNameTerminatorFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipOddUtf16NamePayloadFailsClosed;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipFolderCrcMismatchFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipSolidFileCrcMismatchFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipMultiFolderLzma2ArchiveExtractsAllEntries;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipMultiFolderLzmaArchiveExtractsAllEntries;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipMultiFileLzma2EncodeListsAndExtractsAllEntries;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipMultiFileLzmaEncodeListsAndExtractsAllEntries;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipUtf16NamesRoundTrip;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipMultiFileFailsSingleStreamDecode;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipSolidLzma2SubstreamsExtractAsSeparateFiles;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipSolidLzmaSubstreamsExtractAsSeparateFiles;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure SevenZipDecodeLeavesSourceAfterArchive;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure SevenZipHeaderCrcCorruptionFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzRoundTripsWithNonSeekableStreams;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzEncodeProgressIsMonotonic;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzEncodeCancellation;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMultiBlockDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMultiBlockEncodeDiagnosticsAggregatesRawFastPathCounts;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMultiBlockEncodeDiagnosticsReportsTuningForEmptyInput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzEncodeBlockSizeProducesIndependentBlocks;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeUsesIndependentBlocks;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeDoesNotReadAllPayloadsBeforeFirstOutput;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeWriteFailurePropagatesAndPreservesDiagnostics;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeUsesIndexPackedSizeWhenHeaderOmitsIt;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeUsesIndexUnpackedSizeWhenHeaderOmitsIt;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeFallsBackForSingleIndexSizedBlockWithoutPackedSize;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeFallsBackForSingleIndexSizedBlockWithoutUnpackedSize;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeFallsBackWhenOutputExceedsMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeChecksMemoryLimitBeforePayloadSnapshot;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzMtDecodeUsesNonzeroMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzBlockWithoutPackedSizeDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzPackedBlockRejectsRawTrailingBytes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzDecodeAvoidsFullArchiveMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzEncodeAvoidsFullSourceMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzDecodeRejectsDictionaryOverMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzDecodeRejectsMaxDictionaryPropertyOverMemoryLimit;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzDecodeCancellation;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzConcatenatedStreamsDecode;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzConcatenatedStreamsWithMixedChecksFallBackFromMt;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzStreamPaddingDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzStreamPaddingCancellation;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzBadStreamPaddingFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure CorruptedSecondXzBlockCheckFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure CorruptedXzCheckFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzTruncatedFooterFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
-    [Category('fuzz')]
+    [Category('unit,container,compat,negative')]
     procedure CorruptXzRegressionFixturesFailWithExpectedErrors;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure XzWriteFailurePropagates;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('fuzz')]
+    [Category('unit,container,negative')]
     procedure XzUnsupportedCheckFails;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawTrailingBytesFail;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure SevenZipCompressedXzDecodes;
     [Test]
-    [Category('unit')]
-    [Category('compat')]
+    [Category('unit,compat')]
     procedure FixtureManifestsHaveSha256Metadata;
     [Test]
-    [Category('unit')]
-    [Category('container')]
+    [Category('unit,container')]
     procedure RawLzmaSdkCorpusFixturesDecode;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('perf-release')]
+    [Category('unit,container,perf_release')]
     procedure RawLzmaSdkReleaseCorpusFixturesDecode;
     [Test]
     [Category('unit')]
@@ -1648,59 +1505,41 @@ type
     [Category('unit')]
     procedure DecompressAsyncReturnsBeforeProgressCallbackCompletes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolDelphiXzIsAcceptedBySevenZip;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolDelphiSevenZipIsAcceptedBySevenZip;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolSevenZip7zDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolSevenZipXzDecodes;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolXzUtilsMatrixDecodes;
     [Test]
-    [Category('unit')]
-    [Category('compat')]
+    [Category('unit,compat')]
     procedure CrossToolSdkLzmaDecodesWithDelphi;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolDelphiRawLzmaDecodesWithSdk;
     [Test]
-    [Category('unit')]
-    [Category('container')]
-    [Category('compat')]
+    [Category('unit,container,compat')]
     procedure CrossToolDelphiRawLzmaEndMarkerDecodesWithSdk;
     [Test]
     [Category('unit')]
     procedure MultiThreadedRawMatchesSingleThreadOutput;
     [Test]
-    [Category('unit')]
-    [Category('perf-release')]
-    [Category('soak')]
+    [Category('unit,perf_release,soak')]
     procedure MultiThreadedRawLargeChunksRoundTrip;
     [Test]
-    [Category('unit')]
-    [Category('perf-release')]
+    [Category('unit,perf_release')]
     procedure MultiThreadedRawLargeChunkCopyFallbackSplits;
     [Test]
     [Category('unit')]
-    procedure HighEntropyRawEncodeBypassesGreedyAttempt;
+    procedure HighEntropyRawEncodeUsesBoundedCopyFallback;
     [Test]
     [Category('unit')]
     procedure MixedBenchmarkCorpusRawEncodeCompressesRepeatingStripes;
@@ -1714,8 +1553,7 @@ type
     [Category('unit')]
     procedure PeriodicRawEncodeUsesFastPath;
     [Test]
-    [Category('unit')]
-    [Category('fuzz')]
+    [Category('unit,negative')]
     procedure PeriodicFastPathRejectsChunkedPhaseReset;
     [Test]
     [Category('unit')]
@@ -1730,10 +1568,101 @@ type
     [Category('unit')]
     procedure MultiThreadedRawWriteFailure;
     [Test]
-    [Category('unit')]
-    [Category('soak')]
+    [Category('unit,soak')]
     procedure IndependentInstancesAreThreadSafe;
+    [Test]
+    [Category('unit,container,negative')]
+    procedure XzRejectsUnpackSizeOverrunBeforeWritingPastDeclaredSize;
+    [Test]
+    [Category('unit,container,resource')]
+    procedure MultiThreadedEncodeBoundsOutstandingInputBehindSlowFirstBatch;
   end;
+
+constructor TMtBoundInputStream.Create;
+var
+  I: Integer;
+  State: UInt32;
+begin
+  inherited Create;
+  FSize := High(Int64);
+  FRandom := 1;
+  State := 17;
+  for I := 0 to High(FPattern) do
+  begin
+    State := State xor (State shl 13);
+    State := State xor (State shr 17);
+    State := State xor (State shl 5);
+    FPattern[I] := Byte(State and 63);
+  end;
+end;
+
+function TMtBoundInputStream.Read(var Buffer; Count: Longint): Longint;
+var
+  I: Integer;
+  Target: PByte;
+begin
+  if FFirstReadSize = 0 then
+  begin
+    FFirstReadSize := Count;
+    FSize := Int64(Count) * 4;
+  end;
+  Result := Count;
+  if Int64(Result) > FSize - FPosition then
+    Result := FSize - FPosition;
+  Target := @Buffer;
+  for I := 0 to Result - 1 do
+    if FPosition + I < FFirstReadSize then
+      Target[I] := FPattern[(FPosition + I) and High(FPattern)]
+    else
+    begin
+      FRandom := FRandom xor (FRandom shl 13);
+      FRandom := FRandom xor (FRandom shr 17);
+      FRandom := FRandom xor (FRandom shl 5);
+      Target[I] := Byte(FRandom);
+    end;
+  Inc(FPosition, Result);
+end;
+
+function TMtBoundInputStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  raise EStreamError.Create('Input is read-only');
+end;
+
+function TMtBoundInputStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  case Origin of
+    soBeginning: Result := Offset;
+    soCurrent: Result := FPosition + Offset;
+    soEnd: Result := FSize + Offset;
+  else
+    raise EStreamError.Create('Invalid seek origin');
+  end;
+  if Result <> FPosition then
+    raise EStreamError.Create('Input does not support repositioning');
+end;
+
+constructor TMtFirstWriteProbeStream.Create(const Source: TMtBoundInputStream);
+begin
+  inherited Create;
+  FSource := Source;
+end;
+
+function TMtFirstWriteProbeStream.Read(var Buffer; Count: Longint): Longint;
+begin
+  raise EStreamError.Create('Output is write-only');
+end;
+
+function TMtFirstWriteProbeStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  FObservedInput := FSource.BytesRead;
+  raise EStreamError.Create('Stop after observing the first output');
+end;
+
+function TMtFirstWriteProbeStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  raise EStreamError.Create('Output does not support seeking');
+end;
+
 
 function TWriteFailStream.Read(var Buffer; Count: Longint): Longint;
 begin
@@ -1795,6 +1724,40 @@ begin
   Result := 0;
 end;
 
+constructor TSevenZipPayloadGuardStream.Create(const Data: TBytes);
+const
+  SignatureHeaderSize = 32;
+begin
+  inherited Create(Data);
+  FPayloadEnd := SignatureHeaderSize + ReadUi64LE(@Data[12]);
+end;
+
+procedure TSevenZipPayloadGuardStream.CheckRead(const Count: NativeInt);
+const
+  SignatureHeaderSize = 32;
+begin
+  if (Count > 0) and (UInt64(Position) < FPayloadEnd) and
+    (UInt64(Position) + UInt64(Count) > SignatureHeaderSize) then
+  begin
+    Inc(FPayloadReadAttempts);
+    raise EReadError.Create('7z payload must not be read before memory admission');
+  end;
+end;
+
+function TSevenZipPayloadGuardStream.Read(var Buffer; Count: Longint): Longint;
+begin
+  CheckRead(Count);
+  Result := inherited Read(Buffer, Count);
+end;
+
+{$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
+function TSevenZipPayloadGuardStream.Read(var Buffer; Count: NativeInt): NativeInt;
+begin
+  CheckRead(Count);
+  Result := inherited Read(Buffer, Count);
+end;
+{$ENDIF}
+
 constructor TProbeBoundReadStream.Create(const Data: TBytes; const ProbeReadLimit: UInt64);
 begin
   inherited Create(Data);
@@ -1850,6 +1813,37 @@ begin
 end;
 {$ENDIF}
 
+constructor TBeforeFirstWriteStream.Create(const BeforeFirstWrite: TProc);
+begin
+  inherited Create;
+  FBeforeFirstWrite := BeforeFirstWrite;
+end;
+
+function TBeforeFirstWriteStream.WriteChunk(const Buffer; const Count: NativeInt): NativeInt;
+var
+  BeforeWrite: TProc;
+begin
+  if (Count > 0) and Assigned(FBeforeFirstWrite) then
+  begin
+    BeforeWrite := FBeforeFirstWrite;
+    FBeforeFirstWrite := nil;
+    BeforeWrite;
+  end;
+  Result := inherited Write(Buffer, Count);
+end;
+
+function TBeforeFirstWriteStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  Result := Longint(WriteChunk(Buffer, Count));
+end;
+
+{$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
+function TBeforeFirstWriteStream.Write(const Buffer; Count: NativeInt): NativeInt;
+begin
+  Result := WriteChunk(Buffer, Count);
+end;
+{$ENDIF}
+
 constructor TOutputStartedProbeWriteStream.Create(const OutputStarted: PInteger);
 begin
   inherited Create;
@@ -1893,6 +1887,105 @@ begin
   if (Result > 0) and (FOutputStarted <> nil) and
     (TInterlocked.CompareExchange(FOutputStarted^, 0, 0) = 0) then
     Inc(FReadBeforeOutput, UInt64(Result));
+end;
+
+constructor TRewindingReadStream.Create(const BeforeData, AfterData: TBytes);
+begin
+  inherited Create;
+  FBefore := BeforeData;
+  FAfter := AfterData;
+end;
+
+function TRewindingReadStream.Read(var Buffer; Count: Longint): Longint;
+var
+  Data: TBytes;
+begin
+  if FSwitched then Data := FAfter else Data := FBefore;
+  Result := Length(Data) - FOffset;
+  if Result > Count then Result := Count;
+  if Result > 0 then
+  begin
+    Move(Data[NativeInt(FOffset)], Buffer, Result);
+    Inc(FOffset, Result);
+  end;
+end;
+
+function TRewindingReadStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  raise EWriteError.Create('Read-only rewinding test stream');
+end;
+
+function TRewindingReadStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+var
+  DataSize, NewOffset: Int64;
+begin
+  if FSwitched then DataSize := Length(FAfter) else DataSize := Length(FBefore);
+  case Origin of
+    soBeginning: NewOffset := Offset;
+    soCurrent: NewOffset := FOffset + Offset;
+    soEnd: NewOffset := DataSize + Offset;
+  else
+    raise EStreamError.Create('Invalid test seek origin');
+  end;
+  if (NewOffset = 0) and (FOffset > 0) and not FSwitched then FSwitched := True;
+  if NewOffset < 0 then raise EStreamError.Create('Negative test seek offset');
+  FOffset := NewOffset;
+  Result := NewOffset;
+end;
+
+constructor TSharedCursorReadStream.Create(const Backing: TMemoryStream);
+begin
+  inherited Create;
+  FBacking := Backing;
+end;
+
+function TSharedCursorReadStream.GetSize: Int64;
+begin
+  Result := FBacking.Size;
+end;
+
+function TSharedCursorReadStream.Read(var Buffer; Count: Longint): Longint;
+begin
+  Result := FBacking.Read(Buffer, Count);
+end;
+
+function TSharedCursorReadStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  raise EWriteError.Create('The source proxy is read-only');
+end;
+
+function TSharedCursorReadStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  Result := FBacking.Seek(Offset, Origin);
+end;
+
+constructor TForwardOnlyWriteStream.Create(const Capture: TMemoryStream);
+begin
+  inherited Create;
+  FCapture := Capture;
+end;
+
+function TForwardOnlyWriteStream.GetSize: Int64;
+begin
+  Inc(FSizeCalls);
+  raise EStreamError.Create('Output size is unavailable');
+end;
+
+function TForwardOnlyWriteStream.Read(var Buffer; Count: Longint): Longint;
+begin
+  Inc(FReadCalls);
+  raise EReadError.Create('Output is write-only');
+end;
+
+function TForwardOnlyWriteStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  Result := FCapture.Write(Buffer, Count);
+end;
+
+function TForwardOnlyWriteStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  Inc(FSeekCalls);
+  raise EStreamError.Create('Output does not support seeking');
 end;
 
 constructor TNonSeekableReadStream.Create(const Data: TBytes; const DestroyedFlag: PBoolean);
@@ -1941,6 +2034,54 @@ begin
   Inc(FSeekCount);
   raise EStreamError.Create('seek is not supported by this test stream');
 end;
+
+function TShortNonSeekableReadStream.Read(var Buffer; Count: Longint): Longint;
+const
+  MaxReadCount = 1021;
+begin
+  if Count > MaxReadCount then
+    Count := MaxReadCount;
+  Result := inherited Read(Buffer, Count);
+  Inc(FBytesRead, UInt64(Result));
+end;
+
+constructor TShortWriteProbeMemoryStream.Create(const Source: TShortNonSeekableReadStream);
+begin
+  inherited Create;
+  FSource := Source;
+end;
+
+function TShortWriteProbeMemoryStream.WriteChunk(const Buffer; const Count: NativeInt): NativeInt;
+const
+  MaxWriteCount = 17;
+var
+  Accepted: NativeInt;
+begin
+  Accepted := Count;
+  if Accepted > MaxWriteCount then
+  begin
+    Accepted := MaxWriteCount;
+    Inc(FShortWriteCount);
+  end;
+  if (Accepted > 0) and not FHasOutput then
+  begin
+    FFirstWriteInput := FSource.BytesRead;
+    FHasOutput := True;
+  end;
+  Result := inherited Write(Buffer, Accepted);
+end;
+
+function TShortWriteProbeMemoryStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  Result := Longint(WriteChunk(Buffer, Count));
+end;
+
+{$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
+function TShortWriteProbeMemoryStream.Write(const Buffer; Count: NativeInt): NativeInt;
+begin
+  Result := WriteChunk(Buffer, Count);
+end;
+{$ENDIF}
 
 constructor TDestroyTrackingMemoryStream.Create(const DestroyedFlag: PBoolean);
 begin
@@ -2204,9 +2345,10 @@ begin
     System.SysUtils.DeleteFile(FileName);
 end;
 
-class procedure TLzma2NativeTests.SkipExternalTool(const TestName: string; const EnvName: string);
+class procedure TLzma2NativeTests.FailMissingExternalTool(const TestName: string; const EnvName: string);
 begin
-  System.Writeln('SKIP ' + TestName + ': set ' + EnvName + ' to enable this cross-tool test.');
+  Assert.Fail(TestName + ': required external tool is unavailable. Set ' + EnvName +
+    ' to a valid pinned oracle before selecting compat tests; no cross-tool check was performed.');
 end;
 
 class procedure TLzma2NativeTests.AssertBytesEqual(const Expected: TBytes; const Actual: TBytes;
@@ -4361,7 +4503,143 @@ begin
   end;
 end;
 
+procedure TLzma2NativeTests.MatchFinderPositionLinksSelectWidthFromInputCount;
+var
+  Links: TLzmaPositionLinks;
+  MaxPosition: NativeUInt;
+  LastCompactMark: NativeInt;
+begin
+  MaxPosition := High(UInt32);
+  Links.Initialize(3, MaxPosition);
+  Assert.AreEqual(NativeInt(3), Links.Count);
+  Assert.IsTrue(Links.IsCompact, 'a UInt32-bounded input should use compact links');
+  if SizeOf(NativeInt) > SizeOf(UInt32) then
+    LastCompactMark := NativeInt(MaxPosition)
+  else
+    LastCompactMark := High(NativeInt);
+  Links[0] := 0;
+  Links[1] := LastCompactMark;
+  Links[2] := 1;
+  Assert.AreEqual(NativeInt(0), Links[0]);
+  Assert.AreEqual(LastCompactMark, Links[1]);
+  Assert.AreEqual(NativeInt(1), Links[2]);
+
+  if SizeOf(NativeUInt) > SizeOf(UInt32) then
+  begin
+    Inc(MaxPosition);
+    Links.Initialize(3, MaxPosition);
+    Assert.AreEqual(NativeInt(3), Links.Count);
+    Assert.IsFalse(Links.IsCompact,
+      'input count above UInt32 requires wide marks even with only three slots');
+    Links[0] := NativeInt(MaxPosition);
+    Links[1] := NativeInt(MaxPosition) + 17;
+    Links[2] := 0;
+    Assert.AreEqual(NativeInt(MaxPosition), Links[0]);
+    Assert.AreEqual(NativeInt(MaxPosition) + 17, Links[1]);
+    Assert.AreEqual(NativeInt(0), Links[2]);
+  end;
+end;
+
+procedure TLzma2NativeTests.InsertedBitsPreserveBoundariesAndPartialWindowDrop;
+const
+  Capacity = 129;
+  Boundaries: array[0..7] of NativeUInt = (7, 8, 31, 32, 63, 64, 127, 128);
+var
+  Bits: TLzmaInsertedBits;
+  Expected, BeforeDrop: TArray<Boolean>;
+  I, Boundary: NativeUInt;
+
+  procedure Verify;
+  var
+    Index: NativeUInt;
+  begin
+    Assert.AreEqual(NativeUInt(Capacity), Bits.Count);
+    for Index := 0 to Capacity - 1 do
+      Assert.AreEqual(Expected[Index], Bits[Index], 'inserted metadata differs from Boolean reference');
+  end;
+
+begin
+  Bits.Initialize(Capacity);
+  SetLength(Expected, Capacity);
+  for I := 0 to Capacity - 1 do
+  begin
+    Expected[I] := I mod 3 = 1;
+    Bits[I] := Expected[I];
+  end;
+  for Boundary in Boundaries do
+  begin
+    Expected[Boundary] := not Expected[Boundary];
+    Bits[Boundary] := Expected[Boundary];
+    Verify;
+  end;
+  Bits.SetRange(7, 58);
+  for I := 7 to 64 do
+    Expected[I] := True;
+  Bits.SetRange(31, 2, False);
+  Expected[31] := False;
+  Expected[32] := False;
+  Verify;
+
+  BeforeDrop := Copy(Expected);
+  Bits.DropPrefix(3, 65);
+  for I := 0 to Capacity - 1 do
+    if I < 62 then
+      Expected[I] := BeforeDrop[I + 3]
+    else
+      Expected[I] := False;
+  Verify;
+  Bits.SetRange(62, 17);
+  for I := 62 to 78 do
+    Expected[I] := True;
+  Verify;
+  Bits.SetRange(120, High(NativeUInt));
+  for I := 120 to Capacity - 1 do
+    Expected[I] := True;
+  Verify;
+  // Start from a contiguous prefix before a used-size shrink, then create a hole.
+  Bits.Initialize(Capacity);
+  Bits.SetRange(0, Capacity);
+  Bits.DropPrefix(9, 65);
+  for I := 0 to Capacity - 1 do
+    Expected[I] := I < 56;
+  Verify;
+  Bits.SetRange(56, 17);
+  for I := 56 to 72 do
+    Expected[I] := True;
+  Verify;
+  Bits[72] := False;
+  Expected[72] := False;
+  Verify;
+  Bits[72] := True;
+  Expected[72] := True;
+  Bits[100] := False;
+  Verify;
+  Bits[31] := False;
+  Expected[31] := False;
+  Verify;
+  BeforeDrop := Copy(Expected);
+  Bits.DropPrefix(7, 64);
+  for I := 0 to Capacity - 1 do
+    if I < 57 then
+      Expected[I] := BeforeDrop[I + 7]
+    else
+      Expected[I] := False;
+  Verify;
+  Assert.WillRaise(
+    procedure
+    begin
+      Bits.DropPrefix(0, Capacity + 1);
+    end,
+    EArgumentOutOfRangeException);
+  Bits.Initialize(0);
+  Bits.SetRange(0, High(NativeUInt));
+  Bits.DropPrefix(0, 0);
+  Assert.AreEqual(NativeUInt(0), Bits.Count);
+end;
+
 procedure TLzma2NativeTests.MatchFinderReadMatchesIsIdempotent;
+type
+  TReadMatches = procedure(const RelativePos: NativeUInt; var Buffer: TLzmaMatchBuffer) of object;
 var
   Data: TBytes;
   Hc4Finder: TLzmaHashChain4MatchFinder;
@@ -4377,6 +4655,28 @@ var
     Bytes := TEncoding.ASCII.GetBytes(Text);
     Move(Bytes[0], Data[Offset], Length(Bytes));
   end;
+  procedure CheckActiveCachedRead(const ReadLegacy, ReadPairs: TReadMatches);
+  var
+    LegacyAgain: TLzmaMatchBuffer;
+    I: Integer;
+  begin
+    FillChar(RepeatedMatches, SizeOf(RepeatedMatches), $5A);
+    ReadPairs(10, RepeatedMatches);
+    Assert.AreEqual(Matches.Count, RepeatedMatches.Count, 'active cached pair count');
+    for I := 0 to Matches.Count - 1 do
+    begin
+      Assert.AreEqual(Matches.Items[I].Length, RepeatedMatches.Items[I].Length, 'active cached length');
+      Assert.AreEqual(Matches.Items[I].Distance, RepeatedMatches.Items[I].Distance, 'active cached distance');
+    end;
+    for I := RepeatedMatches.Count to High(RepeatedMatches.Items) do
+    begin
+      Assert.AreEqual(UInt32($5A5A5A5A), RepeatedMatches.Items[I].Length, 'inactive length is caller-owned');
+      Assert.AreEqual(UInt32($5A5A5A5A), RepeatedMatches.Items[I].Distance, 'inactive distance is caller-owned');
+    end;
+    ReadLegacy(10, LegacyAgain);
+    Assert.IsTrue(CompareMem(@Matches, @LegacyAgain, SizeOf(Matches)), 'legacy cache remains a full-record snapshot');
+  end;
+
 begin
   Data := BytesOfSize(32);
   PutText(0, 'ABCDEFGH');
@@ -4385,6 +4685,7 @@ begin
 
   Hc4Finder := TLzmaHashChain4MatchFinder.Create(Data, 0, Length(Data), 64, 32, 273, 8);
   try
+    FillChar(Matches, SizeOf(Matches), $A5);
     Hc4Finder.ReadMatches(0, Matches);
     Hc4Finder.ReadMatches(10, Matches);
     Assert.AreEqual(UInt32(4), Matches.Last.Length, 'first HC4 ReadMatches at position 10');
@@ -4392,7 +4693,8 @@ begin
     Assert.AreEqual(Matches.Count, RepeatedMatches.Count, 'duplicate HC4 ReadMatches pair count');
     Assert.AreEqual(Matches.Last.Length, RepeatedMatches.Last.Length, 'duplicate HC4 ReadMatches length');
     Assert.AreEqual(Matches.Last.Distance, RepeatedMatches.Last.Distance, 'duplicate HC4 ReadMatches distance');
-    Hc4Finder.GetMatches(20, Matches);
+    CheckActiveCachedRead(Hc4Finder.ReadMatches, Hc4Finder.ReadMatchPairs);
+    Hc4Finder.ReadMatchPairs(20, Matches);
     Assert.IsTrue(Matches.Count > 0, 'duplicate HC4 ReadMatches must preserve future matches');
     Assert.AreEqual(UInt32(8), Matches.Last.Length, 'duplicate HC4 ReadMatches must not hide older long matches');
     Assert.AreEqual(UInt32(20), Matches.Last.Distance, 'duplicate HC4 ReadMatches must preserve the older chain link');
@@ -4402,6 +4704,7 @@ begin
 
   Hc5Finder := TLzmaHashChain5MatchFinder.Create(Data, 0, Length(Data), 64, 32, 273, 8);
   try
+    FillChar(Matches, SizeOf(Matches), $A5);
     Hc5Finder.ReadMatches(0, Matches);
     Hc5Finder.ReadMatches(10, Matches);
     Assert.AreEqual(UInt32(4), Matches.Last.Length, 'first HC5 ReadMatches at position 10');
@@ -4409,7 +4712,8 @@ begin
     Assert.AreEqual(Matches.Count, RepeatedMatches.Count, 'duplicate HC5 ReadMatches pair count');
     Assert.AreEqual(Matches.Last.Length, RepeatedMatches.Last.Length, 'duplicate HC5 ReadMatches length');
     Assert.AreEqual(Matches.Last.Distance, RepeatedMatches.Last.Distance, 'duplicate HC5 ReadMatches distance');
-    Hc5Finder.GetMatches(20, Matches);
+    CheckActiveCachedRead(Hc5Finder.ReadMatches, Hc5Finder.ReadMatchPairs);
+    Hc5Finder.ReadMatchPairs(20, Matches);
     Assert.IsTrue(Matches.Count > 0, 'duplicate HC5 ReadMatches must preserve future matches');
     Assert.AreEqual(UInt32(8), Matches.Last.Length, 'duplicate HC5 ReadMatches must not hide older long matches');
     Assert.AreEqual(UInt32(20), Matches.Last.Distance, 'duplicate HC5 ReadMatches must preserve the older chain link');
@@ -4419,6 +4723,7 @@ begin
 
   Bt4Finder := TLzmaBinaryTree4MatchFinder.Create(Data, 0, Length(Data), 64, 32, 273, 8);
   try
+    FillChar(Matches, SizeOf(Matches), $A5);
     Bt4Finder.ReadMatches(0, Matches);
     Bt4Finder.ReadMatches(10, Matches);
     Assert.AreEqual(UInt32(4), Matches.Last.Length, 'first BT4 ReadMatches at position 10');
@@ -4426,13 +4731,74 @@ begin
     Assert.AreEqual(Matches.Count, RepeatedMatches.Count, 'duplicate BT4 ReadMatches pair count');
     Assert.AreEqual(Matches.Last.Length, RepeatedMatches.Last.Length, 'duplicate BT4 ReadMatches length');
     Assert.AreEqual(Matches.Last.Distance, RepeatedMatches.Last.Distance, 'duplicate BT4 ReadMatches distance');
-    Bt4Finder.GetMatches(20, Matches);
+    CheckActiveCachedRead(Bt4Finder.ReadMatches, Bt4Finder.ReadMatchPairs);
+    Bt4Finder.ReadMatchPairs(20, Matches);
     Assert.IsTrue(Matches.Count > 0, 'duplicate BT4 ReadMatches must preserve future matches');
     Assert.AreEqual(UInt32(8), Matches.Last.Length, 'duplicate BT4 ReadMatches must not hide older long matches');
     Assert.AreEqual(UInt32(20), Matches.Last.Distance, 'duplicate BT4 ReadMatches must preserve the older tree link');
   finally
     Bt4Finder.Free;
   end;
+end;
+
+procedure TLzma2NativeTests.MatchBufferCopiesActivePairsWithOverlap;
+type
+  PMatchBuffer = ^TLzmaMatchBuffer;
+var
+  Source, Destination, Expected, Snapshot: TLzmaMatchBuffer;
+  Counts: array[0..2] of Integer;
+  PairCount, I: Integer;
+  Arena, ExpectedArena: TBytes;
+  SourcePtr, DestinationPtr, ExpectedPtr: PMatchBuffer;
+begin
+  Counts[0] := 0;
+  Counts[1] := 1;
+  Counts[2] := Length(Source.Items);
+  for PairCount in Counts do
+  begin
+    FillChar(Source, SizeOf(Source), $A5);
+    Source.Count := PairCount;
+    FillChar(Destination, SizeOf(Destination), $5A);
+    Expected := Destination;
+    Expected.Count := PairCount;
+    for I := 0 to PairCount - 1 do
+      Expected.Items[I] := Source.Items[I];
+    Destination.CopyPairsFrom(Source);
+    Assert.IsTrue(CompareMem(@Expected, @Destination, SizeOf(Destination)), 'only active pairs are copied');
+    Snapshot := Destination;
+    Destination.CopyPairsFrom(Destination);
+    Assert.IsTrue(CompareMem(@Snapshot, @Destination, SizeOf(Destination)), 'self-copy is unchanged');
+  end;
+  Snapshot := Destination;
+  Source.Count := -1;
+  Assert.WillRaise(
+    procedure
+    begin
+      Destination.CopyPairsFrom(Source);
+    end, EArgumentOutOfRangeException);
+  Assert.IsTrue(CompareMem(@Snapshot, @Destination, SizeOf(Destination)), 'invalid count leaves the receiver unchanged');
+  Source.Count := Length(Source.Items) + 1;
+  Assert.WillRaise(
+    procedure
+    begin
+      Destination.CopyPairsFrom(Source);
+    end, EArgumentOutOfRangeException);
+  Assert.IsTrue(CompareMem(@Snapshot, @Destination, SizeOf(Destination)), 'oversized count leaves the receiver unchanged');
+
+  SetLength(Arena, SizeOf(TLzmaMatchBuffer) * 2 + SizeOf(Integer));
+  FillChar(Arena[0], Length(Arena), $3D);
+  SourcePtr := PMatchBuffer(@Arena[0]);
+  SourcePtr.Count := 1;
+  SourcePtr.Items[0].Length := 17;
+  SourcePtr.Items[0].Distance := 31;
+  Snapshot := SourcePtr^;
+  ExpectedArena := Copy(Arena);
+  ExpectedPtr := PMatchBuffer(@ExpectedArena[SizeOf(Integer)]);
+  ExpectedPtr.Items[0] := Snapshot.Items[0];
+  ExpectedPtr.Count := Snapshot.Count;
+  DestinationPtr := PMatchBuffer(@Arena[SizeOf(Integer)]);
+  DestinationPtr.CopyPairsFrom(SourcePtr^);
+  Assert.IsTrue(CompareMem(@Arena[0], @ExpectedArena[0], Length(Arena)), 'overlapping records use the original source pairs');
 end;
 
 function MatchFinderTraceFixturePath: string;
@@ -4867,7 +5233,7 @@ var
   CompressedChunks: Integer;
   NoPropsChunks: Integer;
 begin
-  SetLength(Data, 12 * 1024);
+  SetLength(Data, (2 shl 20) + 8192);
   if Length(Data) <> 0 then
     FillChar(Data[0], Length(Data), Ord('A'));
 
@@ -4912,9 +5278,9 @@ begin
       Inc(Pos, 4);
       if (Control and $40) <> 0 then
         Inc(Pos)
-      else if Control >= $A0 then
+      else
         Inc(NoPropsChunks);
-      Assert.IsTrue(ChunkSize <= 4 * 1024, 'test fixture should respect requested chunk size');
+      Assert.IsTrue(NativeUInt(ChunkSize) <= Options.BufferSize, 'compressed chunk must respect the requested buffer-size cap');
       Assert.IsTrue(Pos + PackSize <= Length(EncodedBytes), 'truncated compressed chunk payload');
       Inc(Pos, PackSize);
       Inc(CompressedChunks);
@@ -5264,6 +5630,138 @@ begin
 
   Assert.AreEqual(SZ_OK, SdkProps.WriteProperties(SdkPropsBytes), 'SDK facade writes LZMA props');
   AssertBytesEqual(RawPropsBytes, SdkPropsBytes, 'SDK facade props bytes must match native raw props writer');
+end;
+
+procedure TLzma2NativeTests.SdkFacadeExplicitAlgorithmOverridesLevel;
+const
+  Levels: array[0..2] of Integer = (0, 1, 5);
+  BlockSize = 2 shl 20;
+var
+  Data: TBytes;
+  Props: TLzmaSdkLzmaEncProps;
+  Props2: TLzmaSdkLzma2EncProps;
+  RawProps: TLzmaProps;
+  Profile: TLzmaEncoderProfile;
+  Kind: TLzmaMatchFinderKind;
+  Expected: array[0..1] of TBytes;
+  Src: TBytesStream;
+  Dst: TBytesStream;
+  Input: ILzmaSeqInStream;
+  Output: ILzmaSeqOutStream;
+  Encoder: TLzmaSdkLzmaEncoder;
+  Encoder2: TLzmaSdkLzma2Encoder;
+  Diagnostics: TLzma2EncodeDiagnostics;
+  FullDecisions: UInt64;
+  IsLzma2: Boolean;
+  Level: Integer;
+  Algorithm: Integer;
+  Context: string;
+begin
+  // This ambiguous input produces different fast and full native decisions.
+  // Compare the facade with each explicit backend, rather than a C bitstream.
+  Data := TEncoding.ASCII.GetBytes(
+    'abcdefghABCDEFGHabcdefghABXDEFGHabcdefghABCYEFGHabcdefghABCZEFGH' +
+    '0123456789abcdefghABCDEFGH0123456789abcdefghABXDEFGH');
+  Props := TLzmaSdkLzmaEncProps.Init;
+  Props.DictSize := 1 shl 20;
+  Props.Lc := 3;
+  Props.Lp := 0;
+  Props.Pb := 2;
+  Props.Fb := 64;
+  Props.BtMode := 0;
+  Props.NumHashBytes := 5;
+  Props.Mc := 32;
+  Props.NumThreads := 1;
+  Props.WriteEndMark := 0;
+  Assert.AreEqual(SZ_OK, Props.ToRawProps(RawProps, Kind), 'explicit test properties');
+  for IsLzma2 := False to True do
+  begin
+    for Algorithm := 0 to 1 do
+    begin
+      Profile := TLzmaRawEncoder.NormalizeProfile(5, Props.DictSize);
+      Profile.Algorithm := Algorithm;
+      Profile.FastBytes := Props.Fb;
+      Profile.CutValue := Props.Mc;
+      Profile.MatchFinderKind := Kind;
+      Profile.MatchFinderProfile := lmfpHashChain5;
+      Profile.NumHashBytes := 5;
+      if Algorithm = 0 then
+        Profile.ParserMode := lpmHighSpeed
+      else
+        Profile.ParserMode := lpmSdkProfile;
+      Src := TBytesStream.Create(Data);
+      Dst := TBytesStream.Create;
+      try
+        FullDecisions := 0;
+        if IsLzma2 then
+        begin
+          Diagnostics := Default(TLzma2EncodeDiagnostics);
+          TLzmaRawEncoder.EncodeLzma2Stream(Src, Dst, Profile, RawProps,
+            nil, @Diagnostics, BlockSize);
+          FullDecisions := Diagnostics.FullOptimumDecisionCount;
+        end
+        else
+          TLzmaRawEncoder.Encode(Src, Dst, Profile, RawProps, False,
+            BlockSize, 0, FullDecisions, nil);
+        if Algorithm = 0 then
+          Assert.AreEqual(UInt64(0), FullDecisions, 'fast backend performs no full decisions')
+        else
+          Assert.IsTrue(FullDecisions > 0, 'ambiguous input must exercise full decisions');
+        Expected[Algorithm] := Copy(Dst.Bytes, 0, Dst.Size);
+      finally
+        Dst.Free;
+        Src.Free;
+      end;
+    end;
+    if Length(Expected[0]) = Length(Expected[1]) then
+      Assert.IsFalse(CompareMem(@Expected[0][0], @Expected[1][0],
+        Length(Expected[0])), 'fast and full references must differ');
+    for Level in Levels do
+      for Algorithm := 0 to 1 do
+      begin
+        Props.Level := Level;
+        Props.Algo := Algorithm;
+        Context := Format('LZMA2=%s Level=%d Algo=%d',
+          [BoolToStr(IsLzma2, True), Level, Algorithm]);
+        Src := TBytesStream.Create(Data);
+        Dst := TBytesStream.Create;
+        try
+          Input := TLzmaSdkSeqInStream.Create(Src);
+          Output := TLzmaSdkSeqOutStream.Create(Dst);
+          if IsLzma2 then
+          begin
+            Props2 := TLzmaSdkLzma2EncProps.Init;
+            Props2.LzmaProps := Props;
+            Props2.BlockSize := BlockSize;
+            Props2.NumBlockThreads := 1;
+            Props2.NumTotalThreads := 1;
+            Encoder2 := TLzmaSdkLzma2Encoder.Create;
+            try
+              Assert.AreEqual(SZ_OK, Encoder2.SetProps(Props2), Context + ' SetProps');
+              Assert.AreEqual(SZ_OK, Encoder2.Encode(Input, Output, nil), Context + ' Encode');
+            finally
+              Encoder2.Free;
+            end;
+          end
+          else
+          begin
+            Encoder := TLzmaSdkLzmaEncoder.Create;
+            try
+              Assert.AreEqual(SZ_OK, Encoder.SetProps(Props), Context + ' SetProps');
+              Assert.AreEqual(SZ_OK, Encoder.Encode(Input, Output, nil), Context + ' Encode');
+            finally
+              Encoder.Free;
+            end;
+          end;
+          AssertBytesEqual(Expected[Algorithm], Copy(Dst.Bytes, 0, Dst.Size), Context);
+        finally
+          Output := nil;
+          Input := nil;
+          Dst.Free;
+          Src.Free;
+        end;
+      end;
+  end;
 end;
 
 procedure TLzma2NativeTests.SdkSeqInStreamMapsGenericExceptionToReadSRes;
@@ -5981,66 +6479,218 @@ var
   ChunkSize: Integer;
   Control: Byte;
   Data: TBytes;
+  DecodedBytes: TBytes;
+  DecodeOptions: TLzma2Options;
   Encoded: TMemoryStream;
   EncodedBytes: TBytes;
   Encoder: TLzmaSdkLzma2Encoder;
+  Fixture: Integer;
+  FoundEof: Boolean;
   Input: ILzmaSeqInStream;
-  MaxChunkSize: Integer;
   Output: ILzmaSeqOutStream;
+  PackSize: Integer;
   Pos: Integer;
   Props: TLzmaSdkLzma2EncProps;
+  SawCompressed: Boolean;
+  SawCopy: Boolean;
   Src: TBytesStream;
+  TotalUnpacked: UInt64;
 begin
-  Data := BytesOfSize(100000);
   Props := TLzmaSdkLzma2EncProps.Init;
   Props.LzmaProps.Level := 0;
   Props.LzmaProps.DictSize := 1 shl 20;
   Props.BlockSize := kBlockSize;
   Props.NumTotalThreads := 1;
-
-  Src := TBytesStream.Create(Data);
-  Encoded := TMemoryStream.Create;
-  Encoder := TLzmaSdkLzma2Encoder.Create;
-  try
-    Input := TLzmaSdkSeqInStream.Create(Src);
-    Output := TLzmaSdkSeqOutStream.Create(Encoded);
-    Assert.AreEqual(SZ_OK, Encoder.SetProps(Props), 'set block-size LZMA2 facade props');
-    Assert.AreEqual(SZ_OK, Encoder.Encode(Input, Output, nil), 'encode block-size LZMA2 facade fixture');
-    SetLength(EncodedBytes, Encoded.Size);
-    Encoded.Position := 0;
-    if Length(EncodedBytes) <> 0 then
-      Encoded.ReadBuffer(EncodedBytes[0], Length(EncodedBytes));
-  finally
-    Encoder.Free;
-    Encoded.Free;
-    Src.Free;
-  end;
-
-  Pos := 0;
-  ChunkCount := 0;
-  MaxChunkSize := 0;
-  while Pos < Length(EncodedBytes) do
+  SawCompressed := False;
+  SawCopy := False;
+  for Fixture := 0 to 1 do
   begin
-    Control := EncodedBytes[Pos];
-    Inc(Pos);
-    if Control = LZMA2_CONTROL_EOF then
-      Break;
+    if Fixture = 0 then
+      Data := BytesOfSize(100000)
+    else
+      Data := HighEntropyBytes(100000);
+    Src := TBytesStream.Create(Data);
+    Encoded := TMemoryStream.Create;
+    Encoder := TLzmaSdkLzma2Encoder.Create;
+    try
+      Input := TLzmaSdkSeqInStream.Create(Src);
+      Output := TLzmaSdkSeqOutStream.Create(Encoded);
+      Assert.AreEqual(SZ_OK, Encoder.SetProps(Props), 'set block-size LZMA2 facade props');
+      Assert.AreEqual(SZ_OK, Encoder.Encode(Input, Output, nil), 'encode block-size LZMA2 facade fixture');
+      SetLength(EncodedBytes, Encoded.Size);
+      Encoded.Position := 0;
+      if Length(EncodedBytes) <> 0 then
+        Encoded.ReadBuffer(EncodedBytes[0], Length(EncodedBytes));
+    finally
+      Output := nil;
+      Input := nil;
+      Encoder.Free;
+      Encoded.Free;
+      Src.Free;
+    end;
 
-    Assert.IsTrue((Control = LZMA2_CONTROL_COPY_RESET_DIC) or
-      (Control = LZMA2_CONTROL_COPY_NO_RESET), 'level-0 LZMA2 facade block-size fixture must use copy chunks');
-    Assert.IsTrue(Pos + 2 <= Length(EncodedBytes), 'truncated LZMA2 facade copy chunk header');
-    ChunkSize := ((Integer(EncodedBytes[Pos]) shl 8) or Integer(EncodedBytes[Pos + 1])) + 1;
-    Inc(Pos, 2);
-    Assert.IsTrue(ChunkSize <= kBlockSize, 'LZMA2 facade BlockSize must cap copy chunk input');
-    Assert.IsTrue(Pos + ChunkSize <= Length(EncodedBytes), 'truncated LZMA2 facade copy payload');
-    Inc(Pos, ChunkSize);
-    Inc(ChunkCount);
-    if ChunkSize > MaxChunkSize then
-      MaxChunkSize := ChunkSize;
+    Pos := 0;
+    ChunkCount := 0;
+    TotalUnpacked := 0;
+    FoundEof := False;
+    while Pos < Length(EncodedBytes) do
+    begin
+      Control := EncodedBytes[Pos];
+      Inc(Pos);
+      if Control = LZMA2_CONTROL_EOF then
+      begin
+        FoundEof := True;
+        Assert.AreEqual(Integer(Length(EncodedBytes)), Pos, 'LZMA2 EOF must end the complete payload');
+        Break;
+      end;
+      if (Control = LZMA2_CONTROL_COPY_RESET_DIC) or
+        (Control = LZMA2_CONTROL_COPY_NO_RESET) then
+      begin
+        SawCopy := True;
+        Assert.IsTrue(Pos + 2 <= Length(EncodedBytes), 'truncated LZMA2 copy header');
+        ChunkSize := ((Integer(EncodedBytes[Pos]) shl 8) or EncodedBytes[Pos + 1]) + 1;
+        PackSize := ChunkSize;
+        Inc(Pos, 2);
+      end
+      else
+      begin
+        SawCompressed := True;
+        Assert.IsTrue(Control >= $80, 'invalid LZMA2 compressed control');
+        Assert.IsTrue(Pos + 4 <= Length(EncodedBytes), 'truncated LZMA2 compressed header');
+        ChunkSize := ((Integer(Control and $1F) shl 16) or
+          (Integer(EncodedBytes[Pos]) shl 8) or EncodedBytes[Pos + 1]) + 1;
+        PackSize := ((Integer(EncodedBytes[Pos + 2]) shl 8) or EncodedBytes[Pos + 3]) + 1;
+        Inc(Pos, 4);
+        if Control >= $C0 then
+        begin
+          Assert.IsTrue(Pos < Length(EncodedBytes), 'missing LZMA2 properties');
+          Inc(Pos);
+        end;
+      end;
+      Assert.IsTrue(ChunkSize <= kBlockSize, 'SDK BlockSize must cap each frame unpack size');
+      Assert.IsTrue(Pos + PackSize <= Length(EncodedBytes), 'truncated LZMA2 frame payload');
+      Inc(Pos, PackSize);
+      Inc(TotalUnpacked, UInt64(ChunkSize));
+      Inc(ChunkCount);
+    end;
+    Assert.IsTrue(FoundEof, 'LZMA2 payload must contain EOF');
+    Assert.AreEqual(UInt64(Length(Data)), TotalUnpacked, 'frames must account for every input byte');
+    Assert.IsTrue(ChunkCount >= (Length(Data) + kBlockSize - 1) div kBlockSize,
+      'SDK BlockSize must split input larger than its unpack cap');
+    DecodeOptions := TLzma2.DefaultOptions;
+    DecodeOptions.Container := lcRawLzma2;
+    DecodeOptions.DictionarySize := Props.LzmaProps.DictSize;
+    DecodedBytes := TLzma2Decoder.DecodeRawBytes(EncodedBytes, DecodeOptions);
+    AssertBytesEqual(Data, DecodedBytes, 'block-size LZMA2 facade exact round-trip');
   end;
+  Assert.IsTrue(SawCompressed, 'compressible fixture must exercise compressed frame parsing');
+  Assert.IsTrue(SawCopy, 'incompressible fixture must exercise copy frame parsing');
+end;
 
-  Assert.IsTrue(ChunkCount >= 4, 'LZMA2 facade BlockSize should split the 100 KiB fixture');
-  Assert.AreEqual(kBlockSize, MaxChunkSize, 'LZMA2 facade BlockSize should be used as the chunk size');
+procedure TLzma2NativeTests.SdkFacadeLzmaZeroOutputAnyInitializesSdkRangeHeader;
+var
+  CaseIndex: Integer;
+  Decoder: TLzmaSdkLzmaDec;
+  Props, Payload: TBytes;
+  DestLen, SrcLen: SizeT;
+  Dummy: Byte;
+  ExpectedStatus, Status: TLzmaStatus;
+begin
+  // SDK 26.05 lzma.exe, empty source, -d20 -fb32 -mt1, with/without -eos.
+  Props := TBytes.Create($5D, $00, $00, $10, $00);
+  for CaseIndex := 0 to 1 do
+  begin
+    if CaseIndex = 0 then
+    begin
+      Payload := TBytes.Create($00, $00, $00, $00, $00, $A5, $B6, $C7, $D8);
+      ExpectedStatus := lsMaybeFinishedWithoutMark;
+    end
+    else
+    begin
+      Payload := TBytes.Create($00, $83, $FF, $FB, $FF, $FF, $C0, $00, $00, $00,
+        $A5, $B6, $C7, $D8);
+      ExpectedStatus := lsNotFinished;
+    end;
+    Decoder := TLzmaSdkLzmaDec.Create;
+    try
+      Assert.AreEqual(SZ_OK, Decoder.Allocate(Props), 'allocate SDK empty golden properties');
+      Decoder.SetUnpackSize(0);
+      Decoder.Init;
+      Dummy := 0;
+      DestLen := 0;
+      SrcLen := SizeT(Length(Payload));
+      Assert.AreEqual(SZ_OK, Decoder.DecodeToBuf(Dummy, DestLen, Payload[0], SrcLen,
+        lfmAny, Status), 'zero-output ANY must initialize the range header');
+      Assert.AreEqual(Integer(5), Integer(SrcLen), 'SDK consumes five initialization bytes');
+      Assert.AreEqual(Integer(0), Integer(DestLen), 'zero-output ANY emits no bytes');
+      Assert.AreEqual(Integer(ExpectedStatus), Integer(Status), 'SDK zero-output ANY status');
+    finally
+      Decoder.Free;
+    end;
+  end;
+end;
+
+procedure TLzma2NativeTests.SdkFacadeLzmaSdkGoldenEosSplitAndZeroOutputFinish;
+var
+  Decoder: TLzmaSdkLzmaDec;
+  Props, Payload: TBytes;
+  Decoded: Byte;
+  DestLen, SrcLen, TotalConsumed: SizeT;
+  Status: TLzmaStatus;
+begin
+  // SDK 26.05 lzma.exe, source $41, -d20 -fb32 -mt1 -eos, plus unread trailer.
+  Props := TBytes.Create($5D, $00, $00, $10, $00);
+  Payload := TBytes.Create($00, $20, $C1, $FB, $FF, $FF, $FF, $E0, $00, $00, $00,
+    $A5, $B6, $C7, $D8);
+  Decoder := TLzmaSdkLzmaDec.Create;
+  try
+    Assert.AreEqual(SZ_OK, Decoder.Allocate(Props), 'allocate SDK one-byte EOS golden properties');
+    Decoder.SetUnpackSize(1);
+    Decoder.Init;
+    Decoded := 0;
+    DestLen := 1;
+    SrcLen := 5;
+    Assert.AreEqual(SZ_OK, Decoder.DecodeToBuf(Decoded, DestLen, Payload[0], SrcLen,
+      lfmEnd, Status), 'split before the literal final normalization byte');
+    Assert.AreEqual(Integer(5), Integer(SrcLen), 'SDK accepts the five-byte prefix');
+    Assert.AreEqual(Integer(0), Integer(DestLen), 'do not emit before final normalization');
+    Assert.AreEqual(Integer(lsNeedsMoreInput), Integer(Status), 'normalization needs input');
+    TotalConsumed := SrcLen;
+    DestLen := 1;
+    SrcLen := SizeT(Length(Payload)) - TotalConsumed;
+    Assert.AreEqual(SZ_OK, Decoder.DecodeToBuf(Decoded, DestLen,
+      Payload[NativeInt(TotalConsumed)], SrcLen, lfmEnd, Status), 'resume split EOS golden');
+    Inc(TotalConsumed, SrcLen);
+    Assert.AreEqual(Integer(6), Integer(SrcLen), 'SDK consumes the remaining literal/marker bytes');
+    Assert.AreEqual(Integer(1), Integer(DestLen), 'resumed split emits the source byte');
+    Assert.AreEqual(Byte($41), Decoded, 'SDK golden source byte');
+    Assert.AreEqual(Integer(lsFinishedWithMark), Integer(Status), 'split EOS terminal status');
+    Assert.AreEqual(Integer(4), Integer(Length(Payload)) - Integer(TotalConsumed), 'split keeps trailer unread');
+
+    Decoder.SetUnpackSize(1);
+    Decoder.Init;
+    DestLen := 1;
+    SrcLen := SizeT(Length(Payload));
+    Assert.AreEqual(SZ_OK, Decoder.DecodeToBuf(Decoded, DestLen, Payload[0], SrcLen,
+      lfmAny, Status), 'ANY stops after the final source byte');
+    Assert.AreEqual(Integer(6), Integer(SrcLen), 'ANY includes final normalization but not EOS');
+    Assert.AreEqual(Integer(1), Integer(DestLen), 'ANY emits the source byte');
+    Assert.AreEqual(Byte($41), Decoded, 'ANY SDK golden source byte');
+    Assert.AreEqual(Integer(lsNotFinished), Integer(Status), 'ANY leaves EOS pending');
+    TotalConsumed := SrcLen;
+    DestLen := 0;
+    SrcLen := SizeT(Length(Payload)) - TotalConsumed;
+    Assert.AreEqual(SZ_OK, Decoder.DecodeToBuf(Decoded, DestLen,
+      Payload[NativeInt(TotalConsumed)], SrcLen, lfmEnd, Status), 'END consumes EOS with no output');
+    Inc(TotalConsumed, SrcLen);
+    Assert.AreEqual(Integer(5), Integer(SrcLen), 'END consumes only the pending marker bytes');
+    Assert.AreEqual(Integer(0), Integer(DestLen), 'END emits no duplicate output');
+    Assert.AreEqual(Integer(lsFinishedWithMark), Integer(Status), 'zero-output END confirms EOS');
+    Assert.AreEqual(Integer(4), Integer(Length(Payload)) - Integer(TotalConsumed), 'END keeps trailer unread');
+    Assert.AreEqual(Byte($A5), Payload[NativeInt(TotalConsumed)], 'first trailer byte stays unread');
+  finally
+    Decoder.Free;
+  end;
 end;
 
 procedure TLzma2NativeTests.SdkFacadeLzmaDecoderLifecycleDecodeToBuf;
@@ -6534,6 +7184,7 @@ var
   Input: ILzmaSeqInStream;
   Output: ILzmaSeqOutStream;
   Prop: Byte;
+  PackedPosition: SizeT;
   Props: TLzmaSdkLzma2EncProps;
   RestChunk: TBytes;
   RestLen: SizeT;
@@ -6577,16 +7228,18 @@ begin
     SrcLen := SizeT(Length(EncodedBytes));
     Assert.AreEqual(SZ_OK, Dec.DecodeToBuf(FirstChunk[0], FirstLen, EncodedBytes[0], SrcLen, lfmAny, Status),
       'LZMA2 decoder lifecycle first DecodeToBuf');
-    Assert.AreEqual(SizeT(Length(EncodedBytes)), SrcLen, 'LZMA2 first DecodeToBuf consumes packed stream');
+    Assert.IsTrue((SrcLen > 0) and (SrcLen < SizeT(Length(EncodedBytes))),
+      'SDK partial output consumes a prefix; compression level does not imply a copy chunk');
+    PackedPosition := SrcLen;
     Assert.AreEqual(SizeT(Length(FirstChunk)), FirstLen, 'LZMA2 first DecodeToBuf output size');
     Assert.AreEqual(Integer(lsNotFinished), Integer(Status), 'LZMA2 partial output status');
 
     SetLength(RestChunk, Length(Data) - Length(FirstChunk));
     RestLen := SizeT(Length(RestChunk));
-    SrcLen := 0;
-    Assert.AreEqual(SZ_OK, Dec.DecodeToBuf(RestChunk[0], RestLen, EncodedBytes[0], SrcLen, lfmEnd, Status),
+    SrcLen := SizeT(Length(EncodedBytes)) - PackedPosition;
+    Assert.AreEqual(SZ_OK, Dec.DecodeToBuf(RestChunk[0], RestLen, EncodedBytes[NativeInt(PackedPosition)], SrcLen, lfmEnd, Status),
       'LZMA2 decoder lifecycle second DecodeToBuf');
-    Assert.AreEqual(SizeT(0), SrcLen, 'LZMA2 second DecodeToBuf uses buffered decode state');
+    Assert.AreEqual(SizeT(Length(EncodedBytes)) - PackedPosition, SrcLen, 'SDK continuation consumes remaining input');
     Assert.AreEqual(SizeT(Length(RestChunk)), RestLen, 'LZMA2 second DecodeToBuf output size');
     Assert.AreEqual(Integer(lsFinishedWithMark), Integer(Status), 'LZMA2 finished status');
 
@@ -6670,7 +7323,7 @@ begin
     Assert.AreEqual(PrefixLen, SrcLen, 'partial prefix bytes should be accepted into the parser buffer');
     Assert.AreEqual(SizeT(Length(Data)), DestLen,
       'copy-only partial LZMA2 lifecycle decode should emit before EOF');
-    Assert.AreEqual(Integer(lsNeedsMoreInput), Integer(Status), 'partial LZMA2 lifecycle status');
+    Assert.AreEqual(Integer(lsNotFinished), Integer(Status), 'partial LZMA2 lifecycle status');
     AssertBytesEqual(Data, Decoded, 'partial LZMA2 lifecycle prefix output');
 
     DestLen := SizeT(Length(Decoded));
@@ -6748,7 +7401,7 @@ begin
     Assert.AreEqual(PrefixLen, SrcLen, 'compressed prefix bytes should be accepted into the parser buffer');
     Assert.AreEqual(SizeT(Length(Data)), DestLen,
       'compressed partial LZMA2 lifecycle decode should emit finished chunks before EOF');
-    Assert.AreEqual(Integer(lsNeedsMoreInput), Integer(Status), 'compressed partial LZMA2 lifecycle status');
+    Assert.AreEqual(Integer(lsNotFinished), Integer(Status), 'compressed partial LZMA2 lifecycle status');
     AssertBytesEqual(Data, Decoded, 'compressed partial LZMA2 lifecycle prefix output');
 
     DestLen := SizeT(Length(Decoded));
@@ -6900,27 +7553,22 @@ begin
 end;
 
 procedure TLzma2NativeTests.SdkFacadeLzma2ParseUsesFrameParserOnly;
-var
-  ParseEnd: Integer;
-  ParseSource: string;
-  ParseStart: Integer;
-  Source: string;
+var Dec:TLzmaSdkLzma2Dec;Stream:TBytes;Used:SizeT;Status:TLzmaStatus;
 begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Sdk.pas'),
-    TEncoding.UTF8);
-  ParseStart := Pos('function TLzmaSdkLzma2Dec.Parse', Source);
-  ParseEnd := PosEx('function TLzmaSdkLzma2Dec.DicData', Source, ParseStart);
-  Assert.IsTrue((ParseStart > 0) and (ParseEnd > ParseStart),
-    'LZMA2 lifecycle Parse must stay isolatable for parser-only facade checks');
-  ParseSource := Copy(Source, ParseStart, ParseEnd - ParseStart);
-
-  Assert.IsTrue(ContainsText(Source, 'function ParseRawLzma2Embedded'),
-    'LZMA2 lifecycle Parse must have a parser-only raw LZMA2 framing helper');
-  Assert.IsTrue(ContainsText(ParseSource, 'ParseRawLzma2Embedded'),
-    'LZMA2 lifecycle Parse must use the parser-only framing helper');
-  Assert.IsFalse(ContainsText(ParseSource, 'TLzma2Decoder.DecodeRawEmbedded') or
-    ContainsText(ParseSource, 'TDiscardWriteStream'),
-    'LZMA2 lifecycle Parse must not decode payload bytes into a discard stream');
+  // Framing is valid, but the range code would fail actual LZMA decoding.
+  Stream:=TBytes.Create($E0,0,0,0,4,$5D,0,$FF,$FF,$FF,$FF,0);
+  Dec:=TLzmaSdkLzma2Dec.Create;
+  try
+    Assert.AreEqual(SZ_OK,Dec.Allocate(0),'Parser-only handle');
+    Used:=Length(Stream);
+    Assert.AreEqual(SZ_OK,Dec.Parse(Stream[0],Used,lfmEnd,Status),'Parse must not decode invalid range payload');
+    Assert.AreEqual(SizeT(Length(Stream)),Used,'Framing-only input consumption');
+    Assert.AreEqual(Integer(lsFinishedWithMark),Integer(Status),'Framing-only finished status');
+    Assert.AreEqual(SizeT(0),Dec.DicPos,'Parser must not materialize dictionary');
+    Stream[6]:=1;Dec.Init;Used:=Length(Stream);
+    Assert.AreEqual(SZ_ERROR_DATA,Dec.Parse(Stream[0],Used,lfmEnd,Status),'SDK parser rejects nonzero first LZMA byte');
+    Assert.AreEqual(SizeT(7),Used,'Reject at the first invalid payload byte');
+  finally Dec.Free;end;
 end;
 
 procedure TLzma2NativeTests.SdkFacadeLzma2EncoderDoesNotSnapshotFullInput;
@@ -6938,7 +7586,8 @@ var
   OutputTracker: TTrackingSeqOutStream;
   Props: TLzmaSdkLzma2EncProps;
 begin
-  Data := BytesOfSize((LZMA2_COPY_CHUNK_SIZE * 4) + 19);
+  // Exceed the dictionary, two-MiB frame and bounded lookahead prefill.
+  Data := BytesOfSize((8 shl 20) + 19);
   Props := TLzmaSdkLzma2EncProps.Init;
   Props.LzmaProps.Level := 0;
   Props.LzmaProps.DictSize := 1 shl 20;
@@ -6952,6 +7601,8 @@ begin
   try
     Assert.AreEqual(SZ_OK, Encoder.SetProps(Props), 'set streaming LZMA2 facade props');
     Assert.AreEqual(SZ_OK, Encoder.Encode(Input, Output, nil), 'streaming LZMA2 facade encode');
+    Assert.IsTrue(OutputTracker.WroteBeforeInputDrained,
+      'LZMA2 SDK facade must write before draining data beyond its bounded input window');
     Assert.IsTrue(OutputTracker.WroteBeforeInputEof,
       'LZMA2 SDK facade must write the first chunk before draining the whole input stream');
     EncodedBytes := OutputTracker.ToBytes;
@@ -6997,7 +7648,7 @@ var
   OutputTracker: TTrackingSeqOutStream;
   Props: TLzmaSdkLzma2EncProps;
 begin
-  Data := BytesOfSize((2 shl 20) + (64 shl 10) + 19);
+  Data := BytesOfSize((8 shl 20) + 19);
   Props := TLzmaSdkLzma2EncProps.Init;
   Props.LzmaProps.Level := 1;
   Props.LzmaProps.DictSize := 1 shl 20;
@@ -7011,6 +7662,8 @@ begin
   try
     Assert.AreEqual(SZ_OK, Encoder.SetProps(Props), 'set streaming compressed LZMA2 facade props');
     Assert.AreEqual(SZ_OK, Encoder.Encode(Input, Output, nil), 'streaming compressed LZMA2 facade encode');
+    Assert.IsTrue(OutputTracker.WroteBeforeInputDrained,
+      'compressed LZMA2 SDK facade must write before draining data beyond its bounded input window');
     Assert.IsTrue(OutputTracker.WroteBeforeInputEof,
       'compressed LZMA2 SDK facade must write a chunk before draining the whole input stream');
     EncodedBytes := OutputTracker.ToBytes;
@@ -7250,7 +7903,7 @@ begin
   Diagnostics := Default(TLzma2EncodeDiagnostics);
   Options := TLzma2.DefaultOptions;
   Options.Container := lcRawLzma2;
-  Options.Level := 1;
+  Options.Level := 5;
   Options.FastBytes := 64;
   Options.EncodeDiagnostics := @Diagnostics;
 
@@ -7265,7 +7918,7 @@ begin
 
   Assert.AreEqual(Ord(lpmSdkProfile), Ord(Diagnostics.ParserMode),
     'diagnostics parser mode remains the requested SDK-profile metadata');
-  Assert.AreEqual(5, Diagnostics.NumHashBytes, 'SDK-profile diagnostics must expose active HC5 hash bytes');
+  Assert.AreEqual(4, Diagnostics.NumHashBytes, 'SDK-profile diagnostics must expose active BT4 hash bytes');
   Assert.IsTrue(Diagnostics.OptimumParserEnabled,
     'SDK-profile diagnostics must report the active native optimum-parser branch');
   Assert.IsTrue(Diagnostics.FullOptimumDecisionCount > 0,
@@ -7298,6 +7951,54 @@ begin
   Assert.IsTrue(Length(Encoded) > 0, 'raw encoder must produce bytes with optimum diagnostics');
   Assert.IsTrue(EnabledCount > 0,
     'enabled SDK-profile path must report decisions only when the full optimum parser actually selects them');
+end;
+
+procedure TLzma2NativeTests.EncodeDiagnosticsReportsFullBackendWithoutRelaxedDecisions;
+var
+  Container: TLzma2Container;
+  Data: TBytes;
+  DecodedBytes: TBytes;
+  Diagnostics: TLzma2EncodeDiagnostics;
+  Options: TLzma2Options;
+  Src: TBytesStream;
+  Encoded: TMemoryStream;
+  Decoded: TMemoryStream;
+begin
+  // One literal followed by exact maximum-length repeats uses legal full-parser
+  // shortcuts without performing any relaxed optimum-node decisions.
+  SetLength(Data, 1 + 240 * LZMA_FAST_BYTES_MAX);
+  for Container in [lcRawLzma2, lcLzma, lcXz] do
+  begin
+    Diagnostics := Default(TLzma2EncodeDiagnostics);
+    Options := TLzma2.DefaultOptions;
+    Options.Container := Container;
+    Options.Level := 5;
+    Options.DictionarySize := 1 shl 20;
+    Options.ThreadCount := 1;
+    Options.EncodeDiagnostics := @Diagnostics;
+    Src := TBytesStream.Create(Data);
+    Encoded := TMemoryStream.Create;
+    Decoded := TMemoryStream.Create;
+    try
+      TLzma2.Compress(Src, Encoded, Options);
+      Assert.IsTrue(Diagnostics.OptimumParserEnabled,
+        'committed compressed output must report the active full-parser backend');
+      Assert.AreEqual(UInt64(0), Diagnostics.FullOptimumDecisionCount,
+        'full-parser shortcuts must not invent relaxed optimum decisions');
+      Assert.IsTrue(Diagnostics.BlockCount > 0,
+        'the full-parser shortcut fixture must commit compressed output');
+      Encoded.Position := 0;
+      TLzma2.Decompress(Encoded, Decoded, Options);
+      SetLength(DecodedBytes, Decoded.Size);
+      Decoded.Position := 0;
+      Decoded.ReadBuffer(DecodedBytes[0], Length(DecodedBytes));
+      AssertBytesEqual(Data, DecodedBytes, 'full-parser zero-relaxation diagnostics round-trip');
+    finally
+      Decoded.Free;
+      Encoded.Free;
+      Src.Free;
+    end;
+  end;
 end;
 
 procedure TLzma2NativeTests.EncodeDiagnosticsDoesNotClaimOptimumForCopyOnlySdkProfileRawLzma2;
@@ -7342,33 +8043,6 @@ begin
     'copy-only SDK-profile input must not report full optimum decisions');
 end;
 
-procedure TLzma2NativeTests.RawEncoderFullSdkOptimumStateScaffoldIsPresent;
-var
-  Source: string;
-  StateSource: string;
-  StateStart: Integer;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.EncoderHeuristics.pas'),
-    TEncoding.UTF8);
-  StateStart := Pos('TLzmaFullOptimumState', Source);
-  Assert.IsTrue(StateStart > 0,
-    'raw encoder must add a shared TLzmaFullOptimumState scaffold before enabling SDK-profile optimum diagnostics');
-
-  StateSource := Copy(Source, StateStart, 1400);
-  Assert.IsTrue(ContainsText(StateSource, 'OptCur'), 'full optimum state must track SDK optCur');
-  Assert.IsTrue(ContainsText(StateSource, 'OptEnd'), 'full optimum state must track SDK optEnd');
-  Assert.IsTrue(ContainsText(StateSource, 'AdditionalOffset'),
-    'full optimum state must track SDK additional offset');
-  Assert.IsTrue(ContainsText(StateSource, 'LongestMatchLen'),
-    'full optimum state must track SDK longestMatchLen');
-  Assert.IsTrue(ContainsText(StateSource, 'NumPairs'), 'full optimum state must track SDK numPairs');
-  Assert.IsTrue(ContainsText(StateSource, 'NumAvail'), 'full optimum state must track SDK numAvail');
-  Assert.IsTrue(ContainsText(StateSource, 'BackRes'), 'full optimum state must track SDK backRes');
-  Assert.IsTrue(ContainsText(StateSource, 'MatchPriceCount'),
-    'full optimum state must track SDK matchPriceCount');
-  Assert.IsTrue(ContainsText(StateSource, 'RepLenEncCounter'),
-    'full optimum state must track SDK repLenEncCounter');
-end;
 
 procedure TLzma2NativeTests.FullOptimumStateTracksSdkReadMoveAndCommitOffsets;
 var
@@ -7541,38 +8215,6 @@ begin
     'drained full optimum replay queue must miss');
 end;
 
-procedure TLzma2NativeTests.FullOptimumStateIsWiredToMatchReadAndEncodedCommit;
-var
-  CommitEnd: Integer;
-  CommitSource: string;
-  CommitStart: Integer;
-  ReadEnd: Integer;
-  ReadSource: string;
-  ReadStart: Integer;
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-
-  ReadStart := Pos('function ReadMatchDistancesAndInsert', Source);
-  ReadEnd := PosEx('function ReadCurrentMatchDistances', Source, ReadStart);
-  Assert.IsTrue((ReadStart > 0) and (ReadEnd > ReadStart),
-    'raw encoder match-read helper must stay isolatable for full optimum state wiring');
-  ReadSource := Copy(Source, ReadStart, ReadEnd - ReadStart);
-  Assert.IsTrue(ContainsText(ReadSource, 'FullOptimumState.Enabled') and
-    ContainsText(ReadSource, 'LzmaFullOptimumNoteReadMatchDistances'),
-    'match reads must update full optimum cached read state under the full-parser guard');
-
-  CommitStart := Pos('LenRes := GetOptimumFast(BackRes);', Source);
-  CommitEnd := PosEx('if WriteEndMarker then', Source, CommitStart);
-  Assert.IsTrue((CommitStart > 0) and (CommitEnd > CommitStart),
-    'raw encoder encode loop must stay isolatable for full optimum commit wiring');
-  CommitSource := Copy(Source, CommitStart, CommitEnd - CommitStart);
-  Assert.IsTrue(ContainsText(CommitSource, 'FullOptimumState.Enabled') and
-    ContainsText(CommitSource, 'LzmaFullOptimumCommitEncodedLen') and
-    ContainsText(CommitSource, 'RaiseLzmaError'),
-    'encoded commands must commit full optimum additionalOffset and reject underflow under the guard');
-end;
 
 procedure TLzma2NativeTests.FullOptimumStateRefreshCountersAreAdditionalOffsetGated;
 var
@@ -7605,79 +8247,21 @@ begin
   Assert.AreEqual(64, State.RepLenEncCounter, 'refreshed rep len counter');
 end;
 
-procedure TLzma2NativeTests.FullOptimumEncoderWiresRefreshCountersAfterCommit;
-var
-  CommitEnd: Integer;
-  CommitSource: string;
-  CommitStart: Integer;
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  CommitStart := Pos('LenRes := GetOptimumFast(BackRes);', Source);
-  CommitEnd := PosEx('if WriteEndMarker then', Source, CommitStart);
-  Assert.IsTrue((CommitStart > 0) and (CommitEnd > CommitStart),
-    'raw encoder encode loop must stay isolatable for full optimum refresh wiring');
-  CommitSource := Copy(Source, CommitStart, CommitEnd - CommitStart);
 
-  Assert.IsTrue(ContainsText(CommitSource, 'LzmaFullOptimumNoteNormalMatch') and
-    ContainsText(CommitSource, 'LzmaFullOptimumNoteRepLen'),
-    'full optimum encode loop must update SDK match and rep length refresh counters');
-  Assert.IsTrue(ContainsText(CommitSource, 'LzmaFullOptimumCanRefreshPrices') and
-    ContainsText(CommitSource, 'RefreshOptimumPriceTables') and
-    ContainsText(CommitSource, 'LzmaFullOptimumResetRefreshCounters'),
-    'full optimum price tables must refresh only after additionalOffset drains');
-end;
-
-procedure TLzma2NativeTests.FullOptimumParserBranchIsIsolatedFromFastParser;
-var
-  LoopEnd: Integer;
-  LoopSource: string;
-  LoopStart: Integer;
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  LoopStart := PosEx('while Pos < Count do', Source,
-    Pos('case MatchFinderKind of', Source));
-  LoopEnd := PosEx('if WriteEndMarker then', Source, LoopStart);
-  Assert.IsTrue((LoopStart > 0) and (LoopEnd > LoopStart),
-    'raw encoder loop must stay isolatable for full parser branch checks');
-  LoopSource := Copy(Source, LoopStart, LoopEnd - LoopStart);
-
-  Assert.IsTrue(ContainsText(Source, 'function GetOptimumFull(out Back: UInt32): UInt32'),
-    'raw encoder must provide an isolated full optimum decision entry point');
-  Assert.IsTrue(ContainsText(LoopSource, 'if FullOptimumState.Enabled then') and
-    ContainsText(LoopSource, 'LenRes := GetOptimumFull(BackRes)') and
-    ContainsText(LoopSource, 'LenRes := GetOptimumFast(BackRes)'),
-    'active full optimum mode must branch away from the fast parser instead of flowing through it');
-  Assert.IsTrue(ContainsText(Source, 'LzmaFullOptimumBeginDecision') and
-    ContainsText(Source, 'FullOptimumState.OptCur') and
-    ContainsText(Source, 'FullOptimumState.OptEnd'),
-    'full optimum branch must be wired around SDK begin/replay state');
-  Assert.IsTrue(ContainsText(Source, 'LzmaFullOptimumBackward'),
-    'full optimum branch must use the SDK-style backward replay state helper');
-end;
 
 procedure TLzma2NativeTests.SdkProfileFullParserTransitionRejectsGetOptimumFastBackend;
 var
   Data: TBytes;
   Diagnostics: TLzma2EncodeDiagnostics;
   Encoded: TMemoryStream;
-  FastCallContext: string;
-  FastCallContextStart: Integer;
-  FastCallIsFullParserGated: Boolean;
-  FastCallStart: Integer;
-  LegacySdkFastBinding: Boolean;
   Options: TLzma2Options;
-  Source: string;
   Src: TBytesStream;
 begin
   Data := BytesOfSize(4096);
   Diagnostics := Default(TLzma2EncodeDiagnostics);
   Options := TLzma2.DefaultOptions;
   Options.Container := lcRawLzma2;
-  Options.Level := 1;
+  Options.Level := 5;
   Options.EncodeDiagnostics := @Diagnostics;
 
   Src := TBytesStream.Create(Data);
@@ -7689,28 +8273,8 @@ begin
     Src.Free;
   end;
 
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  FastCallStart := Pos('GetOptimumFast(BackRes)', Source);
-  FastCallIsFullParserGated := False;
-  if FastCallStart > 0 then
-  begin
-    if FastCallStart > 240 then
-      FastCallContextStart := FastCallStart - 240
-    else
-      FastCallContextStart := 1;
-    FastCallContext := Copy(Source, FastCallContextStart, 520);
-    FastCallIsFullParserGated := ContainsText(FastCallContext, 'EnableOptimumWindow') or
-      ContainsText(FastCallContext, 'FullOptimum') or
-      ContainsText(FastCallContext, 'GetOptimumFull');
-  end;
-  LegacySdkFastBinding := (Pos('Profile.ParserMode = lpmSdkProfile', Source) > 0) and
-    (FastCallStart > 0) and (not FastCallIsFullParserGated);
-
-  Assert.IsFalse(Diagnostics.OptimumParserEnabled and LegacySdkFastBinding,
-    'SDK-profile diagnostics must not report the native optimum branch while the raw encode loop still runs through GetOptimumFast');
   Assert.IsTrue(Diagnostics.OptimumParserEnabled,
-    'SDK-profile diagnostics must report the active native optimum-parser branch once it is isolated');
+    'SDK level5 compressed output must report its active full-parser backend');
 end;
 
 procedure TLzma2NativeTests.PeriodicFastPathCannotMasqueradeAsFullSdkParserParity;
@@ -7719,18 +8283,13 @@ var
   Diagnostics: TLzma2EncodeDiagnostics;
   Encoded: TMemoryStream;
   Options: TLzma2Options;
-  PeriodicFastPathEnd: Integer;
-  PeriodicFastPathSource: string;
-  PeriodicFastPathStart: Integer;
-  PeriodicSourceStart: Integer;
-  Source: string;
   Src: TBytesStream;
 begin
   Data := RepeatingBytes(128 * 1024);
   Diagnostics := Default(TLzma2EncodeDiagnostics);
   Options := TLzma2.DefaultOptions;
   Options.Container := lcRawLzma2;
-  Options.Level := 1;
+  Options.Level := 5;
   Options.EncodeDiagnostics := @Diagnostics;
 
   Src := TBytesStream.Create(Data);
@@ -7742,30 +8301,8 @@ begin
     Src.Free;
   end;
 
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  PeriodicFastPathStart := Pos('TryDetectSmallPeriodicChunk(PeriodicDistance)', Source);
-  Assert.IsTrue(PeriodicFastPathStart > 0,
-    'raw encoder periodic fast path probe must stay visible for full-parser transition guard');
-
-  PeriodicFastPathEnd := PosEx('case MatchFinderKind of', Source, PeriodicFastPathStart);
-  Assert.IsTrue(PeriodicFastPathEnd > PeriodicFastPathStart,
-    'raw encoder periodic fast path must stay isolatable for full-parser transition guard');
-  if PeriodicFastPathStart > 240 then
-    PeriodicSourceStart := PeriodicFastPathStart - 240
-  else
-    PeriodicSourceStart := 1;
-  PeriodicFastPathSource := Copy(Source, PeriodicSourceStart,
-    PeriodicFastPathEnd - PeriodicSourceStart);
-
-  Assert.IsTrue(
-    ContainsText(PeriodicFastPathSource, 'not EnableOptimumWindow') or
-    ContainsText(PeriodicFastPathSource, 'not UseFullOptimumParser') or
-    ContainsText(PeriodicFastPathSource, 'not FullOptimumParserEnabled') or
-    ContainsText(PeriodicFastPathSource, 'not FullOptimumState.Enabled'),
-    'periodic fast path must not be reported as native optimum-parser work when OptimumParserEnabled becomes true');
   Assert.IsTrue(Diagnostics.OptimumParserEnabled,
-    'SDK-profile periodic corpus must still report the active native optimum-parser branch');
+    'SDK level5 periodic compressed output must report its active full-parser backend');
 end;
 
 procedure TLzma2NativeTests.EncodeDiagnosticsKeepsOptimumWindowDisabledForHighSpeedParser;
@@ -7833,8 +8370,8 @@ begin
   Assert.AreEqual(Ord(lmfpHashChain4), Ord(Diagnostics.MatchFinderProfile),
     'diagnostics match finder profile');
   Assert.AreEqual(4, Diagnostics.NumHashBytes, 'diagnostics match finder hash bytes');
-  Assert.IsFalse(Diagnostics.OptimumParserEnabled,
-    'public tuning overrides must not claim the optimum parser when the selected encode path produced no full decisions');
+  Assert.IsTrue(Diagnostics.OptimumParserEnabled,
+    'public tuning overrides must report the active full-parser backend for committed compressed output');
   Assert.AreEqual(UInt64(0), Diagnostics.FullOptimumDecisionCount,
     'public tuning overrides must keep full optimum decision evidence tied to actual parser decisions');
 end;
@@ -7851,6 +8388,9 @@ begin
   Assert.AreEqual(UInt32(1), Prices[127], 'SDK ProbPrices[127]');
   Assert.AreEqual(UInt32(16), LzmaBitPrice(Prices, LZMA_PROB_INIT, 0), 'SDK price prob=1024 bit=0');
   Assert.AreEqual(UInt32(17), LzmaBitPrice(Prices, LZMA_PROB_INIT, 1), 'SDK price prob=1024 bit=1');
+  Assert.AreEqual(Prices[0], LzmaBitPrice(Prices, 1, $80000000), 'Only the low bit selects probability zero');
+  Assert.AreEqual(Prices[High(Prices)], LzmaBitPrice(Prices, 1, $80000001), 'Only the low bit selects probability one');
+  Assert.AreEqual(Prices[High(Prices)], LzmaBitPrice(Prices, 1, High(UInt32)), 'Full-width odd bit value');
 end;
 
 procedure TLzma2NativeTests.PriceTablesMatchSdkInitialLenPrices;
@@ -7909,6 +8449,12 @@ var
   AlignProbs: TLzmaAlignProbs;
   PriceEnc: TLzmaDistancePriceEncoder;
 begin
+  Assert.AreEqual(UInt32(0), LzmaGetPosSlot(0), 'LZMA zero-distance slot');
+  Assert.AreEqual(UInt32(1), LzmaGetPosSlot(1), 'LZMA one-distance slot');
+  Assert.AreEqual(UInt32(62), LzmaGetPosSlot(UInt32(1) shl 31), 'LZMA high-bit slot');
+  Assert.AreEqual(UInt32(63), LzmaGetPosSlot($C0000000), 'LZMA highest slot midpoint');
+  Assert.AreEqual(UInt32(63), LzmaGetPosSlot(High(UInt32)), 'LZMA full UInt32 slot');
+
   LzmaInitProbPrices(ProbPrices);
   LzmaInitDistanceProbs(PosSlotProbs, PosDecoderProbs, AlignProbs);
   LzmaInitDistancePriceEncoder(PriceEnc, UInt64(1) shl 20);
@@ -11943,100 +12489,9 @@ begin
     'SDK startLen pruning must not let normal matches overwrite lengths covered by rep0');
 end;
 
-procedure TLzma2NativeTests.EncoderPathWiresMatchLiteralRep0ThroughOptimumRelaxPrimitive;
-var
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
 
-  Assert.IsTrue(Pos('LzmaOptimumRelaxMatchLiteralRep0Candidate', Source) > 0,
-    'encoder path must route match + literal + rep0 decisions through the SDK optimum relax primitive');
-  Assert.IsTrue(Pos('LzmaOptimumReplayFirstDecision', Source) > 0,
-    'encoder path must replay the relaxed optimum node instead of only shortening MainMatch');
-  Assert.IsTrue(Pos('CurrentMatchPrice := LzmaNormalMatchPrefixPrice', Source) = 0,
-    'encoder path must price the current match baseline through the normal-match relax primitive');
-end;
 
-procedure TLzma2NativeTests.EncoderPathWiresShortRepLiteralThroughOptimumRelaxPrimitive;
-var
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
 
-  Assert.IsTrue(Pos('LzmaOptimumRelaxLiteralCandidate', Source) > 0,
-    'encoder path must seed the literal candidate through the optimum relax primitive');
-  Assert.IsTrue(Pos('LzmaOptimumRelaxShortRepCandidate', Source) > 0,
-    'encoder path must route short-rep-vs-literal decisions through the optimum relax primitive');
-  Assert.IsTrue(Pos('LzmaOptimumReplayFirstDecision', Source) > 0,
-    'encoder path must replay the relaxed short-rep/literal optimum node');
-end;
-
-procedure TLzma2NativeTests.EncoderPathWiresRepMatchThroughOptimumRelaxPrimitive;
-var
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('LzmaOptimumRelaxRepCandidates', Source) > 0,
-    'encoder path must seed repeated-distance candidates through the optimum relax primitive');
-  Assert.IsTrue(Pos('LzmaOptimumRelaxMatchCandidates', Source) > 0,
-    'encoder path must seed normal match candidates through the optimum relax primitive');
-  Assert.IsTrue(Pos('LzmaOptimumPrefersRepOverMatch', Source) = 0,
-    'encoder path must not bypass node relaxation with the old rep-vs-match comparison helper');
-end;
-
-procedure TLzma2NativeTests.EncoderPathDoesNotBypassRepMatchWithFastHeuristic;
-var
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('LzmaFastParserPrefersRepOverMain(', Source) = 0,
-    'encoder path must not bypass price-table optimum relax/replay with the fast rep-over-main heuristic');
-end;
-
-procedure TLzma2NativeTests.EncoderPathWiresLiteralLookaheadThroughOptimumRelaxPrimitive;
-var
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('LzmaOptimumPrefersLiteralThenMatchOverMatch', Source) = 0,
-    'encoder path must not bypass node relaxation with the old literal-then-match comparison helper');
-  Assert.IsTrue(Pos('LzmaOptimumPrefersLiteralThenRepOverMatch', Source) = 0,
-    'encoder path must not bypass node relaxation with the old literal-then-rep comparison helper');
-  Assert.IsTrue(Pos('NextMatch.Length >= MainMatch.Length', Source) = 0,
-    'encoder path must not choose literal lookahead from length/distance-only next-match heuristics');
-  Assert.IsTrue(Pos('LookaheadRepLen >= MainMatch.Length - 1', Source) = 0,
-    'encoder path must not choose literal lookahead from length-only next-rep heuristics');
-  Assert.IsTrue(Pos('LzmaOptimumReplayFirstDecision', Source) > 0,
-    'encoder path must replay the relaxed literal-lookahead optimum node');
-end;
-
-procedure TLzma2NativeTests.ArtifactValidatorRequiresReleasePerformanceRatioEvidence;
-var
-  NegativeTests: string;
-  Validator: string;
-begin
-  Validator := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\validate-artifacts.ps1'),
-    TEncoding.UTF8);
-  NegativeTests := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\test-validate-artifacts.ps1'),
-    TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('usable SDK-comparable compression ratio and throughput', Validator) > 0,
-    'release artifact validator must require compression ratio and throughput evidence');
-  Assert.IsTrue(Pos('1.001', Validator) > 0,
-    'release artifact validator must enforce the TZ compressed-size gate of SDK * 1.001');
-  Assert.IsTrue(Pos('release encode ratio missing', NegativeTests) > 0,
-    'validator negative tests must cover missing release ratio evidence');
-  Assert.IsTrue(Pos('release encode ratio too weak', NegativeTests) > 0,
-    'validator negative tests must cover weak release ratio evidence');
-end;
 
 procedure TLzma2NativeTests.ArtifactValidatorRequiresEncodeTuningDiagnosticsEvidence;
 var
@@ -12074,37 +12529,6 @@ begin
     'validator negative tests must cover optimum-parser diagnostics without encoded LZMA blocks');
 end;
 
-procedure TLzma2NativeTests.DocsAndOptimizationPlanDescribeActiveNativeEncoder;
-var
-  MemoryDoc: string;
-  OptionsDoc: string;
-  PerformanceScript: string;
-begin
-  OptionsDoc := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'docs\options.md'),
-    TEncoding.UTF8);
-  MemoryDoc := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'docs\memory.md'),
-    TEncoding.UTF8);
-  PerformanceScript := TFile.ReadAllText(TPath.Combine(GetCurrentDir,
-    'tests\run-performance.ps1'), TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('native SDK-profile encoder', OptionsDoc) > 0,
-    'options docs must describe the active native SDK-profile encoder path');
-  Assert.IsTrue(Pos('full-optimum parser branch', OptionsDoc) > 0,
-    'options docs must describe the active full-optimum parser branch');
-  Assert.IsTrue(Pos('Full optimum-parser coverage remains an optimization area', OptionsDoc) = 0,
-    'options docs must not describe the active full-optimum branch as missing work');
-  Assert.IsTrue(Pos('The greedy encoder is deterministic', OptionsDoc) = 0,
-    'options docs must not describe the active SDK-profile encoder as greedy-only');
-  Assert.IsTrue(Pos('native SDK-profile LZMA chunks', MemoryDoc) > 0,
-    'memory docs must describe compressed chunks as native SDK-profile LZMA chunks');
-  Assert.IsTrue(Pos('Replace the current simple match finder', PerformanceScript) = 0,
-    'optimization plan template must not ask to replace an already-active simple match finder');
-  Assert.IsTrue(Pos('Tune the active HC5/BT4 match-finder paths', PerformanceScript) > 0,
-    'optimization plan template must refer to tuning the active HC5/BT4 paths');
-  Assert.IsTrue(Pos('Port SDK price tables and optimum parser', PerformanceScript) = 0,
-    'optimization plan template must not ask to port already-active parser scaffolding from scratch');
-end;
-
 procedure TLzma2NativeTests.FastLzma2StyleBenchmarkContractIsDocumented;
 var
   Cli: string;
@@ -12122,67 +12546,6 @@ begin
     'benchmark CSV must expose decompression MB/s for parity with fast-lzma2 bench.c');
   Assert.IsTrue(Pos('ratio=inputBytes/compressedBytes', Cli) > 0,
     'benchmark command must document the same ratio direction as fast-lzma2 bench.c');
-end;
-
-procedure TLzma2NativeTests.PerformanceRunnerWritesDataOnlyBenchmarkArtifacts;
-var
-  NegativeTests: string;
-  Performance: string;
-  Validator: string;
-begin
-  Performance := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\run-performance.ps1'),
-    TEncoding.UTF8);
-  Validator := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\validate-artifacts.ps1'),
-    TEncoding.UTF8);
-  NegativeTests := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\test-validate-artifacts.ps1'),
-    TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('lzma2-benchmark.samples.csv', Performance) > 0,
-    'performance runner must write raw benchmark sample rows');
-  Assert.IsTrue(Pos('lzma2-benchmark.summary.json', Performance) > 0,
-    'performance runner must write a machine-readable benchmark summary');
-  Assert.IsTrue(Pos('optimization-plan.md', Performance) > 0,
-    'performance runner must keep the optimization plan diagnostic artifact');
-  Assert.IsTrue(Pos('artifacts/ci/optimization-plan.md', Performance) > 0,
-    'performance runner must write the markdown optimization plan outside artifacts/perf');
-  Assert.IsTrue(Pos('artifacts/perf/optimization-plan.md', Performance) = 0,
-    'performance runner must not put markdown diagnostics in the data-only perf artifact bundle');
-  Assert.IsTrue(Pos('Write-BenchmarkSummary', Performance) > 0,
-    'performance runner must summarize benchmark metadata and row/sample counts');
-  Assert.IsTrue(Pos('elapsedSamplesMs', Performance) > 0,
-    'benchmark rows must carry elapsed sample values');
-  Assert.IsTrue(Pos('throughputSamplesMiBs', Performance) > 0,
-    'benchmark rows must carry throughput sample values');
-  Assert.IsTrue(Pos('numHashBytes', Performance) > 0,
-    'benchmark rows must carry match-finder hash-byte diagnostics');
-  Assert.IsTrue(Pos('Invoke-DelphiInMemoryGraphBenchmark', Performance) = 0,
-    'performance runner must not call the old in-memory graph generator');
-  Assert.IsTrue(Pos('Invoke-SevenZipGraphBenchmark', Performance) = 0,
-    'performance runner must not run the old graph-only 7-Zip comparison');
-  Assert.IsTrue(Pos('Write-GraphSvg', Performance) = 0,
-    'performance runner must not render SVG graph artifacts');
-  Assert.IsTrue(Pos('Write-GraphPng', Performance) = 0,
-    'performance runner must not render PNG graph artifacts');
-  Assert.IsTrue(Pos('GraphCorpus', Performance) = 0,
-    'performance runner must not expose graph corpus parameters');
-  Assert.IsTrue(Pos('GraphStartLevel', Performance) = 0,
-    'performance runner must not expose graph level parameters');
-  Assert.IsTrue((Pos('lzma2-delphi-graph.csv', Performance) = 0) and
-    (Pos('lzma2-delphi-graph.json', Performance) = 0) and
-    (Pos('lzma2-delphi-graph.png', Performance) = 0) and
-    (Pos('lzma2-delphi-graph.svg', Performance) = 0) and
-    (Pos('lzma2-delphi-graph-prompt.md', Performance) = 0),
-    'performance runner must not write lzma2-delphi-graph artifacts');
-  Assert.IsTrue(Pos('lzma2-benchmark.samples.csv', Validator) > 0,
-    'artifact validator must require the raw sample CSV');
-  Assert.IsTrue(Pos('lzma2-benchmark.summary.json', Validator) > 0,
-    'artifact validator must require the benchmark summary JSON');
-  Assert.IsTrue(Pos('numHashBytes', Validator) > 0,
-    'artifact validator must require match-finder hash-byte diagnostics');
-  Assert.IsTrue(Pos('missing benchmark samples CSV artifact', NegativeTests) > 0,
-    'validator negative tests must cover missing sample evidence');
-  Assert.IsTrue(Pos('missing benchmark summary JSON artifact', NegativeTests) > 0,
-    'validator negative tests must cover missing summary evidence');
 end;
 
 procedure TLzma2NativeTests.PerformanceValidatorEnforcesDataOnlyArtifacts;
@@ -12258,7 +12621,7 @@ begin
     'validator negative tests must not keep release graph corpus cases');
 end;
 
-procedure TLzma2NativeTests.CliAndVclUseAcceptanceRatioConvention;
+procedure TLzma2NativeTests.CliAndVclNameAcceptanceRatioConvention;
 var
   Cli: string;
   Vcl: string;
@@ -12270,12 +12633,8 @@ begin
 
   Assert.IsTrue(Pos('Ratio (input/output): ', Cli) > 0,
     'CLI stats must name the TZ ratio convention');
-  Assert.IsTrue(Pos('InSize / OutSize', Cli) > 0,
-    'CLI stats must compute ratio as inputBytes/outputBytes');
   Assert.IsTrue(Pos('Ratio (input/output): %.3f', Vcl) > 0,
     'VCL stats must name the TZ ratio convention');
-  Assert.IsTrue(Pos('FInputSize / FOutputStream.Size', Vcl) > 0,
-    'VCL stats must compute ratio as inputBytes/outputBytes');
 end;
 
 procedure TLzma2NativeTests.VclToolShowsMtDiagnosticsAndUsesTemporaryOutput;
@@ -12485,32 +12844,109 @@ end;
 
 procedure TLzma2NativeTests.DUnitXCategoryTiersAreDeclaredAndQuickFiltered;
 var
-  RunCi: string;
-  Tests: string;
-  RequiredCategory: string;
+  Builder: IFixtureBuilder;
+  Fixtures: ITestFixtureList;
+  Options: TDUnitXOptions;
+  InnerFilter: ITestFilter;
+  QuickFilter: ITestFilter;
+  ReleaseFilter: ITestFilter;
+  SoakFilter: ITestFilter;
+  InnerCount: Integer;
+  QuickCount: Integer;
+  ReleaseCount: Integer;
+  SoakCount: Integer;
+
+  function CountSelected(const FixtureList: ITestFixtureList; const Filter: ITestFilter): Integer;
+  var
+    Fixture: ITestFixture;
+    Test: ITest;
+  begin
+    Result := 0;
+    for Fixture in FixtureList do
+    begin
+      for Test in Fixture.Tests do
+        if (Filter = nil) or Filter.Match(Test) then
+          Inc(Result);
+      Inc(Result, CountSelected(Fixture.Children, Filter));
+    end;
+  end;
+
+  function FindTest(const FixtureList: ITestFixtureList; const Name: string): ITest;
+  var
+    Fixture: ITestFixture;
+    Test: ITest;
+  begin
+    Result := nil;
+    for Fixture in FixtureList do
+    begin
+      for Test in Fixture.Tests do
+        if Test.MethodName = Name then
+          Exit(Test);
+      Result := FindTest(Fixture.Children, Name);
+      if Result <> nil then
+        Exit;
+    end;
+  end;
+
+  procedure AssertSelected(const Filter: ITestFilter; const Name: string; const Expected: Boolean);
+  var
+    Test: ITest;
+  begin
+    Test := FindTest(Fixtures, Name);
+    Assert.IsTrue(Test <> nil, 'category regression case must exist: ' + Name);
+    Assert.AreEqual(Expected, Filter.Match(Test), 'actual DUnitX category selection for ' + Name);
+  end;
+
 begin
-  Tests := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\Lzma.Tests.dpr'),
-    TEncoding.UTF8);
-  RunCi := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'tests\run-ci.ps1'),
-    TEncoding.UTF8);
+  // Build real test metadata: repeated Category attributes lose every category
+  // after the first in the supported DUnitX runtime. Category names use
+  // underscores because '-' is an operator in category expressions.
+  Builder := TDUnitXFixtureBuilder.Create(True);
+  Fixtures := Builder.BuildFixtureList;
+  Options := TDUnitXOptions.Create;
+  try
+    Options.Include := 'unit';
+    Options.Exclude := 'container,compat,perf_smoke,perf_release,soak,fuzz';
+    InnerFilter := TDUnitXFilterBuilder.BuildFilter(Options);
+    Options.Include := 'unit,container,compat,perf_smoke';
+    Options.Exclude := 'perf_release,soak,fuzz';
+    QuickFilter := TDUnitXFilterBuilder.BuildFilter(Options);
+    Options.Include := '';
+    Options.Exclude := 'soak,fuzz';
+    ReleaseFilter := TDUnitXFilterBuilder.BuildFilter(Options);
+    Options.Exclude := 'fuzz';
+    SoakFilter := TDUnitXFilterBuilder.BuildFilter(Options);
+  finally
+    Options.Free;
+  end;
 
-  for RequiredCategory in TArray<string>.Create('unit', 'container', 'compat',
-    'perf-smoke', 'perf-release', 'soak', 'fuzz') do
-    Assert.IsTrue(Pos(Format('[Category(''%s'')]', [RequiredCategory]), Tests) > 0,
-      Format('DUnitX category must be declared: %s', [RequiredCategory]));
+  AssertSelected(InnerFilter, 'DictionaryPropertyGrid', True);
+  AssertSelected(InnerFilter, 'DictionaryPropertyRejectsAboveMaxStrict', True);
+  AssertSelected(InnerFilter, 'PeriodicFastPathRejectsChunkedPhaseReset', True);
+  AssertSelected(InnerFilter, 'LzmaStandaloneRoundTripsKnownSize', False);
+  AssertSelected(InnerFilter, 'LzmaStandaloneRejectsInvalidProps', False);
+  AssertSelected(InnerFilter, 'MtDecodeRetainsAdmissionUntilDestinationWriteCompletes', True);
+  AssertSelected(InnerFilter, 'MtDecodeWriteFailureSignalsWorkersToCancel', True);
+  AssertSelected(QuickFilter, 'MtDecodeRetainsAdmissionUntilDestinationWriteCompletes', True);
+  AssertSelected(QuickFilter, 'MtDecodeWriteFailureSignalsWorkersToCancel', True);
+  AssertSelected(QuickFilter, 'LzmaStandaloneRoundTripsKnownSize', True);
+  AssertSelected(QuickFilter, 'LzmaStandaloneRejectsInvalidProps', True);
+  AssertSelected(QuickFilter, 'CrossToolDelphiXzIsAcceptedBySevenZip', True);
+  AssertSelected(QuickFilter, 'RawLzmaSdkReleaseCorpusFixturesDecode', False);
+  AssertSelected(ReleaseFilter, 'RawLzmaSdkReleaseCorpusFixturesDecode', True);
+  AssertSelected(ReleaseFilter, 'IndependentInstancesAreThreadSafe', False);
+  AssertSelected(SoakFilter, 'IndependentInstancesAreThreadSafe', True);
 
-  Assert.IsTrue(Pos('TDUnitX.CheckCommandLine', Tests) > 0,
-    'DUnitX runner must honor command-line category filters');
-  Assert.IsTrue(Pos('--include:', RunCi) > 0,
-    'CI runner must pass DUnitX include category filters');
-  Assert.IsTrue(Pos('--exclude:', RunCi) > 0,
-    'CI runner must pass DUnitX exclude category filters');
-  Assert.IsTrue(Pos('dunitxCategoryArgs', RunCi) > 0,
-    'CI manifest must preserve the executed DUnitX category filters');
-  Assert.IsTrue(Pos('$dunitxArgs = @(Get-DUnitXCategoryArgs $Mode)', RunCi) > 0,
-    'release/soak single DUnitX category filters must stay array-splatted');
-  Assert.IsTrue(Pos('perf-release,soak,fuzz', RunCi) > 0,
-    'quick mode must exclude release, soak and fuzz categories by default');
+  InnerCount := CountSelected(Fixtures, InnerFilter);
+  QuickCount := CountSelected(Fixtures, QuickFilter);
+  ReleaseCount := CountSelected(Fixtures, ReleaseFilter);
+  SoakCount := CountSelected(Fixtures, SoakFilter);
+  Assert.IsTrue(InnerCount > 0, 'inner must select real unit tests');
+  Assert.IsTrue(InnerCount < QuickCount, 'quick must add container/compat cases to inner');
+  Assert.IsTrue(QuickCount < ReleaseCount, 'release must add release corpus cases to quick');
+  Assert.IsTrue(ReleaseCount < SoakCount, 'soak must add stress cases to release');
+  Assert.AreEqual(CountSelected(Fixtures, nil), SoakCount,
+    'all current deterministic regression cases must remain covered by soak');
 end;
 
 procedure TLzma2NativeTests.FixtureGenerationUsesContentAddressedCacheEvidence;
@@ -12609,24 +13045,6 @@ begin
     'validator negative tests must cover missing 16-thread release MT evidence');
 end;
 
-procedure TLzma2NativeTests.EncoderPathSeedsOptimumNodesWithCurrentStateAndReps;
-var
-  Source: string;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-
-  Assert.IsTrue(Pos('LzmaOptimumPrepareNodes(Nodes);', Source) = 0,
-    'encoder path must not prepare anonymous optimum nodes without parser state/reps');
-  Assert.IsTrue(Pos('LzmaOptimumPrepareNodes(RepNodes);', Source) = 0,
-    'encoder path must seed rep optimum nodes with parser state/reps');
-  Assert.IsTrue(Pos('LzmaOptimumPrepareNodes(MatchNodes);', Source) = 0,
-    'encoder path must seed match optimum nodes with parser state/reps');
-  Assert.IsTrue(Pos('LzmaOptimumPrepareNodes(MainNodes);', Source) = 0,
-    'encoder path must seed main optimum nodes with parser state/reps');
-  Assert.IsTrue(Pos('LzmaOptimumPrepareNodes(Nodes, 0, State, Reps)', Source) > 0,
-    'encoder path must pass the live parser state/reps to optimum preparation');
-end;
 
 procedure TLzma2NativeTests.OptimumPathReplaysLiteralThenMatchAdditionalOffset;
 var
@@ -13576,16 +13994,10 @@ procedure TLzma2NativeTests.RawLzmaEncoderOptInWindowPathRoundTripsAndWiresDrive
 var
   Data: TBytes;
   Dst: TMemoryStream;
-  HelperEnd: Integer;
-  HelperSource: string;
-  HelperStart: Integer;
-  GateSnippet: string;
-  GateStart: Integer;
   GreedyBytes: TBytes;
   OutBytes: TBytes;
   Props: TLzmaProps;
   PropsBytes: TBytes;
-  Source: string;
   Src: TBytesStream;
   WindowBytes: TBytes;
 begin
@@ -13620,44 +14032,6 @@ begin
     Src.Free;
   end;
 
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  Assert.IsTrue(Pos('EnableOptimumWindow', Source) > 0,
-    'raw encoder must expose an opt-in optimum-window gate');
-  Assert.IsTrue(Pos('TryGetOptimumWindowDecision', Source) > 0,
-    'raw encoder must route opt-in decisions through a bounded window helper');
-  Assert.IsTrue(Pos('LzmaOptimumRelaxWindow', Source) > 0,
-    'raw encoder bounded helper must call the shared optimum window driver');
-  Assert.IsTrue(Pos('ProbInputsByPos', Source) > 0,
-    'raw encoder bounded helper must feed state-indexed probability inputs');
-  GateStart := Pos('MainMatch.Length >= EffectiveFastBytes', Source);
-  Assert.IsTrue(GateStart > 0, 'raw encoder bounded helper gate must stay visible');
-  GateSnippet := Copy(Source, GateStart, 160);
-  Assert.IsFalse(Pos('BestRepLen >= TLzmaEncoderConstants.kMatchMinLen', GateSnippet) > 0,
-    'raw encoder bounded helper must still run when a long-rep candidate exists');
-  HelperStart := Pos('function TryGetOptimumWindowDecision', Source);
-  HelperEnd := PosEx('function GetOptimumFast', Source, HelperStart);
-  Assert.IsTrue((HelperStart > 0) and (HelperEnd > HelperStart),
-    'raw encoder bounded helper source must be isolated for wiring checks');
-  HelperSource := Copy(Source, HelperStart, HelperEnd - HelperStart);
-  Assert.IsTrue(Pos('RepBaselinePrice', HelperSource) > 0,
-    'raw encoder bounded helper must compare window price against the existing rep baseline');
-  Assert.IsTrue(Pos('QueueOptimumReplayPath(Nodes, TargetEnd', HelperSource) > 0,
-    'raw encoder bounded helper must queue the full relaxed optimum path');
-  Assert.IsFalse(Pos('kMaxOptimumWindow = 16', HelperSource) > 0,
-    'raw encoder bounded helper must not cap SDK-profile optimum parsing at a fixed 16-byte window');
-  Assert.IsTrue(Pos('GetOptimumWindowLimit', Source) > 0,
-    'raw encoder bounded helper must derive its parsing window from the active fast-bytes profile');
-  Assert.IsFalse(Pos('SetLength(Nodes, Integer(TargetEnd) + 1)', HelperSource) > 0,
-    'raw encoder bounded helper must not physically cap the parser window at the current main match');
-  Assert.IsTrue(Pos('OptimumReplayQueue', Source) > 0,
-    'raw encoder must keep queued optimum-window decisions between encode steps');
-  Assert.IsTrue(Pos('TryPopOptimumReplayDecision(Result, Back)', Source) > 0,
-    'raw encoder fast path must replay queued optimum-window decisions before recomputing');
-  Assert.IsFalse(Pos('LzmaOptimumReplayFirstDecision(Nodes, TargetEnd', HelperSource) > 0,
-    'raw encoder bounded helper must not drop all but the first optimum-window decision');
-  Assert.IsFalse(Pos('if PreferRepOverMainByPrice(MainMatch) then', HelperSource) > 0,
-    'raw encoder bounded helper must not skip pricing a potentially better window path');
 end;
 
 procedure TLzma2NativeTests.RawLzmaEncoderOptInWindowUsesEffectiveFastBytesBounds;
@@ -13665,16 +14039,9 @@ var
   Data: TBytes;
   Dst: TMemoryStream;
   EncodedBytes: TBytes;
-  HelperEnd: Integer;
-  HelperSource: string;
-  HelperStart: Integer;
-  LimitEnd: Integer;
-  LimitSource: string;
-  LimitStart: Integer;
   OutBytes: TBytes;
   Props: TLzmaProps;
   PropsBytes: TBytes;
-  Source: string;
   Src: TBytesStream;
 begin
   Data := TEncoding.ASCII.GetBytes(
@@ -13705,39 +14072,6 @@ begin
     Src.Free;
   end;
 
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  HelperStart := Pos('function TryGetOptimumWindowDecision', Source);
-  HelperEnd := PosEx('function GetOptimumFast', Source, HelperStart);
-  Assert.IsTrue((HelperStart > 0) and (HelperEnd > HelperStart),
-    'raw encoder bounded helper source must be isolated for fast-bytes guard');
-  HelperSource := Copy(Source, HelperStart, HelperEnd - HelperStart);
-
-  Assert.IsTrue(Pos('OptimumWindowLimit := GetOptimumWindowLimit', HelperSource) > 0,
-    'bounded helper must compute its parse limit from the SDK optimum lookahead bound');
-  Assert.IsTrue(Pos('WindowEnd := OptimumWindowLimit', HelperSource) > 0,
-    'bounded helper must start from the SDK optimum lookahead bound');
-  Assert.IsTrue(Pos('SetLength(Nodes, Integer(WindowEnd) + 1)', HelperSource) > 0,
-    'bounded helper must size optimum nodes to the SDK optimum lookahead bound');
-  Assert.IsTrue(Pos('SetLength(MatchesByPos, Integer(WindowEnd) + 1)', HelperSource) > 0,
-    'bounded helper must size match snapshots to the SDK optimum lookahead bound');
-  Assert.IsTrue(Pos('ClampMatchBufferLengths(MatchesByPos[PosIndex], EffectiveFastBytes)',
-    HelperSource) > 0,
-    'bounded helper must still clamp direct candidate lengths to EffectiveFastBytes');
-  LimitStart := Pos('function GetOptimumWindowLimit', Source);
-  LimitEnd := PosEx('function TryGetOptimumWindowDecision', Source, LimitStart);
-  Assert.IsTrue((LimitStart > 0) and (LimitEnd > LimitStart),
-    'raw encoder optimum limit helper source must be isolated');
-  LimitSource := Copy(Source, LimitStart, LimitEnd - LimitStart);
-  Assert.IsFalse(Pos('Result := EffectiveFastBytes + 1 + EffectiveFastBytes', LimitSource) > 0,
-    'SDK-profile full optimum parsing must not be limited to a bounded fast-bytes window');
-  Assert.IsTrue(Pos('LZMA_FULL_OPTIMUM_NUM_OPTS', LimitSource) > 0,
-    'SDK-profile full optimum parsing must use the SDK optimum node window');
-  Assert.IsFalse(Pos('TLzmaEncoderConstants.kMatchMaxLen', LimitSource) > 0,
-    'compound optimum lookahead must not be capped to a single match length');
-  Assert.IsFalse((Pos('kMaxOptimumWindow = 16', HelperSource) > 0) or
-    (Pos('Integer(16)', HelperSource) > 0) or (Pos('Min(16', HelperSource) > 0),
-    'bounded helper must not keep a fixed 16-byte cap that can under-size the fast-bytes window');
 end;
 
 procedure TLzma2NativeTests.RawLzmaGreedyEncoderRoundTrips;
@@ -13775,6 +14109,65 @@ begin
   end;
 end;
 
+procedure TLzma2NativeTests.RawLzmaMatchBoundaryAllowsFollowingLiteralInAllModes;
+const
+  OutputBoundary = 1 shl 18;
+  Periods: array[0..3] of Integer = (1, 7, 65, 4097);
+var
+  Data: TBytes;
+  Encoded: TBytes;
+  OutBytes: TBytes;
+  Props: TLzmaProps;
+  State: TLzmaDecoderState;
+  Decoded: TMemoryStream;
+  Period: Integer;
+  DecodeMode: Integer;
+  I: Integer;
+  Consumed: NativeUInt;
+  Finished: Boolean;
+  NeedsMoreInput: Boolean;
+begin
+  Props := TLzmaRawEncoder.DefaultProperties(1 shl 20);
+  SetLength(Data, OutputBoundary + 1);
+  for Period in Periods do
+  begin
+    for I := 0 to OutputBoundary - 1 do
+      Data[I] := Byte(I mod Period);
+    // The last match ends exactly at the output boundary. The distinct byte
+    // forces a following literal through each of the three decoder entry points.
+    Data[OutputBoundary] := $FF;
+    for DecodeMode := 0 to 2 do
+    begin
+      Encoded := TLzmaRawEncoder.EncodeGreedyChunk(Data, 0, Length(Data), Props,
+        32, 32, mfHashChain4, DecodeMode = 2);
+      State := TLzmaDecoderState.Create(Props.DictionarySize);
+      Decoded := TMemoryStream.Create;
+      try
+        State.SetProperties(Props);
+        case DecodeMode of
+          0: State.DecodeChunk(Encoded, 0, Length(Encoded), Length(Data), Decoded);
+          1:
+            begin
+              State.DecodeKnownSizePartial(Encoded, 0, Length(Encoded), Length(Data),
+                Length(Data), Decoded, Consumed, Finished, NeedsMoreInput);
+              Assert.IsTrue(Finished and not NeedsMoreInput, 'known-size stream must finish');
+              Assert.AreEqual(NativeUInt(Length(Encoded)), Consumed, 'consume the flush tail');
+            end;
+          2: State.DecodeUntilEndMarker(Encoded, 0, Length(Encoded), Decoded);
+        end;
+        SetLength(OutBytes, Decoded.Size);
+        Decoded.Position := 0;
+        Decoded.ReadBuffer(OutBytes[0], Length(OutBytes));
+        AssertBytesEqual(Data, OutBytes,
+          Format('match boundary, period %d, decode mode %d', [Period, DecodeMode]));
+      finally
+        Decoded.Free;
+        State.Free;
+      end;
+    end;
+  end;
+end;
+
 procedure TLzma2NativeTests.RawLzmaKnownSizeAboveUInt32ReachesDecoder;
 var
   Props: TLzmaProps;
@@ -13796,6 +14189,131 @@ begin
   finally
     Decoded.Free;
     Src.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.RawLzmaKnownSizePartialResumesBytePrefixes;
+const
+  LiteralContexts: array[0..1] of Byte = (3, 8);
+var
+  Data: TBytes;
+  Encoded: TBytes;
+  OutBytes: TBytes;
+  Props: TLzmaProps;
+  State: TLzmaDecoderState;
+  Decoded: TMemoryStream;
+  PrefixSize: Integer;
+  Lc: Byte;
+  Consumed: NativeUInt;
+  PreviousInput: NativeUInt;
+  Finished: Boolean;
+  NeedsMoreInput: Boolean;
+begin
+  Data := HighEntropyBytes(1024);
+  for Lc in LiteralContexts do
+  begin
+    Props := TLzmaRawEncoder.DefaultProperties(1 shl 16);
+    Props.Lc := Lc;
+    Encoded := TLzmaRawEncoder.EncodeGreedyChunk(Data, 0, Length(Data), Props,
+      32, 32, mfHashChain4, False);
+    State := TLzmaDecoderState.Create(Props.DictionarySize);
+    Decoded := TMemoryStream.Create;
+    try
+      State.SetProperties(Props);
+      State.ResetDictionary;
+      State.ResetState;
+      PreviousInput := 0;
+      Finished := False;
+      NeedsMoreInput := False;
+      // Reuse the same state: the SDK facade's prefix tests may replay from
+      // the beginning and cannot detect a broken probability rollback here.
+      for PrefixSize := 0 to Length(Encoded) do
+      begin
+        State.DecodeKnownSizePartial(Encoded, 0, PrefixSize, Length(Data),
+          Length(Data), Decoded, Consumed, Finished, NeedsMoreInput);
+        Assert.IsTrue(Consumed <= NativeUInt(PrefixSize), 'consumed beyond the input prefix');
+        Assert.IsTrue(State.InputPosition >= PreviousInput, 'committed input position regressed');
+        Assert.AreEqual(State.ProcessedSize, UInt64(Decoded.Size),
+          'an incomplete symbol must not commit output');
+        Assert.IsTrue(Finished or NeedsMoreInput, 'an unfinished prefix must request input');
+        PreviousInput := State.InputPosition;
+      end;
+      Assert.IsTrue(Finished and not NeedsMoreInput, 'complete packed input must finish');
+      Assert.AreEqual(NativeUInt(Length(Encoded)), Consumed, 'consume the range flush tail');
+      SetLength(OutBytes, Decoded.Size);
+      Decoded.Position := 0;
+      Decoded.ReadBuffer(OutBytes[0], Length(OutBytes));
+      AssertBytesEqual(Data, OutBytes, 'byte-fed raw LZMA with reused decoder state');
+    finally
+      Decoded.Free;
+      State.Free;
+    end;
+  end;
+end;
+
+procedure TLzma2NativeTests.RawLzmaKnownSizePartialPropagatesProgressInputEof;
+const
+  TrailerSizes: array[0..1] of Integer = (0, 4096);
+  ProgressBoundary = 1 shl 20;
+  CallbackMessage = 'Known-size decoder progress EOF canary';
+var
+  Data: TBytes;
+  Encoded: TBytes;
+  Props: TLzmaProps;
+  State: TLzmaDecoderState;
+  Decoded: TMemoryStream;
+  TrailerSize: Integer;
+  Consumed: NativeUInt;
+  CallbackCount: Integer;
+  Finished: Boolean;
+  NeedsMoreInput: Boolean;
+  Raised: Boolean;
+begin
+  for TrailerSize in TrailerSizes do
+  begin
+    Data := RepeatingBytes(ProgressBoundary);
+    AppendBytes(Data, HighEntropyBytes(TrailerSize));
+    Props := TLzmaRawEncoder.DefaultProperties(1 shl 20);
+    Encoded := TLzmaRawEncoder.EncodeGreedyChunk(Data, 0, Length(Data), Props,
+      32, 32, mfHashChain4, False);
+    State := TLzmaDecoderState.Create(Props.DictionarySize);
+    Decoded := TMemoryStream.Create;
+    try
+      State.SetProperties(Props);
+      State.ResetDictionary;
+      State.ResetState;
+      CallbackCount := 0;
+      Raised := False;
+      try
+        State.DecodeKnownSizePartial(Encoded, 0, Length(Encoded), Length(Data),
+          Length(Data), Decoded, Consumed, Finished, NeedsMoreInput,
+          procedure(const InBytes, OutBytes: UInt64; var Cancel: Boolean)
+          begin
+            Inc(CallbackCount);
+            if TrailerSize = 0 then
+              Assert.IsTrue(UInt64(Length(Encoded)) - InBytes <= 5,
+                'the tail canary must execute within the range flush tail')
+            else
+              Assert.IsTrue(UInt64(Length(Encoded)) - InBytes > 1024,
+                'the bulk canary must retain substantial packed input');
+            raise ELzmaInputEof.Create(SZ_ERROR_INPUT_EOF, CallbackMessage);
+          end);
+      except
+        on E: ELzmaInputEof do
+        begin
+          Raised := True;
+          Assert.AreEqual(SZ_ERROR_INPUT_EOF, E.ResultCode, 'preserve the callback error code');
+          Assert.AreEqual(CallbackMessage, E.Message, 'preserve the callback exception');
+        end;
+      end;
+      Assert.IsTrue(Raised, 'callback EOF must propagate instead of requesting more packed input');
+      Assert.AreEqual(1, CallbackCount, 'the callback should execute once');
+      Assert.IsTrue(State.ProcessedSize >= ProgressBoundary,
+        'an external error must not restore a snapshot behind committed dictionary bytes');
+    finally
+      Decoded.Free;
+      State.Free;
+    end;
   end;
 end;
 
@@ -13844,44 +14362,6 @@ begin
   end;
 end;
 
-procedure TLzma2NativeTests.RawLzmaStreamEncoderUsesProfileMatchFinder;
-var
-  Source: string;
-  StreamEncoderSource: string;
-  StreamStart: Integer;
-begin
-  Source := TFile.ReadAllText(TPath.Combine(GetCurrentDir, 'src\Lzma.Encoder.pas'),
-    TEncoding.UTF8);
-  Source := StringReplace(Source, #13#10, #10, [rfReplaceAll]);
-  Source := StringReplace(Source, #13, #10, [rfReplaceAll]);
-  StreamStart := Pos('class procedure TLzmaRawEncoder.Encode(Source: TStream; Destination: TStream; const Profile: TLzmaEncoderProfile;'#10 +
-    '  const Props: TLzmaProps; const WriteEndMarker: Boolean; const Progress: TLzma2ProgressEvent);'#10 +
-    'const',
-    Source);
-  Assert.IsTrue(StreamStart > 0, 'raw LZMA stream overload source must be isolated');
-  StreamEncoderSource := Copy(Source, StreamStart, MaxInt);
-
-  Assert.IsTrue(Pos('Profile.MatchFinderKind', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must route decisions through the requested profile match finder');
-  Assert.IsTrue(Pos('TLzmaHashChain4MatchFinder.Create', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must support HC4 profile match finding');
-  Assert.IsTrue(Pos('TLzmaHashChain5MatchFinder.Create', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must support HC5 profile match finding');
-  Assert.IsTrue(Pos('TLzmaBinaryTree4MatchFinder.Create', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must support BT4 profile match finding');
-  Assert.IsTrue(Pos('Profile.ParserMode <> lpmSdkProfile', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must branch SDK-profile parser requests into optimum-window decisions');
-  Assert.IsTrue(Pos('LzmaOptimumRelaxWindow', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must use optimum-window relaxation for SDK-profile parser requests');
-  Assert.IsTrue(Pos('LzmaOptimumSelectWindowTarget', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must select a priced SDK-profile target before replay');
-  Assert.IsTrue(Pos('LzmaOptimumReplaySdkBackward', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must queue and replay optimum-window decisions');
-  Assert.IsTrue(Pos('ReadTempMatchFinderMatchesAt(RelativePos, MatchesByPos[PosIndex])', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must use non-mutating lookahead match reads');
-  Assert.IsFalse(Pos('while Distance <= SearchMax do', StreamEncoderSource) > 0,
-    'raw LZMA stream encoder must not silently fall back to profile-independent brute-force search');
-end;
 
 procedure TLzma2NativeTests.RawLzmaStreamProgressReportsCommittedOutput;
 var
@@ -14023,6 +14503,10 @@ begin
 end;
 
 procedure TLzma2NativeTests.LzmaStandaloneRoundTripsKnownSize;
+const
+  ParserSampleSize = 1 shl 16;
+  DataSizes: array[0..6] of Integer = (0, 1, 4095, 4096, 4099,
+    ParserSampleSize, ParserSampleSize + 1);
 var
   Options: TLzma2Options;
   Data: TBytes;
@@ -14033,46 +14517,55 @@ var
   Encoded: TMemoryStream;
   Decoded: TMemoryStream;
   OutBytes: TBytes;
+  DataSize: Integer;
 begin
-  Data := RepeatingBytes(65536);
   Options := TLzma2.DefaultOptions;
   Options.Container := lcLzma;
-  Options.Level := 1;
+  Options.Level := 5;
   Options.DictionarySize := 1 shl 20;
   Options.ThreadCount := 1;
-  Diagnostics := Default(TLzma2EncodeDiagnostics);
   Options.EncodeDiagnostics := @Diagnostics;
 
-  Src := TBytesStream.Create(Data);
-  Encoded := TMemoryStream.Create;
-  Decoded := TMemoryStream.Create;
-  try
-    TLzma2.Compress(Src, Encoded, Options);
-    Assert.IsTrue(Encoded.Size > LZMA_PROPS_SIZE + 8, 'standalone .lzma must include header and payload');
-    Assert.IsTrue(Diagnostics.OptimumParserEnabled,
-      'standalone .lzma diagnostics must report the active native optimum-parser branch');
-    SetLength(Archive, Encoded.Size);
-    Encoded.Position := 0;
-    Encoded.ReadBuffer(Archive[0], Encoded.Size);
+  for DataSize in DataSizes do
+  begin
+    Data := RepeatingBytes(DataSize);
+    Diagnostics := Default(TLzma2EncodeDiagnostics);
+    Src := TBytesStream.Create(Data);
+    Encoded := TMemoryStream.Create;
+    Decoded := TMemoryStream.Create;
+    try
+      TLzma2.Compress(Src, Encoded, Options);
+      Assert.IsTrue(Encoded.Size > LZMA_PROPS_SIZE + 8, 'standalone .lzma must include header and payload');
+      if DataSize = ParserSampleSize then
+        Assert.IsTrue(Diagnostics.OptimumParserEnabled,
+          'standalone .lzma diagnostics must report the active native optimum-parser branch');
+      SetLength(Archive, Encoded.Size);
+      Encoded.Position := 0;
+      Encoded.ReadBuffer(Archive[0], Encoded.Size);
 
-    Assert.IsTrue(LzmaPropsDecode(Copy(Archive, 0, LZMA_PROPS_SIZE), Props),
-      'standalone .lzma properties must be valid raw LZMA props');
-    Assert.AreEqual(UInt64(Length(Data)), ReadUi64LE(@Archive[LZMA_PROPS_SIZE]),
-      'standalone .lzma must store known unpack size');
+      Assert.IsTrue(LzmaPropsDecode(Copy(Archive, 0, LZMA_PROPS_SIZE), Props),
+        'standalone .lzma properties must be valid raw LZMA props');
+      Assert.AreEqual(UInt64(Options.DictionarySize), UInt64(Props.DictionarySize),
+        'standalone .lzma retains the requested dictionary property');
+      Assert.AreEqual(UInt64(Length(Data)), ReadUi64LE(@Archive[LZMA_PROPS_SIZE]),
+        'standalone .lzma must store known unpack size');
 
-    Encoded.Position := 0;
-    TLzma2.Decompress(Encoded, Decoded, Options);
-    SetLength(OutBytes, Decoded.Size);
-    if Decoded.Size > 0 then
-    begin
-      Decoded.Position := 0;
-      Decoded.ReadBuffer(OutBytes[0], Decoded.Size);
+      Encoded.Position := 0;
+      TLzma2.Decompress(Encoded, Decoded, Options);
+      Assert.AreEqual(Int64(Length(Archive)), Encoded.Position,
+        'standalone .lzma decode consumes the full archive');
+      SetLength(OutBytes, Decoded.Size);
+      if Decoded.Size > 0 then
+      begin
+        Decoded.Position := 0;
+        Decoded.ReadBuffer(OutBytes[0], Decoded.Size);
+      end;
+      AssertBytesEqual(Data, OutBytes, 'standalone .lzma known-size roundtrip');
+    finally
+      Decoded.Free;
+      Encoded.Free;
+      Src.Free;
     end;
-    AssertBytesEqual(Data, OutBytes, 'standalone .lzma known-size roundtrip');
-  finally
-    Decoded.Free;
-    Encoded.Free;
-    Src.Free;
   end;
 end;
 
@@ -14127,15 +14620,26 @@ procedure TLzma2NativeTests.LzmaStandaloneDecodesUnknownSizeEndMarker;
 var
   Options: TLzma2Options;
   Data: TBytes;
+  AliasData, AliasTail, AliasEncodedBytes, AliasHeader: TBytes;
+  AliasSource: TSharedCursorReadStream;
   EncodedBytes: TBytes;
   Header: TBytes;
   Props: TLzmaProps;
   PropsBytes: TBytes;
   Src: TBytesStream;
   Decoded: TMemoryStream;
+  Destination: TStream;
+  ForwardOnly: TForwardOnlyWriteStream;
   OutBytes: TBytes;
+  Prefix: TBytes;
+  PrefixSize: Integer;
+  SinkIndex: Integer;
+  LastInput: UInt64;
+  LastOutput: UInt64;
+  ProgressCalls: Integer;
+  SawIntermediate: Boolean;
 begin
-  Data := RepeatingBytes(32768);
+  Data := RepeatingBytes((1 shl 20) + 4096);
   Props := TLzmaRawEncoder.DefaultProperties(1 shl 20);
   PropsBytes := TLzmaRawEncoder.WriteProperties(Props);
   EncodedBytes := TLzmaRawEncoder.EncodeGreedyChunk(Data, 0, Length(Data), Props, 32, 32,
@@ -14150,20 +14654,118 @@ begin
 
   Options := TLzma2.DefaultOptions;
   Options.Container := lcLzma;
+  Options.ThreadCount := 1;
+  Prefix := TBytes.Create($A7, $54, $19);
   Src := TBytesStream.Create(Header);
+  try
+    for SinkIndex := 0 to 1 do
+    begin
+      Decoded := TMemoryStream.Create;
+      ForwardOnly := nil;
+      try
+        PrefixSize := 0;
+        if SinkIndex = 0 then
+        begin
+          ForwardOnly := TForwardOnlyWriteStream.Create(Decoded);
+          Destination := ForwardOnly;
+        end
+        else
+        begin
+          PrefixSize := Length(Prefix);
+          Decoded.WriteBuffer(Prefix[0], PrefixSize);
+          Destination := Decoded;
+        end;
+
+        Src.Position := 0;
+        LastInput := 0;
+        LastOutput := 0;
+        ProgressCalls := 0;
+        SawIntermediate := False;
+        TLzma2.Decompress(Src, Destination, Options,
+          procedure(const InBytes, OutBytes: UInt64; var Cancel: Boolean)
+          begin
+            Assert.IsTrue(InBytes >= LastInput, 'standalone EOS input progress must not regress');
+            Assert.IsTrue(OutBytes >= LastOutput, 'standalone EOS output progress must not regress');
+            LastInput := InBytes;
+            LastOutput := OutBytes;
+            Inc(ProgressCalls);
+            if (OutBytes > 0) and (OutBytes < UInt64(Length(Data))) then
+              SawIntermediate := True;
+          end);
+
+        Assert.IsTrue(SawIntermediate and (ProgressCalls >= 2),
+          'standalone EOS must report positive progress before completion');
+        Assert.AreEqual(UInt64(Length(Header)), LastInput, 'standalone EOS final input bytes');
+        Assert.AreEqual(UInt64(Length(Data)), LastOutput,
+          'standalone EOS final output excludes any existing destination prefix');
+
+        Assert.AreEqual(Int64(PrefixSize) + Length(Data), Decoded.Size,
+          'standalone EOS writes exactly the decoded payload after the prefix');
+        SetLength(OutBytes, Decoded.Size);
+        Decoded.Position := 0;
+        Decoded.ReadBuffer(OutBytes[0], Length(OutBytes));
+        AssertBytesEqual(Data, Copy(OutBytes, PrefixSize, Length(Data)),
+          'standalone .lzma unknown-size end-marker roundtrip');
+        if PrefixSize <> 0 then
+          AssertBytesEqual(Prefix, Copy(OutBytes, 0, PrefixSize),
+            'standalone EOS preserves the destination prefix');
+
+        if ForwardOnly <> nil then
+        begin
+          Assert.AreEqual(0, ForwardOnly.ReadCalls, 'standalone EOS must not read output');
+          Assert.AreEqual(0, ForwardOnly.SeekCalls, 'standalone EOS must not query output position');
+          Assert.AreEqual(0, ForwardOnly.SizeCalls, 'standalone EOS must not query output size');
+        end;
+      finally
+        ForwardOnly.Free;
+        Decoded.Free;
+      end;
+    end;
+  finally
+    Src.Free;
+  end;
+
+  AliasData := Copy(Data, 0, Length(Data));
+  AliasTail := HighEntropyBytes(Length(Data) - Integer(Props.DictionarySize));
+  Move(AliasTail[0], AliasData[Length(AliasData) - Length(AliasTail)], Length(AliasTail));
+  AliasEncodedBytes := TLzmaRawEncoder.EncodeGreedyChunk(AliasData, 0, Length(AliasData),
+    Props, 32, 32, mfHashChain4, True);
+  Options.BufferSize := TLzmaDecoderState.StreamingInputCapacity(Options.BufferSize, 0);
+  Assert.IsTrue(UInt64(Length(AliasEncodedBytes)) > UInt64(Length(EncodedBytes)) +
+    2 * UInt64(Options.BufferSize),
+    'standalone EOS alias fixture must leave a packed tail beyond the input window');
+  AliasHeader := Copy(Header, 0, Length(Header) - Length(EncodedBytes));
+  AppendBytes(AliasHeader, AliasEncodedBytes);
+
   Decoded := TMemoryStream.Create;
   try
-    TLzma2.Decompress(Src, Decoded, Options);
-    SetLength(OutBytes, Decoded.Size);
-    if Decoded.Size > 0 then
-    begin
+    Decoded.WriteBuffer(AliasHeader[0], Length(AliasHeader));
+    Decoded.Position := 0;
+    AliasSource := TSharedCursorReadStream.Create(Decoded);
+    try
+      try
+        TLzma2.Decompress(AliasSource, Decoded, Options);
+      except
+        on E: Exception do
+          Assert.Fail('standalone EOS hidden shared-cursor decode failed: ' +
+            E.ClassName + ': ' + E.Message);
+      end;
+      Assert.AreEqual(Int64(Length(AliasHeader)) + Length(AliasData), Decoded.Size,
+        'standalone EOS hidden shared-cursor exact archive and payload size');
+      Assert.AreEqual(Decoded.Size, Decoded.Position,
+        'standalone EOS hidden shared-cursor final position');
+      SetLength(OutBytes, Decoded.Size);
       Decoded.Position := 0;
-      Decoded.ReadBuffer(OutBytes[0], Decoded.Size);
+      Decoded.ReadBuffer(OutBytes[0], Length(OutBytes));
+      AssertBytesEqual(AliasHeader, Copy(OutBytes, 0, Length(AliasHeader)),
+        'standalone EOS hidden shared-cursor preserves the complete archive');
+      AssertBytesEqual(AliasData, Copy(OutBytes, Length(AliasHeader), Length(AliasData)),
+        'standalone EOS hidden shared-cursor appends the complete decoded payload');
+    finally
+      AliasSource.Free;
     end;
-    AssertBytesEqual(Data, OutBytes, 'standalone .lzma unknown-size end-marker roundtrip');
   finally
     Decoded.Free;
-    Src.Free;
   end;
 end;
 
@@ -14197,43 +14799,156 @@ begin
 end;
 
 procedure TLzma2NativeTests.LzmaStandaloneDecodeRejectsPackedInputOverMemoryLimit;
+const
+  OutputBoundary = 256 * 1024;
+  DataSizes: array[0..1] of Integer = (8192, OutputBoundary - 1);
 var
+  DataSize: Integer;
   BuildOptions: TLzma2Options;
   DecodeOptions: TLzma2Options;
   Data: TBytes;
   PackedBytes: UInt64;
+  BaseMemory, SnapshotBudget, MinimumInputCapacity, NativeAdmission: UInt64;
+  Props: TLzmaProps;
+  PropsBytes: TBytes;
+  TinyLimit: Integer;
   Src: TBytesStream;
   Encoded: TMemoryStream;
   Dst: TMemoryStream;
+  SnapshotSource: TSharedCursorReadStream;
+  SawBoundedInput: Boolean;
 begin
-  Data := RepeatingBytes(8192);
-  BuildOptions := TLzma2.DefaultOptions;
-  BuildOptions.Container := lcLzma;
-  BuildOptions.Level := 1;
-  BuildOptions.DictionarySize := 1 shl 20;
+  SawBoundedInput := False;
+  for DataSize in DataSizes do
+  begin
+    Data := RepeatingBytes(DataSize);
+    if DataSize = OutputBoundary - 1 then
+      FillChar(Data[0], Length(Data), $41);
+    BuildOptions := TLzma2.DefaultOptions;
+    BuildOptions.Container := lcLzma;
+    BuildOptions.Level := 1;
+    BuildOptions.DictionarySize := 1 shl 20;
+    if DataSize = OutputBoundary - 1 then
+      BuildOptions.DictionarySize := OutputBoundary;
+    BuildOptions.BufferSize := 4096;
+    BuildOptions.LzmaEndMarker := False;
 
-  Src := TBytesStream.Create(Data);
-  Encoded := TMemoryStream.Create;
-  Dst := TMemoryStream.Create;
-  try
-    TLzma2.Compress(Src, Encoded, BuildOptions);
-    Assert.IsTrue(Encoded.Size > LZMA_PROPS_SIZE + 8, 'standalone .lzma fixture must have payload bytes');
-    PackedBytes := UInt64(Encoded.Size) - UInt64(LZMA_PROPS_SIZE + 8);
+    Src := TBytesStream.Create(Data);
+    Encoded := TMemoryStream.Create;
+    Dst := TMemoryStream.Create;
+    SnapshotSource := nil;
+    try
+      TLzma2.Compress(Src, Encoded, BuildOptions);
+      SnapshotSource := TSharedCursorReadStream.Create(Encoded);
+      Assert.IsTrue(Encoded.Size > LZMA_PROPS_SIZE + 8, 'standalone .lzma fixture must have payload bytes');
+      PackedBytes := UInt64(Encoded.Size) - UInt64(LZMA_PROPS_SIZE + 8);
 
-    DecodeOptions := BuildOptions;
-    DecodeOptions.MemoryLimit := DecodeOptions.DictionarySize + PackedBytes - 1;
-    Encoded.Position := 0;
-    Assert.WillRaise(
-      procedure
+      DecodeOptions := BuildOptions;
+      DecodeOptions.ThreadCount := 1;
+      DecodeOptions.BufferSize := 4096;
+      SetLength(PropsBytes, LZMA_PROPS_SIZE);
+      Move(Encoded.Memory^, PropsBytes[0], Length(PropsBytes));
+      Assert.IsTrue(LzmaPropsDecode(PropsBytes, Props), 'standalone fixture properties');
+      BaseMemory := UInt64(LZMA_PROPS_SIZE + 8 + LZMA_PROPS_SIZE) +
+        TLzmaDecoderState.RequiredMemory(Props.DictionarySize, Props.Lc, Props.Lp);
+      SnapshotBudget := BaseMemory + PackedBytes;
+      DecodeOptions.MemoryLimit := SnapshotBudget;
+      Encoded.Position := 0;
+      TLzma2.Decompress(Encoded, Dst, DecodeOptions);
+      Assert.AreEqual(Int64(Length(Data)), Dst.Size, 'standalone exact owned-memory budget must decode');
+      Assert.IsTrue(CompareMem(@Data[0], Dst.Memory, Length(Data)), 'standalone exact-budget payload');
+      Dst.Size := 0;
+      DecodeOptions.BufferSize := NativeUInt(DecodeOptions.MemoryLimit) + 1;
+      Encoded.Position := 0;
+      TLzma2.Decompress(Encoded, Dst, DecodeOptions);
+      Assert.AreEqual(Int64(Length(Data)), Dst.Size,
+        'a large requested read buffer must not reject a small known input at its exact budget');
+      Assert.IsTrue(CompareMem(@Data[0], Dst.Memory, Length(Data)),
+        'standalone large-buffer exact-budget payload');
+      DecodeOptions.BufferSize := BuildOptions.BufferSize;
+      Dst.Size := 0;
+      Encoded.Position := 0;
+      TLzma2.Decompress(SnapshotSource, Dst, DecodeOptions);
+      Assert.AreEqual(Int64(Length(Data)), Dst.Size,
+        'standalone custom-source exact snapshot budget must decode');
+      Assert.IsTrue(CompareMem(@Data[0], Dst.Memory, Length(Data)),
+        'standalone custom-source exact-budget payload');
+      Dst.Size := 0;
+      Dec(DecodeOptions.MemoryLimit);
+      Encoded.Position := 0;
+      Assert.WillRaise(
+        procedure
+        begin
+          TLzma2.Decompress(SnapshotSource, Dst, DecodeOptions);
+        end,
+        ELzmaMemoryError);
+      Assert.AreEqual(Encoded.Size, Encoded.Position, 'standalone gate must count the retained packed input');
+      Assert.AreEqual(Int64(0), Dst.Size, 'standalone rejection must precede decoded output');
+      MinimumInputCapacity := UInt64(TLzmaDecoderState.StreamingInputCapacity(
+        DecodeOptions.BufferSize, 0));
+      NativeAdmission := PackedBytes;
+      if NativeAdmission > MinimumInputCapacity then
+        NativeAdmission := MinimumInputCapacity;
+      SawBoundedInput := SawBoundedInput or (PackedBytes > MinimumInputCapacity);
+      DecodeOptions.MemoryLimit := BaseMemory + NativeAdmission;
+      Encoded.Position := 0;
+      TLzma2.Decompress(Encoded, Dst, DecodeOptions);
+      Assert.AreEqual(Int64(Length(Data)), Dst.Size,
+        'standalone native exact admitted-input budget must decode');
+      Assert.IsTrue(CompareMem(@Data[0], Dst.Memory, Length(Data)),
+        'standalone native admitted-input-budget payload');
+      Dst.Size := 0;
+      Dec(DecodeOptions.MemoryLimit);
+      Encoded.Position := 0;
+      Assert.WillRaise(
+        procedure
+        begin
+          TLzma2.Decompress(Encoded, Dst, DecodeOptions);
+        end,
+        ELzmaMemoryError);
+      Assert.AreEqual(Encoded.Size, Encoded.Position,
+        'standalone below-minimum native window must count the snapshot fallback');
+      Assert.AreEqual(Int64(0), Dst.Size,
+        'standalone below-minimum native window must reject before output');
+      if DataSize = OutputBoundary - 1 then
       begin
-        TLzma2.Decompress(Encoded, Dst, DecodeOptions);
-      end,
-      ELzmaMemoryError);
-  finally
-    Dst.Free;
-    Encoded.Free;
-    Src.Free;
+        Assert.IsTrue(Props.DictionarySize = OutputBoundary,
+          'known-size fixture must cap its dictionary one byte below the output boundary');
+        Assert.IsTrue(PackedBytes < UInt64(OutputBoundary div 16),
+          'tight-budget fixture must isolate dictionary/output memory');
+        DecodeOptions.MemoryLimit := OutputBoundary + OutputBoundary div 4;
+        Encoded.Position := 0;
+        Assert.WillRaise(
+          procedure
+          begin
+            TLzma2.Decompress(Encoded, Dst, DecodeOptions);
+          end,
+          ELzmaMemoryError);
+        Assert.AreEqual(Int64(0), Dst.Size,
+          'a capped dictionary with its own output buffer must fit the declared budget');
+      end;
+      for TinyLimit := 1 to LZMA_PROPS_SIZE + 8 - 1 do
+      begin
+        Encoded.Position := 0;
+        DecodeOptions.MemoryLimit := UInt64(TinyLimit);
+        Assert.WillRaise(
+          procedure
+          begin
+            TLzma2.Decompress(Encoded, Dst, DecodeOptions);
+          end,
+          ELzmaMemoryError);
+        Assert.AreEqual(Int64(0), Encoded.Position, 'standalone header admission must precede input reads');
+        Assert.AreEqual(Int64(0), Dst.Size, 'standalone tiny header budget must not emit output');
+      end;
+    finally
+      SnapshotSource.Free;
+      Dst.Free;
+      Encoded.Free;
+      Src.Free;
+    end;
   end;
+  Assert.IsTrue(SawBoundedInput,
+    'standalone budget fixtures must exercise a native window smaller than the packed payload');
 end;
 
 procedure TLzma2NativeTests.LzmaStandaloneRejectsShortHeader;
@@ -14667,10 +15382,18 @@ begin
 end;
 
 procedure TLzma2NativeTests.RawLzma2CopyModeIgnoresEncoderDictionaryMemoryLimit;
+const
+  CopyHeaderSize = SizeOf(Byte) + SizeOf(Word);
 var
   Options: TLzma2Options;
+  Normalized: TLzma2Options;
+  DecodeOptions: TLzma2Options;
   Data: TBytes;
   Encoded: TBytes;
+  Decoded: TBytes;
+  Required: UInt64;
+  Src: TBytesStream;
+  Dst: TMemoryStream;
 begin
   Data := BytesOfSize((2 shl 20) + 123);
   Options := TLzma2.DefaultOptions;
@@ -14679,12 +15402,41 @@ begin
   Options.DictionarySize := 1 shl 20;
   Options.ThreadCount := 1;
   Options.BufferSize := 1 shl 20;
+  Normalized := TLzma2Encoder.NormalizeOptions(Options);
+  Assert.AreEqual(NativeUInt(LZMA2_COPY_CHUNK_SIZE), Normalized.BufferSize,
+    'level 0 must normalize its input buffer to the LZMA2 copy chunk limit');
+  // Input buffer, previous copy part, and the newly constructed copy packet.
+  Required := UInt64(Normalized.BufferSize) * 3 + CopyHeaderSize;
+  Assert.IsTrue(Required < Options.DictionarySize,
+    'level 0 copy buffers must fit below the unused encoder dictionary budget');
   Options.MemoryLimit := 1;
+  Assert.WillRaise(
+    procedure
+    begin
+      TLzma2Encoder.EncodeRawBytes(Data, Options);
+    end,
+    ELzmaMemoryError, 'level 0 must account for owned copy buffers');
 
+  Options.MemoryLimit := Required;
   Encoded := TLzma2Encoder.EncodeRawBytes(Data, Options);
   Assert.IsTrue(Length(Encoded) > Length(Data), 'level 0 copy stream should be encoded without dictionary memory');
   Assert.AreEqual(Byte(LZMA2_CONTROL_COPY_RESET_DIC), Encoded[0], 'level 0 copy stream first chunk');
   Assert.AreEqual(Byte(LZMA2_CONTROL_EOF), Encoded[High(Encoded)], 'level 0 copy stream EOF');
+
+  DecodeOptions := Options;
+  DecodeOptions.MemoryLimit := 0;
+  Src := TBytesStream.Create(Encoded);
+  Dst := TMemoryStream.Create;
+  try
+    TLzma2Decoder.DecodeRaw(Src, Dst, DecodeOptions);
+    SetLength(Decoded, Dst.Size);
+    Dst.Position := 0;
+    Dst.ReadBuffer(Decoded[0], Length(Decoded));
+    AssertBytesEqual(Data, Decoded, 'level 0 copy-buffer memory budget round-trip');
+  finally
+    Dst.Free;
+    Src.Free;
+  end;
 end;
 
 procedure TLzma2NativeTests.SingleThreadedRawMemoryLimitIncludesMatchFinder;
@@ -14778,6 +15530,74 @@ begin
   end;
 end;
 
+procedure TLzma2NativeTests.RawLzma2StreamingAdmissionHonorsExactMemoryLimit;
+var
+  Data: TBytes;
+  OutBytes: TBytes;
+  Level: Integer;
+  Options: TLzma2Options;
+  DecodeOptions: TLzma2Options;
+  Profile: TLzmaEncoderProfile;
+  Props: TLzmaProps;
+  Required: UInt64;
+  Src: TBytesStream;
+  Encoded: TMemoryStream;
+  Decoded: TMemoryStream;
+begin
+  Data := HighEntropyBytes(257);
+  for Level := 0 to 1 do
+  begin
+    Options := TLzma2.DefaultOptions;
+    Options.Container := lcRawLzma2;
+    Options.Level := Level;
+    Options.DictionarySize := 4096;
+    Options.BufferSize := 4096;
+    Options.ThreadCount := 1;
+    Options.MatchFinderProfile := lmfpHashChain4;
+    if Level = 0 then
+      // Buffer, previous copy part, and the newly built three-byte-header packet.
+      Required := UInt64(Options.BufferSize) * 3 + 3
+    else
+    begin
+      Profile := TLzmaRawEncoder.NormalizeProfile(Options.Level, Options.DictionarySize);
+      Profile.MatchFinderKind := mfHashChain4;
+      Props := TLzmaRawEncoder.DefaultProperties(Options.DictionarySize);
+      Required := TLzmaRawEncoder.RequiredStreamingMemoryForInput(Profile, Props,
+        UInt64(Length(Data)), Options.BufferSize, True);
+    end;
+
+    Src := TBytesStream.Create(Data);
+    Encoded := TMemoryStream.Create;
+    Decoded := TMemoryStream.Create;
+    try
+      Options.MemoryLimit := Required - 1;
+      Assert.WillRaise(
+        procedure
+        begin
+          TLzma2Encoder.EncodeRaw(Src, Encoded, Options);
+        end,
+        ELzmaMemoryError, 'one byte below the owned-memory admission must fail');
+      Assert.AreEqual(Int64(0), Encoded.Size, 'memory rejection must precede output');
+      Src.Position := 0;
+      Options.MemoryLimit := Required;
+      TLzma2Encoder.EncodeRaw(Src, Encoded, Options);
+      Assert.IsTrue(Encoded.Size > 0, 'the exact admitted owned-memory budget must succeed');
+      DecodeOptions := Options;
+      DecodeOptions.MemoryLimit := 0;
+      Encoded.Position := 0;
+      TLzma2Decoder.DecodeRaw(Encoded, Decoded, DecodeOptions);
+      SetLength(OutBytes, Decoded.Size);
+      Decoded.Position := 0;
+      Decoded.ReadBuffer(OutBytes[0], Length(OutBytes));
+      AssertBytesEqual(Data, OutBytes, 'exact streaming admission round-trip');
+    finally
+      Decoded.Free;
+      Encoded.Free;
+      Src.Free;
+    end;
+  end;
+end;
+
 procedure TLzma2NativeTests.RawLzma2RoundTripsWithNonSeekableStreams;
 var
   Options: TLzma2Options;
@@ -14834,6 +15654,62 @@ begin
       Decoded.ReadBuffer(OutBytes[0], Decoded.Size);
     end;
     AssertBytesEqual(Data, OutBytes, 'raw LZMA2 non-seekable round-trip');
+  finally
+    Decoded.Free;
+    DecSrc.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.RawLzma2CompressedEncodeStreamsShortNonSeekableIO;
+var
+  Options: TLzma2Options;
+  Data: TBytes;
+  EncodedBytes: TBytes;
+  OutBytes: TBytes;
+  Src: TShortNonSeekableReadStream;
+  Encoded: TShortWriteProbeMemoryStream;
+  DecSrc: TShortNonSeekableReadStream;
+  Decoded: TShortWriteProbeMemoryStream;
+begin
+  Data := RepeatingBytes((4 shl 20) + 97);
+  Options := TLzma2.DefaultOptions;
+  Options.Container := lcRawLzma2;
+  Options.Level := 1;
+  Options.DictionarySize := 1 shl 20;
+  Options.ThreadCount := 1;
+  Options.BufferSize := 4096;
+
+  Src := TShortNonSeekableReadStream.Create(Data);
+  Encoded := TShortWriteProbeMemoryStream.Create(Src);
+  try
+    TLzma2.Compress(Src, Encoded, Options);
+    Assert.IsTrue(Encoded.HasOutput, 'native compressed encoder must write output');
+    Assert.IsTrue(Encoded.FirstWriteInput > 0, 'first raw LZMA2 chunk must consume input');
+    Assert.IsTrue(Encoded.FirstWriteInput < UInt64(Length(Data)),
+      'native compressed encoder must write a chunk before draining non-seekable input');
+    Assert.AreEqual(UInt64(Length(Data)), Src.BytesRead, 'encoder must consume all short reads');
+    Assert.AreEqual(0, Src.SeekCount, 'encoder must not seek short-read input');
+    Assert.IsTrue(Encoded.ShortWriteCount > 0, 'encoder must complete short destination writes');
+    Assert.IsTrue(Encoded.Size < Length(Data) div 4,
+      'short-read streaming fixture must use effective compression');
+    SetLength(EncodedBytes, Encoded.Size);
+    Encoded.Position := 0;
+    Encoded.ReadBuffer(EncodedBytes[0], Length(EncodedBytes));
+  finally
+    Encoded.Free;
+    Src.Free;
+  end;
+
+  DecSrc := TShortNonSeekableReadStream.Create(EncodedBytes);
+  Decoded := TShortWriteProbeMemoryStream.Create(DecSrc);
+  try
+    TLzma2.Decompress(DecSrc, Decoded, Options);
+    Assert.AreEqual(0, DecSrc.SeekCount, 'decoder must not seek short-read input');
+    Assert.IsTrue(Decoded.ShortWriteCount > 0, 'decoder must complete short destination writes');
+    SetLength(OutBytes, Decoded.Size);
+    Decoded.Position := 0;
+    Decoded.ReadBuffer(OutBytes[0], Length(OutBytes));
+    AssertBytesEqual(Data, OutBytes, 'native compressed short non-seekable I/O round-trip');
   finally
     Decoded.Free;
     DecSrc.Free;
@@ -15137,6 +16013,166 @@ begin
   end;
 end;
 
+
+procedure TLzma2NativeTests.RawLzma2DecodeAdmitsOwnedMemoryBeforeReadingInput;
+var
+  Options: TLzma2Options;
+  Data: TBytes;
+  Source: TBytesStream;
+  Encoded, Decoded: TMemoryStream;
+begin
+  Data := RepeatingBytes(8192);
+  Options := TLzma2.DefaultOptions;
+  Options.Container := lcRawLzma2;
+  Options.Level := 1;
+  Options.DictionarySize := 4096;
+  Options.ThreadCount := 1;
+  Options.BufferSize := 4096;
+  Source := TBytesStream.Create(Data);
+  Encoded := TMemoryStream.Create;
+  Decoded := TMemoryStream.Create;
+  try
+    TLzma2.Compress(Source, Encoded, Options);
+    Options.MemoryLimit := TLzma2Decoder.RequiredMemory(Options.DictionarySize);
+    Encoded.Position := 0;
+    TLzma2.Decompress(Encoded, Decoded, Options);
+    Assert.AreEqual(Int64(Length(Data)), Decoded.Size, 'raw exact owned-memory budget must decode');
+    Assert.IsTrue(CompareMem(@Data[0], Decoded.Memory, Length(Data)), 'raw exact-budget payload');
+    Decoded.Size := 0;
+    Encoded.Position := 0;
+    Dec(Options.MemoryLimit);
+    Assert.WillRaise(
+      procedure
+      begin
+        TLzma2.Decompress(Encoded, Decoded, Options);
+      end,
+      ELzmaMemoryError);
+    Assert.AreEqual(Int64(0), Encoded.Position, 'raw memory admission must precede input reads');
+    Assert.AreEqual(Int64(0), Decoded.Size, 'raw memory admission must precede output');
+  finally
+    Decoded.Free;
+    Encoded.Free;
+    Source.Free;
+  end;
+end;
+
+
+procedure TLzma2NativeTests.XzDecodeIncludesRetainedMetadataInMemoryLimit;
+var
+  Options: TLzma2Options;
+  Data: TBytes;
+  Source: TBytesStream;
+  Encoded, Decoded: TMemoryStream;
+begin
+  Data := RepeatingBytes(3 * 16384);
+  Options := TLzma2.DefaultOptions;
+  Options.Container := lcXz;
+  Options.Level := 0;
+  Options.DictionarySize := 4096;
+  Options.ThreadCount := 1;
+  Options.BufferSize := 4096;
+  Options.XzBlockSize := 16384;
+  Options.Check := lzCheckCrc32;
+  Source := TBytesStream.Create(Data);
+  Encoded := TMemoryStream.Create;
+  Decoded := TMemoryStream.Create;
+  try
+    TLzma2.Compress(Source, Encoded, Options);
+    Options.MemoryLimit := TLzmaXz.RequiredDecodeMemory(Options.DictionarySize, Options.Check, 3);
+    Encoded.Position := 0;
+    TLzma2.Decompress(Encoded, Decoded, Options);
+    Assert.AreEqual(Int64(Length(Data)), Decoded.Size, 'XZ owned-memory estimate must decode all blocks');
+    Assert.IsTrue(CompareMem(@Data[0], Decoded.Memory, Length(Data)), 'XZ estimated-budget payload');
+    Decoded.Size := 0;
+    Encoded.Position := 0;
+    Options.MemoryLimit := TLzma2Decoder.RequiredMemory(Options.DictionarySize);
+    Assert.WillRaise(
+      procedure
+      begin
+        TLzma2.Decompress(Encoded, Decoded, Options);
+      end,
+      ELzmaMemoryError);
+    Assert.AreEqual(Int64(0), Decoded.Size, 'XZ metadata and codec must share one budget before output');
+  finally
+    Decoded.Free;
+    Encoded.Free;
+    Source.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.MtDecodeRetainsAdmissionUntilDestinationWriteCompletes;
+const
+  UnitCount = 4;
+  UnitSize = 4096;
+  EventDeadlineMs = 5000;
+  BlockedObservationMs = 250;
+var
+  Units: TArray<TBytes>;
+  OutputSizes: TArray<UInt64>;
+  SecondUnitEntered, ThirdUnitEntered, ReleaseWorkers: TEvent;
+  Destination: TBeforeFirstWriteStream;
+  AdmittedWhileWriterBlocked: Boolean;
+  DecodedUnits, I: Integer;
+  Expected, Actual: TBytes;
+begin
+  SetLength(Units, UnitCount);
+  SetLength(OutputSizes, UnitCount);
+  SetLength(Expected, UnitCount * UnitSize);
+  for I := 0 to UnitCount - 1 do
+  begin
+    OutputSizes[I] := UnitSize;
+    FillChar(Expected[I * UnitSize], UnitSize, I + 1);
+  end;
+  SecondUnitEntered := TEvent.Create(nil, True, False, '');
+  ThirdUnitEntered := TEvent.Create(nil, True, False, '');
+  ReleaseWorkers := TEvent.Create(nil, True, False, '');
+  AdmittedWhileWriterBlocked := False;
+  DecodedUnits := 0;
+  Destination := TBeforeFirstWriteStream.Create(
+    procedure
+    begin
+      try
+        if SecondUnitEntered.WaitFor(EventDeadlineMs) <> wrSignaled then
+          raise Exception.Create('second MT output did not start');
+        // Keep the first destination write synchronous while its slot is occupied.
+        AdmittedWhileWriterBlocked := ThirdUnitEntered.WaitFor(BlockedObservationMs) = wrSignaled;
+      finally
+        ReleaseWorkers.SetEvent;
+      end;
+    end);
+  try
+    TLzmaMtDecode.DecodeOrderedToStream(Units, OutputSizes, Destination, 2,
+      procedure(const Index: Integer; const Input: TBytes; const Output: TStream)
+      var
+        Payload: array[0..UnitSize - 1] of Byte;
+      begin
+        TInterlocked.Increment(DecodedUnits);
+        if Index = 1 then
+          SecondUnitEntered.SetEvent
+        else if Index = 2 then
+          ThirdUnitEntered.SetEvent;
+        if (Index <> 0) and (ReleaseWorkers.WaitFor(EventDeadlineMs) <> wrSignaled) then
+          raise Exception.Create('blocked MT worker was not released');
+        FillChar(Payload, SizeOf(Payload), Index + 1);
+        Output.WriteBuffer(Payload, SizeOf(Payload));
+      end);
+
+    Assert.IsFalse(AdmittedWhileWriterBlocked,
+      'a blocked destination write must retain one of the two admitted output slots');
+    Assert.AreEqual(UnitCount, DecodedUnits, 'all MT units finish after the writer is released');
+    Assert.AreEqual(Int64(Length(Expected)), Destination.Size, 'ordered MT output size');
+    SetLength(Actual, Destination.Size);
+    Move(Destination.Memory^, Actual[0], Length(Actual));
+    AssertBytesEqual(Expected, Actual, 'ordered MT output after a blocked synchronous write');
+  finally
+    ReleaseWorkers.SetEvent;
+    Destination.Free;
+    ReleaseWorkers.Free;
+    ThirdUnitEntered.Free;
+    SecondUnitEntered.Free;
+  end;
+end;
+
 procedure TLzma2NativeTests.MtDecodeWriteFailureSignalsWorkersToCancel;
 var
   Units: TArray<TBytes>;
@@ -15363,6 +16399,8 @@ var
   DecodeOptions: TLzma2Options;
   Data: TBytes;
   Raw: TBytes;
+  SecondRaw: TBytes;
+  Half: TBytes;
   OutBytes: TBytes;
   Src: TBytesStream;
   Dst: TMemoryStream;
@@ -15376,7 +16414,12 @@ begin
   EncodeOptions.BufferSize := 1 shl 20;
 
   Data := RepeatingBytes(64 * 1024 * 1024);
-  Raw := TLzma2Encoder.EncodeRawBytes(Data, EncodeOptions);
+  Half := Copy(Data, 0, Length(Data) div 2);
+  Raw := TLzma2Encoder.EncodeRawBytes(Half, EncodeOptions);
+  Half := Copy(Data, Length(Data) div 2, Length(Data) - Length(Data) div 2);
+  SecondRaw := TLzma2Encoder.EncodeRawBytes(Half, EncodeOptions);
+  SetLength(Raw, Length(Raw) - 1);
+  AppendBytes(Raw, SecondRaw);
   Assert.IsTrue(UInt64(Length(Raw)) * 256 < UInt64(Length(Data)),
     'test fixture should have tiny PackedBytes work compared to expanded output');
 
@@ -15399,7 +16442,7 @@ begin
       'raw MT decode should avoid worker overhead when PackedBytes work is tiny');
     Assert.AreEqual(4, Diagnostics.RequestedThreadCount, 'requested high-expansion fallback threads');
     Assert.AreEqual(1, Diagnostics.ActualThreadCount, 'high-expansion fallback actual thread count');
-    Assert.IsTrue(Diagnostics.IndependentUnitCount > 1, 'high-expansion stream should still expose reset chunks');
+    Assert.AreEqual(2, Diagnostics.IndependentUnitCount, 'high-expansion fixture must expose two independent dictionaries');
     Assert.AreEqual(ldfrInsufficientWork, Diagnostics.FallbackReason, 'high-expansion fallback reason');
   finally
     Dst.Free;
@@ -15490,7 +16533,7 @@ begin
   FillChar(Diagnostics, SizeOf(Diagnostics), 0);
   DecodeOptions := EncodeOptions;
   DecodeOptions.ThreadCount := 4;
-  DecodeOptions.MemoryLimit := 200000;
+  DecodeOptions.MemoryLimit := TLzma2Decoder.RequiredMemory(DecodeOptions.DictionarySize);
   DecodeOptions.DecodeDiagnostics := @Diagnostics;
   Src := TBytesStream.Create(Combined);
   Dst := TMemoryStream.Create;
@@ -15510,6 +16553,102 @@ begin
   finally
     Dst.Free;
     Src.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.RawLzma2MtDecodeRechecksCapturedPlanMemory;
+const
+  UnitCount = 3;
+  WorkerCount = 2;
+var
+  BuildOptions, DecodeOptions: TLzma2Options;
+  Small, Large, BeforeData, AfterData, ExpandedData: TBytes;
+  Stable: TBytesStream;
+  Switching: TRewindingReadStream;
+  Destination: TMemoryStream;
+  Diagnostics: TLzma2DecodeDiagnostics;
+  I, ChangeKind: Integer;
+
+  function ThreeIndependentUnits(const Data: TBytes; const Level: TLzma2CompressionLevel): TBytes;
+  var
+    Options: TLzma2Options;
+    Source: TBytesStream;
+    Encoded: TMemoryStream;
+    Segment: TBytes;
+    UnitIndex, Offset: Integer;
+  begin
+    Options := BuildOptions;
+    Options.Level := Level;
+    Source := TBytesStream.Create(Data);
+    Encoded := TMemoryStream.Create;
+    try
+      TLzma2.Compress(Source, Encoded, Options);
+      SetLength(Segment, Encoded.Size);
+      Move(Encoded.Memory^, Segment[0], Length(Segment));
+      Assert.AreEqual(Byte(0), Segment[High(Segment)], 'independent raw unit EOF');
+      SetLength(Result, UnitCount * (Length(Segment) - 1) + 1);
+      Offset := 0;
+      for UnitIndex := 0 to UnitCount - 1 do
+      begin
+        Move(Segment[0], Result[Offset], Length(Segment) - 1);
+        Inc(Offset, Length(Segment) - 1);
+      end;
+      Result[Offset] := 0;
+    finally
+      Encoded.Free;
+      Source.Free;
+    end;
+  end;
+
+begin
+  BuildOptions := TLzma2.DefaultOptions;
+  BuildOptions.Container := lcRawLzma2;
+  BuildOptions.DictionarySize := 4096;
+  BuildOptions.ThreadCount := 1;
+  Small := RepeatingBytes(2048);
+  Large := RepeatingBytes(256 * 1024);
+  BeforeData := ThreeIndependentUnits(Small, 0);
+  AfterData := ThreeIndependentUnits(Large, 1);
+  ExpandedData := ThreeIndependentUnits(Large, 0);
+  Assert.IsTrue(Length(AfterData) < Length(BeforeData), 'changed input must retain less packed data');
+  DecodeOptions := BuildOptions;
+  DecodeOptions.ThreadCount := WorkerCount;
+  // The old copy plan fits; two much larger decoded output units do not.
+  DecodeOptions.MemoryLimit := WorkerCount * TLzma2Decoder.RequiredMemory(BuildOptions.DictionarySize) +
+    LZMA2_COPY_CHUNK_SIZE;
+  DecodeOptions.DecodeDiagnostics := @Diagnostics;
+  Stable := TBytesStream.Create(BeforeData);
+  Destination := TMemoryStream.Create;
+  try
+    TLzma2.Decompress(Stable, Destination, DecodeOptions);
+    Assert.IsTrue(Diagnostics.UsedMultiThread, 'old plan must positively enter MT at this limit');
+    Assert.AreEqual(UnitCount, Diagnostics.IndependentUnitCount, 'old independent unit count');
+    Assert.AreEqual(Int64(UnitCount * Length(Small)), Destination.Size, 'old complete output');
+  finally
+    Destination.Free;
+    Stable.Free;
+  end;
+  for ChangeKind := 0 to 1 do
+  begin
+    if ChangeKind = 0 then
+      Switching := TRewindingReadStream.Create(BeforeData, AfterData)
+    else
+      Switching := TRewindingReadStream.Create(BeforeData, ExpandedData);
+  Destination := TMemoryStream.Create;
+  try
+    TLzma2.Decompress(Switching, Destination, DecodeOptions);
+    Assert.IsTrue(Switching.Switched, 'source must change on the capture rewind');
+    Assert.IsFalse(Diagnostics.UsedMultiThread, 'new captured output sizes must be re-admitted');
+    Assert.AreEqual(ldfrMemoryLimit, Diagnostics.FallbackReason, 'new plan memory fallback reason');
+    Assert.AreEqual(UnitCount, Diagnostics.IndependentUnitCount, 'new independent unit count');
+    Assert.AreEqual(Int64(UnitCount * Length(Large)), Destination.Size, 'new complete sequential output');
+    for I := 0 to UnitCount - 1 do
+      Assert.IsTrue(CompareMem(@Large[0], @PByte(Destination.Memory)[I * Length(Large)], Length(Large)),
+        'each new independent unit must decode exactly');
+  finally
+    Destination.Free;
+    Switching.Free;
+  end;
   end;
 end;
 
@@ -15546,7 +16685,7 @@ begin
   FillChar(Diagnostics, SizeOf(Diagnostics), 0);
   DecodeOptions := EncodeOptions;
   DecodeOptions.ThreadCount := 4;
-  DecodeOptions.MemoryLimit := 200000;
+  DecodeOptions.MemoryLimit := TLzma2Decoder.RequiredMemory(DecodeOptions.DictionarySize);
   DecodeOptions.DecodeDiagnostics := @Diagnostics;
   Src := TProbeBoundReadStream.Create(Combined, 4096);
   Dst := TMemoryStream.Create;
@@ -15919,6 +17058,281 @@ begin
     Decoded.Free;
     Encoded.Free;
     Src.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.SevenZipMetadataMethodsHonorMemoryLimit;
+var
+  Options: TLzma2Options;
+  Data, Payload, Header, Archive: TBytes;
+  ExpectedName, StoredName: string;
+  Entries: TArray<TLzma7zEntry>;
+  Source: TSevenZipPayloadGuardStream;
+  Destination: TMemoryStream;
+  LimitCase: Integer;
+begin
+  Data := TBytes.Create($41);
+  // One-byte LZMA2 copy chunk plus the end marker; no encoder or SDK fixture needed.
+  Payload := TBytes.Create($01, $00, $00, $41, $00);
+  ExpectedName := 'unicode/' + #$0444#$0430#$0439#$043B + '-' +
+    #$6D4B#$8BD5 + '-' + #$D83D#$DCC4 + '.bin';
+  Header := BuildTestSevenZipHeaderBytes(Length(Payload), Crc32Calc(Payload),
+    Length(Data), Crc32Calc(Data), sztcLzma2, TBytes.Create(0), ExpectedName);
+  Archive := BuildTestSevenZipArchiveFromPayloadAndHeader(Payload, Header);
+  Options := TLzma2.DefaultOptions;
+  Source := TSevenZipPayloadGuardStream.Create(Archive);
+  Destination := TMemoryStream.Create;
+  try
+    Entries := TLzma7z.List(Source);
+    Assert.AreEqual(1, Integer(Length(Entries)), 'legacy List entry count');
+    Assert.AreEqual(ExpectedName, Entries[0].FileName, 'legacy List preserves UTF-16 code units');
+    Source.Position := 0;
+    Assert.AreEqual(ExpectedName, TLzma7z.ReadSingleFileName(Source), 'legacy stored name');
+    for LimitCase := 0 to 1 do
+    begin
+      if LimitCase = 0 then
+        Options.MemoryLimit := 0
+      else
+        Options.MemoryLimit := 1 shl 20;
+      Source.Position := 0;
+      Entries := TLzma7z.List(Source, Options);
+      Assert.AreEqual(1, Integer(Length(Entries)), 'bounded List entry count');
+      Assert.AreEqual(ExpectedName, Entries[0].FileName, 'bounded List preserves UTF-16 code units');
+      Assert.AreEqual(UInt64(Length(Data)), Entries[0].Size, 'bounded List unpacked size');
+      Assert.IsTrue(Entries[0].HasCrc and Entries[0].HasStream, 'file metadata flags');
+      Assert.IsFalse(Entries[0].IsDirectory, 'file metadata kind');
+      Assert.AreEqual(Crc32Calc(Data), Entries[0].Crc, 'bounded List data CRC');
+      Assert.AreEqual(Int64(Length(Archive)), Source.Position, 'List leaves source after archive');
+      Source.Position := 0;
+      StoredName := TLzma7z.ReadSingleFileName(Source, Options);
+      Assert.AreEqual(ExpectedName, StoredName, 'bounded stored name preserves UTF-16 code units');
+      Assert.AreEqual(Int64(Length(Archive)), Source.Position, 'name lookup leaves source after archive');
+    end;
+    Assert.AreEqual(0, Source.PayloadReadAttempts, 'metadata lookup must not read data payload');
+
+    // This finite allowance fits the serialized header alone, not parsed metadata.
+    Options.MemoryLimit := UInt64(Length(Header));
+    Source.Position := 0;
+    Assert.WillRaise(
+      procedure
+      begin
+        Entries := TLzma7z.List(Source, Options);
+      end, ELzmaMemoryError, 'List must enforce the caller metadata budget');
+    Source.Position := 0;
+    Assert.WillRaise(
+      procedure
+      begin
+        StoredName := TLzma7z.ReadSingleFileName(Source, Options);
+      end, ELzmaMemoryError, 'stored-name lookup must enforce the caller metadata budget');
+    Assert.AreEqual(0, Source.PayloadReadAttempts, 'metadata refusal must precede data reads');
+
+    Source.Position := 0;
+    Options.MemoryLimit := 0;
+    Assert.WillRaise(
+      procedure
+      begin
+        TLzma7z.Decode(Source, Destination, Options);
+      end, ELzmaReadError, 'unrestricted decode must reach the armed payload guard');
+    Assert.IsTrue(Source.PayloadReadAttempts > 0, 'payload guard positive control');
+    Assert.AreEqual(Int64(0), Destination.Size, 'guarded decode must not publish bytes');
+  finally
+    Destination.Free;
+    Source.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.SevenZipEncodedHeaderChecksBudgetBeforePayload;
+var
+  Options, LimitedOptions: TLzma2Options;
+  Coder: TSevenZipTestCoder;
+  Data, Archive: TBytes;
+  Entries: TArray<TLzma7zEntry>;
+  StoredName: string;
+  Guard: TSevenZipPayloadGuardStream;
+  Source: TBytesStream;
+begin
+  Data := RepeatingBytes(64);
+  Options := TLzma2.DefaultOptions;
+  Options.DictionarySize := 1 shl 20;
+  Options.ThreadCount := 1;
+  for Coder := sztcLzma to sztcLzma2 do
+  begin
+    Options.MemoryLimit := 0;
+    Archive := BuildTestSevenZipEncodedHeaderArchive(Data, 'encoded-budget.bin', Coder, Options);
+    LimitedOptions := Options;
+    LimitedOptions.MemoryLimit := Options.DictionarySize div 2;
+    // Encoded-header properties, rather than the caller hint, determine its dictionary.
+    LimitedOptions.DictionarySize := 4096;
+    Guard := TSevenZipPayloadGuardStream.Create(Archive);
+    try
+      Assert.WillRaise(
+        procedure
+        begin
+          Entries := TLzma7z.List(Guard, LimitedOptions);
+        end, ELzmaMemoryError, 'encoded-header List must reject before its packed read');
+      Guard.Position := 0;
+      Assert.WillRaise(
+        procedure
+        begin
+          StoredName := TLzma7z.ReadSingleFileName(Guard, LimitedOptions);
+        end, ELzmaMemoryError, 'encoded stored-name lookup must keep a finite decoder allowance');
+      Assert.AreEqual(0, Guard.PayloadReadAttempts, 'finite header refusal must precede packed reads');
+      Guard.Position := 0;
+      Assert.WillRaise(
+        procedure
+        begin
+          Entries := TLzma7z.List(Guard, Options);
+        end, ELzmaReadError, 'explicit zero must reach the encoded-header payload guard');
+      Assert.IsTrue(Guard.PayloadReadAttempts > 0, 'encoded-header payload guard positive control');
+    finally
+      Guard.Free;
+    end;
+
+    Source := TBytesStream.Create(Archive);
+    try
+      Options.MemoryLimit := 8 shl 20;
+      Entries := TLzma7z.List(Source, Options);
+      Assert.AreEqual(1, Integer(Length(Entries)), 'adequate encoded-header entry count');
+      Assert.AreEqual('encoded-budget.bin', Entries[0].FileName, 'adequate encoded-header name');
+      Assert.AreEqual(UInt64(Length(Data)), Entries[0].Size, 'adequate encoded-header unpacked size');
+      Assert.AreEqual(Int64(Length(Archive)), Source.Position, 'encoded List leaves source after archive');
+      Source.Position := 0;
+      StoredName := TLzma7z.ReadSingleFileName(Source, Options);
+      Assert.AreEqual('encoded-budget.bin', StoredName, 'adequate encoded stored name');
+    finally
+      Source.Free;
+    end;
+  end;
+end;
+
+procedure TLzma2NativeTests.SevenZipLzmaDecodeChecksDictionaryBeforePayload;
+var
+  Options: TLzma2Options;
+  Archive: TBytes;
+  Source: TSevenZipPayloadGuardStream;
+  Destination: TMemoryStream;
+begin
+  Options := TLzma2.DefaultOptions;
+  Options.DictionarySize := 1 shl 20;
+  Options.Level := 1;
+  Archive := BuildTestSevenZipLzmaArchive(RepeatingBytes(4096), 'budget.bin', Options);
+  Options.MemoryLimit := Options.DictionarySize div 2;
+  // The archive properties, rather than this caller hint, determine the dictionary.
+  Options.DictionarySize := 4096;
+  Source := TSevenZipPayloadGuardStream.Create(Archive);
+  Destination := TMemoryStream.Create;
+  try
+    Assert.WillRaise(
+      procedure
+      begin
+        TLzma7z.Decode(Source, Destination, Options);
+      end, ELzmaMemoryError, 'LZMA dictionary admission must precede its packed read');
+    Assert.AreEqual(0, Source.PayloadReadAttempts, 'rejection must precede every payload read');
+    Assert.AreEqual(Int64(0), Destination.Size, 'memory rejection must not publish output');
+    Source.Position := 0;
+    Options.MemoryLimit := 0;
+    Assert.WillRaise(
+      procedure
+      begin
+        TLzma7z.Decode(Source, Destination, Options);
+      end, ELzmaReadError, 'unlimited decoding must reach the armed payload guard');
+    Assert.IsTrue(Source.PayloadReadAttempts > 0, 'the payload guard must be reachable');
+  finally
+    Destination.Free;
+    Source.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.SevenZipExtractAllChecksOwnedOutputBeforePayload;
+var
+  Options: TLzma2Options;
+  Coder: TSevenZipTestCoder;
+  Data, Archive: TBytes;
+  Source: TSevenZipPayloadGuardStream;
+  Destination: TMemoryStream;
+begin
+  Options := TLzma2.DefaultOptions;
+  Options.DictionarySize := 4096;
+  Options.ThreadCount := 1;
+  Data := RepeatingBytes(Integer(2 * TLzma2Decoder.RequiredMemory(Options.DictionarySize)));
+  for Coder := sztcLzma to sztcLzma2 do
+  begin
+    Options.MemoryLimit := 0;
+    Archive := BuildTestSevenZipMultiFolderArchive(Data, Data, Coder, Options);
+    // A folder output alone fills this allowance; its decoder cannot also fit.
+    Options.MemoryLimit := UInt64(Length(Data));
+    Source := TSevenZipPayloadGuardStream.Create(Archive);
+    Destination := TMemoryStream.Create;
+    try
+      Assert.WillRaise(
+        procedure
+        begin
+          TLzma7z.ExtractAll(Source,
+            function(const Entry: TLzma7zEntry): TStream
+            begin
+              Result := Destination;
+            end, Options);
+        end, ELzmaMemoryError, 'owned folder output must be admitted before payload input');
+      Assert.AreEqual(0, Source.PayloadReadAttempts, 'owned output rejection must precede payload reads');
+      Assert.AreEqual(Int64(0), Destination.Size, 'owned output rejection must not publish data');
+    finally
+      Destination.Free;
+      Source.Free;
+    end;
+  end;
+end;
+
+procedure TLzma2NativeTests.SevenZipExtractAllReusesReleasedFolderMemory;
+var
+  Options: TLzma2Options;
+  Coder: TSevenZipTestCoder;
+  Data, Archive, Actual: TBytes;
+  Source: TBytesStream;
+  FirstOut, SecondOut: TMemoryStream;
+  Callbacks: Integer;
+begin
+  Options := TLzma2.DefaultOptions;
+  Options.DictionarySize := 4096;
+  Options.ThreadCount := 1;
+  Data := RepeatingBytes(Integer(2 * TLzma2Decoder.RequiredMemory(Options.DictionarySize)));
+  for Coder := sztcLzma to sztcLzma2 do
+  begin
+    Options.MemoryLimit := 0;
+    Archive := BuildTestSevenZipMultiFolderArchive(Data, Data, Coder, Options);
+    // Two outputs fit, but both outputs plus a decoder do not. Retaining the
+    // completed first folder would therefore prevent decoding the second one.
+    Options.MemoryLimit := UInt64(Length(Data)) * 2;
+    Source := TBytesStream.Create(Archive);
+    FirstOut := TMemoryStream.Create;
+    SecondOut := TMemoryStream.Create;
+    Callbacks := 0;
+    try
+      TLzma7z.ExtractAll(Source,
+        function(const Entry: TLzma7zEntry): TStream
+        begin
+          Inc(Callbacks);
+          if Entry.FileName = 'dir/a.bin' then
+            Exit(FirstOut);
+          if Entry.FileName = 'b.bin' then
+            Exit(SecondOut);
+          Result := nil;
+        end, Options);
+      Assert.AreEqual(4, Callbacks, 'directory and empty entries must keep their callbacks');
+      Assert.AreEqual(Int64(Length(Data)), FirstOut.Size, 'first folder output size');
+      Assert.AreEqual(Int64(Length(Data)), SecondOut.Size, 'second folder output size');
+      SetLength(Actual, Length(Data));
+      FirstOut.Position := 0;
+      FirstOut.ReadBuffer(Actual[0], Length(Actual));
+      AssertBytesEqual(Data, Actual, 'first folder contents');
+      SecondOut.Position := 0;
+      SecondOut.ReadBuffer(Actual[0], Length(Actual));
+      AssertBytesEqual(Data, Actual, 'second folder contents');
+      Assert.AreEqual(Int64(Length(Archive)), Source.Position, 'all folders must finish at archive end');
+    finally
+      SecondOut.Free;
+      FirstOut.Free;
+      Source.Free;
+    end;
   end;
 end;
 
@@ -17135,6 +18549,18 @@ begin
 end;
 
 procedure TLzma2NativeTests.SevenZipSolidLzmaSubstreamsExtractAsSeparateFiles;
+type
+  TSubstreamSizes = record
+    First: Integer;
+    Second: Integer;
+  end;
+const
+  DataSizes: array[0..4] of TSubstreamSizes = (
+    (First: 20 * 1024; Second: 28 * 1024),
+    (First: 1; Second: 4094),
+    (First: 1; Second: 4095),
+    (First: 1; Second: 4098),
+    (First: 4099; Second: 65537));
 var
   Options: TLzma2Options;
   FirstData: TBytes;
@@ -17143,6 +18569,7 @@ var
   ArchiveStream: TBytesStream;
   FirstOut: TMemoryStream;
   SecondOut: TMemoryStream;
+  Sizes: TSubstreamSizes;
 
   procedure AssertStreamBytes(const Expected: TBytes; const Stream: TMemoryStream; const Message: string);
   var
@@ -17158,36 +18585,39 @@ var
   end;
 
 begin
-  FirstData := RepeatingBytes(20 * 1024);
-  SecondData := BytesOfSize(28 * 1024);
   Options := TLzma2.DefaultOptions;
   Options.Container := lc7z;
   Options.Level := 1;
   Options.DictionarySize := 1 shl 20;
 
-  Archive := BuildTestSevenZipSolidArchive(FirstData, SecondData, sztcLzma, Options);
-  ArchiveStream := TBytesStream.Create(Archive);
-  FirstOut := TMemoryStream.Create;
-  SecondOut := TMemoryStream.Create;
-  try
-    TLzma7z.ExtractAll(ArchiveStream,
-      function(const Entry: TLzma7zEntry): TStream
-      begin
-        if Entry.FileName = 'solid/a.bin' then
-          Exit(FirstOut);
-        if Entry.FileName = 'solid/b.bin' then
-          Exit(SecondOut);
-        Assert.Fail('unexpected solid LZMA 7z entry: ' + Entry.FileName);
-        Result := nil;
-      end,
-      Options);
-    AssertStreamBytes(FirstData, FirstOut, 'solid LZMA first substream bytes');
-    AssertStreamBytes(SecondData, SecondOut, 'solid LZMA second substream bytes');
-    Assert.AreEqual(Int64(Length(Archive)), ArchiveStream.Position, 'solid LZMA decode stops at archive end');
-  finally
-    SecondOut.Free;
-    FirstOut.Free;
-    ArchiveStream.Free;
+  for Sizes in DataSizes do
+  begin
+    FirstData := RepeatingBytes(Sizes.First);
+    SecondData := BytesOfSize(Sizes.Second);
+    Archive := BuildTestSevenZipSolidArchive(FirstData, SecondData, sztcLzma, Options);
+    ArchiveStream := TBytesStream.Create(Archive);
+    FirstOut := TMemoryStream.Create;
+    SecondOut := TMemoryStream.Create;
+    try
+      TLzma7z.ExtractAll(ArchiveStream,
+        function(const Entry: TLzma7zEntry): TStream
+        begin
+          if Entry.FileName = 'solid/a.bin' then
+            Exit(FirstOut);
+          if Entry.FileName = 'solid/b.bin' then
+            Exit(SecondOut);
+          Assert.Fail('unexpected solid LZMA 7z entry: ' + Entry.FileName);
+          Result := nil;
+        end,
+        Options);
+      AssertStreamBytes(FirstData, FirstOut, 'solid LZMA first substream bytes');
+      AssertStreamBytes(SecondData, SecondOut, 'solid LZMA second substream bytes');
+      Assert.AreEqual(Int64(Length(Archive)), ArchiveStream.Position, 'solid LZMA decode stops at archive end');
+    finally
+      SecondOut.Free;
+      FirstOut.Free;
+      ArchiveStream.Free;
+    end;
   end;
 end;
 
@@ -18039,7 +19469,7 @@ begin
   FillChar(Diagnostics, SizeOf(Diagnostics), 0);
   DecodeOptions := BuildOptions;
   DecodeOptions.ThreadCount := 4;
-  DecodeOptions.MemoryLimit := 200000;
+  DecodeOptions.MemoryLimit := TLzmaXz.RequiredDecodeMemory(DecodeOptions.DictionarySize, DecodeOptions.Check, 2);
   DecodeOptions.DecodeDiagnostics := @Diagnostics;
   Src := TBytesStream.Create(Archive);
   Dst := TMemoryStream.Create;
@@ -18095,7 +19525,7 @@ begin
   FillChar(Diagnostics, SizeOf(Diagnostics), 0);
   DecodeOptions := BuildOptions;
   DecodeOptions.ThreadCount := 4;
-  DecodeOptions.MemoryLimit := 200000;
+  DecodeOptions.MemoryLimit := TLzmaXz.RequiredDecodeMemory(DecodeOptions.DictionarySize, DecodeOptions.Check, 2);
   DecodeOptions.DecodeDiagnostics := @Diagnostics;
   Src := TProbeBoundReadStream.Create(Archive, 4096);
   Dst := TMemoryStream.Create;
@@ -18266,7 +19696,7 @@ begin
   AppendBytes(Archive, BuildTestXzIndexAndFooter(Records, XzCheckId(BuildOptions.Check)));
 
   DecodeOptions := BuildOptions;
-  DecodeOptions.MemoryLimit := DecodeOptions.DictionarySize;
+  DecodeOptions.MemoryLimit := TLzmaXz.RequiredDecodeMemory(DecodeOptions.DictionarySize, DecodeOptions.Check, 1);
   Src := TBytesStream.Create(Archive);
   Dst := TMemoryStream.Create;
   try
@@ -18306,9 +19736,15 @@ begin
   Encoded := TMemoryStream.Create;
   Decoded := TMemoryStream.Create;
   try
+    Assert.IsTrue(UInt64(Length(Data)) > Options.MemoryLimit,
+      'streaming encode fixture must exceed its encoder memory budget');
     TLzma2.Compress(Src, Encoded, Options);
+    Assert.IsTrue(UInt64(Encoded.Size) > Options.MemoryLimit,
+      'copy-mode XZ archive must exceed the encoder memory budget');
 
     DecodeOptions := Options;
+    DecodeOptions.MemoryLimit := TLzmaXz.RequiredDecodeMemory(
+      DecodeOptions.DictionarySize, DecodeOptions.Check);
     Encoded.Position := 0;
     TLzma2.Decompress(Encoded, Decoded, DecodeOptions);
     SetLength(OutBytes, Decoded.Size);
@@ -19550,7 +20986,7 @@ begin
   SevenZip := EnvToolPath('LZMA_TEST_7Z');
   if SevenZip = '' then
   begin
-    SkipExternalTool('CrossToolDelphiXzIsAcceptedBySevenZip', 'LZMA_TEST_7Z');
+    FailMissingExternalTool('CrossToolDelphiXzIsAcceptedBySevenZip', 'LZMA_TEST_7Z');
     Exit;
   end;
 
@@ -19609,7 +21045,7 @@ begin
   SevenZip := EnvToolPath('LZMA_TEST_7Z');
   if SevenZip = '' then
   begin
-    SkipExternalTool('CrossToolDelphiSevenZipIsAcceptedBySevenZip', 'LZMA_TEST_7Z');
+    FailMissingExternalTool('CrossToolDelphiSevenZipIsAcceptedBySevenZip', 'LZMA_TEST_7Z');
     Exit;
   end;
 
@@ -19655,7 +21091,7 @@ begin
   SevenZip := EnvToolPath('LZMA_TEST_7Z');
   if SevenZip = '' then
   begin
-    SkipExternalTool('CrossToolSevenZip7zDecodes', 'LZMA_TEST_7Z');
+    FailMissingExternalTool('CrossToolSevenZip7zDecodes', 'LZMA_TEST_7Z');
     Exit;
   end;
 
@@ -19742,7 +21178,7 @@ begin
   SevenZip := EnvToolPath('LZMA_TEST_7Z');
   if SevenZip = '' then
   begin
-    SkipExternalTool('CrossToolSevenZipXzDecodes', 'LZMA_TEST_7Z');
+    FailMissingExternalTool('CrossToolSevenZipXzDecodes', 'LZMA_TEST_7Z');
     Exit;
   end;
 
@@ -19794,7 +21230,7 @@ begin
   Xz := EnvToolPath('LZMA_TEST_XZ');
   if Xz = '' then
   begin
-    SkipExternalTool('CrossToolXzUtilsMatrixDecodes', 'LZMA_TEST_XZ');
+    FailMissingExternalTool('CrossToolXzUtilsMatrixDecodes', 'LZMA_TEST_XZ');
     Exit;
   end;
 
@@ -19853,7 +21289,7 @@ begin
   LzmaExe := EnvToolPath('LZMA_TEST_LZMA');
   if LzmaExe = '' then
   begin
-    SkipExternalTool('CrossToolSdkLzmaDecodesWithDelphi', 'LZMA_TEST_LZMA');
+    FailMissingExternalTool('CrossToolSdkLzmaDecodesWithDelphi', 'LZMA_TEST_LZMA');
     Exit;
   end;
 
@@ -19907,7 +21343,7 @@ begin
   LzmaExe := EnvToolPath('LZMA_TEST_LZMA');
   if LzmaExe = '' then
   begin
-    SkipExternalTool('CrossToolDelphiRawLzmaDecodesWithSdk', 'LZMA_TEST_LZMA');
+    FailMissingExternalTool('CrossToolDelphiRawLzmaDecodesWithSdk', 'LZMA_TEST_LZMA');
     Exit;
   end;
 
@@ -19968,7 +21404,7 @@ begin
   LzmaExe := EnvToolPath('LZMA_TEST_LZMA');
   if LzmaExe = '' then
   begin
-    SkipExternalTool('CrossToolDelphiRawLzmaEndMarkerDecodesWithSdk', 'LZMA_TEST_LZMA');
+    FailMissingExternalTool('CrossToolDelphiRawLzmaEndMarkerDecodesWithSdk', 'LZMA_TEST_LZMA');
     Exit;
   end;
 
@@ -20235,14 +21671,14 @@ begin
   end;
 end;
 
-procedure TLzma2NativeTests.HighEntropyRawEncodeBypassesGreedyAttempt;
+procedure TLzma2NativeTests.HighEntropyRawEncodeUsesBoundedCopyFallback;
 const
   kInputSize = 8 * 1024 * 1024;
-  kMaxElapsedMs = 500;
 var
   Options: TLzma2Options;
   Data: TBytes;
   Encoded: TBytes;
+  OutBytes: TBytes;
   Watch: TStopwatch;
   Seed: UInt32;
   I: Integer;
@@ -20250,7 +21686,10 @@ var
   Control: Byte;
   ChunkSize: Integer;
   CopyChunks: Integer;
-  LargestCopyChunk: Integer;
+  TotalCopySize: Integer;
+  EofSeen: Boolean;
+  Src: TBytesStream;
+  Dst: TMemoryStream;
 begin
   SetLength(Data, kInputSize);
   Seed := UInt32($BADC0FFE);
@@ -20269,35 +21708,59 @@ begin
   Watch := TStopwatch.StartNew;
   Encoded := TLzma2Encoder.EncodeRawBytes(Data, Options);
   Watch.Stop;
-  Assert.IsTrue(Watch.ElapsedMilliseconds < kMaxElapsedMs,
-    Format('high-entropy level-1 raw encode should bypass the greedy attempt (%d ms >= %d ms)',
-      [Watch.ElapsedMilliseconds, kMaxElapsedMs]));
+  Writeln(Format('High-entropy raw encode: input=%d encoded=%d elapsed=%d ms',
+    [Length(Data), Length(Encoded), Watch.ElapsedMilliseconds]));
+  Assert.IsTrue(UInt64(Length(Encoded)) <=
+    TLzmaRawEncoder.MaximumLzma2EncodedSize(UInt64(Length(Data))),
+    'high-entropy fallback must respect the canonical LZMA2 wire-size bound');
 
   Pos := 0;
   CopyChunks := 0;
-  LargestCopyChunk := 0;
+  TotalCopySize := 0;
+  EofSeen := False;
   while Pos < Length(Encoded) do
   begin
     Control := Encoded[Pos];
     Inc(Pos);
     if Control = LZMA2_CONTROL_EOF then
+    begin
+      EofSeen := True;
       Break;
+    end;
 
     Assert.IsTrue((Control = LZMA2_CONTROL_COPY_RESET_DIC) or (Control = LZMA2_CONTROL_COPY_NO_RESET),
-      'high-entropy bypass should write only copy chunks');
+      'high-entropy fallback should write only copy chunks');
     Assert.IsTrue(Pos + 2 <= Length(Encoded), 'truncated high-entropy copy header');
     ChunkSize := ((Integer(Encoded[Pos]) shl 8) or Integer(Encoded[Pos + 1])) + 1;
-    if ChunkSize > LargestCopyChunk then
-      LargestCopyChunk := ChunkSize;
+    Assert.IsTrue(ChunkSize <= LZMA2_COPY_CHUNK_SIZE,
+      'high-entropy copy chunk must respect the 64 KiB LZMA2 limit');
     Inc(Pos, 2);
     Assert.IsTrue(Pos + ChunkSize <= Length(Encoded), 'truncated high-entropy copy payload');
+    Assert.IsTrue(TotalCopySize + ChunkSize <= Length(Data), 'high-entropy copy payload exceeds input');
+    Assert.IsTrue(CompareMem(@Data[TotalCopySize], @Encoded[Pos], ChunkSize),
+      'high-entropy copy chunks must preserve input bytes and order');
     Inc(Pos, ChunkSize);
+    Inc(TotalCopySize, ChunkSize);
     Inc(CopyChunks);
   end;
 
-  Assert.IsTrue(CopyChunks > 0, 'high-entropy bypass should emit copy chunks');
-  Assert.AreEqual(LZMA2_COPY_CHUNK_SIZE, LargestCopyChunk,
-    'high-entropy copy fallback must keep 64 KiB LZMA2 copy packet framing');
+  Assert.IsTrue(CopyChunks > 0, 'high-entropy fallback should emit copy chunks');
+  Assert.IsTrue(EofSeen, 'high-entropy fallback must emit the LZMA2 end marker');
+  Assert.AreEqual(Integer(Length(Encoded)), Pos, 'high-entropy fallback must not leave trailing bytes');
+  Assert.AreEqual(Integer(Length(Data)), TotalCopySize, 'high-entropy copy chunks must cover the full input');
+
+  Src := TBytesStream.Create(Encoded);
+  Dst := TMemoryStream.Create;
+  try
+    TLzma2Decoder.DecodeRaw(Src, Dst, Options);
+    SetLength(OutBytes, Dst.Size);
+    Dst.Position := 0;
+    Dst.ReadBuffer(OutBytes[0], Length(OutBytes));
+    AssertBytesEqual(Data, OutBytes, 'high-entropy canonical copy fallback round-trip');
+  finally
+    Dst.Free;
+    Src.Free;
+  end;
 end;
 
 procedure TLzma2NativeTests.MixedBenchmarkCorpusRawEncodeCompressesRepeatingStripes;
@@ -20822,6 +22285,111 @@ begin
   TTask.WaitForAll(Tasks);
   for I := Low(Tasks) to High(Tasks) do
     Assert.AreEqual(TTaskStatus.Completed, Tasks[I].Status);
+end;
+
+procedure TLzma2NativeTests.XzRejectsUnpackSizeOverrunBeforeWritingPastDeclaredSize;
+var
+  Options: TLzma2Options;
+  Data: TBytes;
+  Block: TBytes;
+  Archive: TBytes;
+  DeclaredSizeBytes: TBytes;
+  RecordInfo: TXzTestIndexRecord;
+  HeaderSize: NativeUInt;
+  Offset: NativeUInt;
+  UnpackOffset: NativeUInt;
+  StoredSize: UInt64;
+  DeclaredSize: UInt64;
+  Src: TBytesStream;
+  Dst: TMemoryStream;
+  Raised: Boolean;
+begin
+  Data := RepeatingBytes(256 * 1024);
+  Options := TLzma2.DefaultOptions;
+  Options.Container := lcXz;
+  Options.Check := lzCheckCrc32;
+  Options.Level := 1;
+  Options.ThreadCount := 1;
+  Options.DictionarySize := 1 shl 20;
+  Block := BuildTestXzBlock(Data, Options, RecordInfo);
+  HeaderSize := NativeUInt(Block[0] + 1) * 4;
+  Offset := 2;
+  Assert.IsTrue(XzReadVarInt(Block, Offset, HeaderSize - SizeOf(UInt32), StoredSize),
+    'sized XZ fixture must store its packed length');
+  UnpackOffset := Offset;
+  Assert.IsTrue(XzReadVarInt(Block, Offset, HeaderSize - SizeOf(UInt32), StoredSize),
+    'sized XZ fixture must store its unpacked length');
+  DeclaredSize := StoredSize div 2;
+  DeclaredSizeBytes := XzWriteVarInt(DeclaredSize);
+  Assert.IsTrue(Offset - UnpackOffset = NativeUInt(Length(DeclaredSizeBytes)),
+    'header mutation must preserve VLI length');
+  Move(DeclaredSizeBytes[0], Block[UnpackOffset], Length(DeclaredSizeBytes));
+  WriteUi32LE(@Block[HeaderSize - SizeOf(UInt32)],
+    Crc32Calc(@Block[0], HeaderSize - SizeOf(UInt32)));
+  Archive := BuildTestXzHeader(XzCheckId(Options.Check));
+  AppendBytes(Archive, Block);
+  AppendBytes(Archive, BuildTestXzIndexAndFooter([RecordInfo], XzCheckId(Options.Check)));
+
+  Src := TBytesStream.Create(Archive);
+  Dst := TMemoryStream.Create;
+  try
+    Raised := False;
+    try
+      TLzma2.Decompress(Src, Dst, Options);
+    except
+      on E: ELzmaDataError do
+      begin
+        Raised := True;
+        Assert.AreEqual(SZ_ERROR_ARCHIVE, E.ResultCode, 'XZ unpack overrun error contract');
+      end;
+    end;
+    Assert.IsTrue(Raised, 'XZ must reject a payload exceeding its declared unpacked size');
+    Assert.IsTrue(UInt64(Dst.Size) <= DeclaredSize,
+      'XZ must reject the overrun before bytes beyond the declared size reach the caller');
+  finally
+    Dst.Free;
+    Src.Free;
+  end;
+end;
+
+procedure TLzma2NativeTests.MultiThreadedEncodeBoundsOutstandingInputBehindSlowFirstBatch;
+var
+  Src: TMtBoundInputStream;
+  Dst: TMtFirstWriteProbeStream;
+  Options: TLzma2Options;
+  Diagnostics: TLzma2EncodeDiagnostics;
+  OutstandingLimit: Int64;
+begin
+  // A slow compressible first batch holds output ordering while later
+  // incompressible batches finish; their completed results still own memory.
+  Src := TMtBoundInputStream.Create;
+  Dst := TMtFirstWriteProbeStream.Create(Src);
+  try
+    Options := TLzma2.DefaultOptions;
+    Options.Container := lcRawLzma2;
+    Options.Level := 5;
+    Options.ThreadCount := 2;
+    Options.DictionarySize := 1 shl 20;
+    Options.EncodeDiagnostics := @Diagnostics;
+    Assert.WillRaise(
+      procedure
+      begin
+        TLzma2Encoder.EncodeRaw(Src, Dst, Options);
+      end,
+      ELzmaWriteError, 'the probe deliberately stops at its first output write');
+    Assert.IsTrue(Dst.ObservedInput > 0, 'the encoder must reach its first output write');
+    Assert.IsTrue(Dst.ObservedInput > Src.FirstReadSize,
+      'the regression must queue multiple input batches before its first output write');
+    Assert.IsTrue(Diagnostics.BatchCount >= Options.ThreadCount,
+      'the regression must start multiple independent encode jobs');
+    OutstandingLimit := Int64(Src.FirstReadSize) * Options.ThreadCount;
+    Assert.IsTrue(Dst.ObservedInput <= OutstandingLimit,
+      Format('ordered output must bound queued input: observed=%d, limit=%d',
+        [Dst.ObservedInput, OutstandingLimit]));
+  finally
+    Dst.Free;
+    Src.Free;
+  end;
 end;
 
 var

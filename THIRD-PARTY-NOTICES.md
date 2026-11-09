@@ -6,8 +6,8 @@ tree, used by tests, or included in binary release packages.
 
 ## LZMA SDK
 
-The implementation is aligned with the public LZMA SDK 26.01 behavior and uses
-the LZMA SDK as compatibility and test reference material.
+The implementation includes native Delphi translations of the public-domain
+LZMA SDK 26.05 codec, match-finder, threading and BCJ algorithms. The corresponding sources in SDK 26.06 serve as the compatibility and test reference.
 
 - Project: LZMA SDK
 - Author: Igor Pavlov
@@ -16,24 +16,11 @@ the LZMA SDK as compatibility and test reference material.
 
 The LZMA SDK website states that the LZMA SDK is placed in the public domain.
 
-## Skia Runtime for the GUI
+## fast-lzma2 Reference
 
-The Win64 binary release includes `sk4d.dll` next to `Lzma2_GUI.exe` so the GUI
-can run on systems that do not already have the Skia runtime available.
-
-The `sk4d.dll` file is redistributed unmodified from the RAD Studio / Delphi
-13.1 Win64 redistributable runtime folder. It is not covered by this
-repository's MIT License. Redistribution and use of that runtime file are
-governed by the RAD Studio license terms that apply to redistributables and by
-the applicable third-party notices for the components it contains.
-
-Related upstream projects:
-
-- Skia4Delphi: https://github.com/skia4delphi/skia4delphi
-- Google Skia: https://skia.org/
-
-Skia4Delphi is published under the MIT License. Google Skia is published under
-the BSD-3-Clause License.
+[fast-lzma2](https://github.com/conor42/fast-lzma2), by Conor McCarthy, is a
+design and benchmark reference for performance work. The project remains a
+native Delphi implementation; fast-lzma2 is not linked or loaded at runtime.
 
 ## External QA Tools
 
@@ -41,3 +28,20 @@ The test and benchmark scripts can download or use external tools listed in
 `tests/qa-tools.json`, including 7-Zip/LZMA SDK and xz-utils tools. Those tools
 are used only for tests, fixtures, CI, and benchmarks; they are not runtime
 dependencies of the library.
+
+## Desktop benchmark reference
+
+The synthetic LZ workload, rating formulas and initial settings reference Igor
+Pavlov's 7-Zip 26.05 `CPP/7zip/UI/Common/Bench.cpp` and
+`CPP/7zip/UI/GUI/BenchmarkDialog.cpp` / `.h`. The Delphi implementation independently implements the workload mathematics and
+uses its own worker orchestration, memory admission and native GUI; no 7-Zip
+binary, source file or object file is included or linked. The upstream reference
+files are licensed under GNU LGPL 2.1 or later according to
+https://github.com/ip7z/7zip/blob/26.05/DOC/License.txt . This reference attribution
+does not describe all 7-Zip components as public domain.
+
+## Application mark
+
+The original application mark is provided as SVG, PNG sizes and Windows ICO in
+the source assets. Lettering was outlined locally from the Windows Segoe UI
+Semibold font; no font file or third-party compressor logo is distributed.

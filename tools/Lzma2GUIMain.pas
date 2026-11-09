@@ -7,6 +7,7 @@ uses
   System.Diagnostics,
   System.Generics.Collections,
   System.IOUtils,
+  System.IniFiles,
   System.Math,
   System.SyncObjs,
   System.SysUtils,
@@ -15,22 +16,35 @@ uses
   System.UITypes,
   Winapi.ActiveX,
   Winapi.Dwmapi,
+  Winapi.D2D1,
   Winapi.Messages,
   Winapi.MultiMon,
   Winapi.ShlObj,
+  Winapi.ShellAPI,
+  Winapi.UxTheme,
   Winapi.Windows,
   Vcl.ComCtrls,
   Vcl.Controls,
   Vcl.Dialogs,
+  Vcl.Direct2D,
   Vcl.ExtCtrls,
   Vcl.Forms,
+  Vcl.GraphUtil,
   Vcl.Graphics,
-  Vcl.Skia,
+  Vcl.Menus,
   Vcl.StdCtrls,
-  System.Skia,
   Lzma.Api,
+  Lzma.Errors,
   Lzma.SevenZip,
-  Lzma.Types;
+  Lzma.Types,
+  Lzma2ThreadChoice,
+  Lzma2GuiScrollbars,
+  Lzma2Benchmark;
+
+function GuiProductName: string;
+function GuiProductVersion: string;
+function GuiSdkTarget: string;
+function GuiProjectUrl: string;
 
 type
   TGuiLanguage = (glEnglish, glRussian, glFrench, glFinnish, glItalian,
@@ -39,7 +53,7 @@ type
     glHungarian, glNorwegian, glPortuguese, glSwedish, glRomanian,
     glBulgarian, glGreek, glUkrainian);
   TWindowButtonKind = (wbMinimize, wbMaximize, wbClose);
-  TPanelGlyphKind = (pgNone, pgFile, pgFolder);
+  TPanelGlyphKind = (pgNone, pgFile, pgFolder, pgLanguage);
   TTrackPopupMenuResult = function(hMenu: HMENU; uFlags: UINT; x, y,
     nReserved: Integer; hWnd: HWND; prcRect: PRect): UINT; stdcall;
 
@@ -51,25 +65,45 @@ type
     FCornerRadius: Integer;
     FGradientToColor: TColor;
     FGlyphKind: TPanelGlyphKind;
+    FHasFocus: Boolean;
+    FShowKeyboardFocus: Boolean;
+    FHover: Boolean;
+    FHoverColor: TColor;
+    FKeyPressed: Boolean;
+    FMousePressed: Boolean;
     FUseGradient: Boolean;
+    procedure CMDialogKey(var Message: TCMDialogKey); message CM_DIALOGKEY;
+    procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
+    procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
+    procedure WMCaptureChanged(var Message: TMessage); message WM_CAPTURECHANGED;
     procedure UpdateRegion;
   protected
+    procedure CreateParams(var Params: TCreateParams); override;
     procedure CreateWnd; override;
+    procedure DoEnter; override;
+    procedure DoExit; override;
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    procedure KeyUp(var Key: Word; Shift: TShiftState); override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
     procedure Paint; override;
     procedure Resize; override;
   public
     constructor Create(AOwner: TComponent); override;
+    procedure FocusWithCue(const Keyboard: Boolean);
     property BorderColor: TColor read FBorderColor write FBorderColor;
     property BorderWidth: Single read FBorderWidth write FBorderWidth;
     property CaptionOffsetY: Single read FCaptionOffsetY write FCaptionOffsetY;
     property CornerRadius: Integer read FCornerRadius write FCornerRadius;
     property GradientToColor: TColor read FGradientToColor write FGradientToColor;
     property GlyphKind: TPanelGlyphKind read FGlyphKind write FGlyphKind;
+    property HoverColor: TColor read FHoverColor write FHoverColor;
     property UseGradient: Boolean read FUseGradient write FUseGradient;
   end;
 
   TWindowButton = class(TCustomControl)
   private
+    FCornerRadius: Integer;
     FHover: Boolean;
     FKind: TWindowButtonKind;
     procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
@@ -81,6 +115,96 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     property Kind: TWindowButtonKind read FKind write FKind;
+    property CornerRadius: Integer read FCornerRadius write FCornerRadius;
+  end;
+
+  TOptionCombo = class(TComboBox)
+  private
+    FHover: Boolean;
+    FArrowHover,FArrowPressed: Boolean;
+    FControlBuffer: TBitmap;
+    FListPresenter: TNativeListPresenter;
+    procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
+    procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
+    procedure PaintControl(const DC: HDC);
+    procedure UpdateSelectionFieldHeight;
+    function ArrowBounds: TRect;
+    procedure PaintListItem(const Canvas: TCanvas; const Index: Integer;
+      const Bounds: TRect; const Selected: Boolean);
+    procedure WMPaint(var Message: TWMPaint); message WM_PAINT;
+    procedure WMPrintClient(var Message: TWMPrintClient); message WM_PRINTCLIENT;
+  protected
+    procedure ChangeScale(M, D: Integer; isDpiChange: Boolean); override;
+    procedure CreateWnd; override;
+    procedure DestroyWnd; override;
+    procedure DrawItem(Index: Integer; Rect: TRect; State: TOwnerDrawState); override;
+    function InputInvalid: Boolean; virtual;
+    procedure WndProc(var Message: TMessage); override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    destructor Destroy; override;
+  end;
+
+  TThreadChoiceCombo = class(TOptionCombo)
+  private
+    FState: TThreadChoiceState;
+    FInPopup,FRequestPending,FPopupCancelled: Boolean;
+    FEditing,FUpdating,FNotifying,FPopupEditing: Boolean;
+    FConfigured:Boolean;
+    FTextUpdateDepth:Integer;
+    FChangeSerial:UInt64;
+    FPopupSelection: Integer;
+    FOtherCaption,FAutoCaption,FPopupText: string;
+    function GetRequestedWorkers: Integer;
+    function CommittedText: string;
+    function GetInputValid: Boolean;
+    function TryInput(out Value: Integer): Boolean;
+    procedure SetRequestedWorkers(const Value: Integer);
+    procedure RestoreSelection;
+    procedure CommitSelection(const Index: Integer);
+    procedure NotifyCommit;
+    procedure LayoutEdit;
+  protected
+    procedure Change; override;
+    procedure ChangeScale(M, D: Integer; isDpiChange: Boolean); override;
+    procedure ComboWndProc(var Message:TMessage;ComboWnd:HWND;ComboProc:TWindowProcPtr); override;
+    procedure CreateParams(var Params: TCreateParams); override;
+    procedure CreateWnd; override;
+    procedure DoExit; override;
+    function InputInvalid: Boolean; override;
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    procedure KeyPress(var Key: Char); override;
+    procedure Select; override;
+    procedure DestroyWnd; override;
+    procedure WndProc(var Message: TMessage); override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    function CommitInput(const NotifyChange: Boolean=True): Boolean;
+    procedure Configure(const ProcessorCount: Integer; const AutoCaption,
+      OtherCaption,ManualFormat: string);
+    procedure UpdateCaptions(const AutoCaption,OtherCaption,ManualFormat: string);
+    property RequestedWorkers: Integer read GetRequestedWorkers write SetRequestedWorkers;
+    property InputValid: Boolean read GetInputValid;
+  end;
+
+  TApplicationMark = class(TGraphicControl)
+  private
+    FResourceIcon: HICON;
+    FIconWidth, FIconHeight: Integer;
+  protected
+    procedure Paint; override;
+  public
+    destructor Destroy; override;
+  end;
+
+  TGuiResizeGrip = class(TGraphicControl)
+  protected
+    procedure Paint; override;
+  end;
+
+  TGuiFontMetric = record
+    Font: TFont;
+    LogicalHeight: Integer;
   end;
 
   TMainForm = class(TForm)
@@ -88,21 +212,59 @@ type
     FInputEdit: TEdit;
     FOutputEdit: TEdit;
     FLanguage: TGuiLanguage;
+    FPreferredLanguage: Integer;
+    FLanguageButton: TPanel;
+    FLanguagePopup: TCustomControl;
+    FTitleIcon: TApplicationMark;
+    FTitleLabel: TLabel;
+    FResizeGrip: TGuiResizeGrip;
+    FSmallWindowIcon: TIcon;
+    FAboutButton: TPanel;
+    FWindowButtons: array[TWindowButtonKind] of TWindowButton;
+    FInputLabel: TLabel;
+    FOutputLabel: TLabel;
     FModeIndex: Integer;
+    FFileModeIndex: Integer;
+    FModePanel: TPanel;
     FCompressModeButton: TPanel;
     FDecompressModeButton: TPanel;
+    FBenchmarkModeButton: TPanel;
+    FBenchmarkPanel: TPanel;
+    FBenchDictionary, FBenchPasses: TOptionCombo;
+    FBenchThreads: TThreadChoiceCombo;
+    FBenchSettingLabels: array[0..2] of TLabel;
+    FBenchHeadings: array[0..1] of TLabel;
+    FBenchColumns: array[0..1,0..1] of TLabel;
+    FBenchMetricLabels: array[0..1,0..3] of TLabel;
+    FBenchValues: array[0..1,0..1,0..3] of TLabel;
+    FBenchMemory, FBenchTableHeader, FBenchOverallTitle, FBenchOverall: TLabel;
+    FBenchStateLabel, FBenchProgressLabel: TLabel;
+    FBenchStart, FBenchStop, FBenchCopy: TPanel;
+    FBenchTimer: TTimer;
+    FBenchBackend: TLzmaBenchmark;
+    FBenchLast: TBenchmarkSnapshot;
     FContainerIndex: Integer;
     FLevelIndex: Integer;
     FCheckIndex: Integer;
     FDictionaryIndex: Integer;
+    FContainerGroup: TPanel;
+    FCheckGroup: TPanel;
     FContainerButtons: array[0..3] of TPanel;
-    FLevelButtons: array[0..9] of TPanel;
+    FLevelCombo: TOptionCombo;
     FCheckButtons: array[0..3] of TPanel;
-    FDictionaryButtons: array[0..8] of TPanel;
+    FDictionaryCombo: TOptionCombo;
+    FDictionaryCustomShell: TPanel;
     FDictionaryCustomEdit: TEdit;
-    FDictionaryDetailLabel: TLabel;
-    FThreadsEdit: TEdit;
+    FThreadsCombo: TThreadChoiceCombo;
+    FSettingsPanel: TPanel;
+    FContainerLabel: TLabel;
+    FLevelLabel: TLabel;
+    FCheckLabel: TLabel;
+    FDictionaryLabel: TLabel;
+    FThreadsLabel: TLabel;
     FMainPanel: TPanel;
+    FLayoutActive: Boolean;
+    FLogicalFonts: TArray<TGuiFontMetric>;
     FFilesPanel: TPanel;
     FInputRow: TPanel;
     FOutputRow: TPanel;
@@ -113,15 +275,14 @@ type
     FOutputBrowseButton: TPanel;
     FStartButton: TPanel;
     FCancelButton: TPanel;
-    FThreadsDecButton: TPanel;
-    FThreadsIncButton: TPanel;
     FProgressTrack: TPanel;
     FProgressFill: TPanel;
+    FProgressLabel: TLabel;
     FProgressPercent: Integer;
     FProgressError: Boolean;
-    FHeaderLabel: TLabel;
     FStatusLabel: TLabel;
     FStatsLabel: TLabel;
+    FReadyLabel: TLabel;
     FPollTimer: TTimer;
     FTask: System.Threading.ITask;
     FInputStream: TFileStream;
@@ -143,48 +304,74 @@ type
     FTaskbarButtonCreatedMessage: UINT;
     FOleInitialized: Boolean;
     procedure BuildUi;
+    function BenchmarkBusy: Boolean;
+    function BenchmarkConfig: TBenchmarkConfig;
+    procedure LayoutBenchmark;
+    procedure ApplyBenchmarkLanguage;
+    procedure BenchmarkSettingsChanged(Sender: TObject);
+    procedure BenchmarkStartClick(Sender: TObject);
+    procedure BenchmarkStopClick(Sender: TObject);
+    procedure BenchmarkCopyClick(Sender: TObject);
+    procedure BenchmarkTimer(Sender: TObject);
+    procedure RenderBenchmark;
+    procedure SetBenchmarkBusy(const Busy: Boolean);
+    procedure ApplyLanguage(const PreferredLanguage: Integer);
+    procedure LanguageButtonClick(Sender: TObject);
+    procedure LoadLanguagePreference;
+    procedure SaveLanguagePreference;
+    procedure SavePackingPreference;
+    function ResolvedDictionary(const Budget: UInt64): UInt64;
     function BuildOptions: TLzma2Options;
     procedure CollectSevenZipSourceEntries(const SourcePath: string;
       out Entries: TArray<TLzma7zEncodeEntry>; out SourcePaths: TArray<string>;
       out TotalInputBytes: UInt64);
     function DictionaryCaption(const ValueMb: Integer): string;
-    function TextOf(const RussianText, EnglishText: string): string;
+    function TextOf(const Key: string): string;
     procedure BrowseInputClick(Sender: TObject);
     procedure BrowseOutputClick(Sender: TObject);
-    procedure ButtonMouseEnter(Sender: TObject);
-    procedure ButtonMouseLeave(Sender: TObject);
     procedure CheckClick(Sender: TObject);
     procedure CloseWindowClick(Sender: TObject);
     procedure ContainerClick(Sender: TObject);
     procedure DictionaryCustomEditChange(Sender: TObject);
-    procedure DictionaryClick(Sender: TObject);
+    procedure DictionaryChange(Sender: TObject);
     procedure EditChange(Sender: TObject);
     procedure EditEnter(Sender: TObject);
     procedure EditExit(Sender: TObject);
-    procedure LevelClick(Sender: TObject);
+    procedure LevelChange(Sender: TObject);
+    function CaptionWidth(const Text: string; const TextFont: TFont): Integer;
     procedure LayoutMainPanels;
+    procedure LayoutTitleBar(Sender: TObject);
+    procedure ConstrainToWorkArea;
     procedure MainPanelResize(Sender: TObject);
     procedure MaximizeWindowClick(Sender: TObject);
     procedure MinimizeWindowClick(Sender: TObject);
     procedure ModalOkClick(Sender: TObject);
+    procedure AboutClick(Sender: TObject);
+    procedure OpenProjectPage(Sender: TObject);
+    procedure ModalKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+    function NewModalDialog(const Caption:string;const W,H:Integer):TForm;
+    procedure PrepareModalDialog(const Dialog:TForm;const Corner:TWindowButton;const W,H:Integer);
+    procedure PaintModalSurface(Sender: TObject);
     procedure ModeClick(Sender: TObject);
     procedure ProgressTrackResize(Sender: TObject);
     procedure SourceFolderChanging(Sender: TObject; var CanChange: Boolean);
     procedure StartClick(Sender: TObject);
     procedure CancelClick(Sender: TObject);
     procedure PollTimerTimer(Sender: TObject);
-    procedure ThreadsStepClick(Sender: TObject);
+    procedure ThreadsChange(Sender: TObject);
+    procedure UpdateAutoThreads;
     procedure SetBusy(const Busy: Boolean);
     procedure SetPanelButtonEnabled(const Button: TPanel; const Enabled, Primary: Boolean);
     procedure SetProgressVisual(const Percent: Integer; const IsError: Boolean);
     procedure ResetActivityState;
-    procedure SetInlineStatus(const StatusText: string; const IsError: Boolean);
+    procedure SetInlineStatus(const StatusText: string; const IsError: Boolean;
+      const DetailsText: string = '');
     procedure SetOutputPathText(const Value: string; const AutoGenerated: Boolean);
-    procedure ShowErrorDialog(const MessageText: string);
+    procedure ShowErrorDialog(const MessageText: string;const DiagnosticDetails:string='');
+    procedure ReportException(const Error:Exception);
     function ShowSourceBrowser(out SelectedPath: string): Boolean;
     procedure ShowTitleSystemMenu(const ScreenPoint: TPoint);
     procedure TitleBarContextPopup(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
-    procedure UpdateDictionaryDetail;
     procedure UpdateDefaultOutputPath(const Force: Boolean);
     procedure UpdateModeButtons;
     procedure UpdateOptionButtons;
@@ -195,7 +382,8 @@ type
     procedure CleanupOutputFile;
     procedure ApplyDwmWindowAttributes;
     procedure UpdateProgressUi(const InBytes, OutBytes: UInt64);
-    procedure FinishTask(const ErrorText: string);
+    procedure FinishTask(const ErrorText: string; const Cancelled: Boolean = False;
+      const DiagnosticDetails:string='');
     procedure ClearTaskbarProgress;
     procedure InitializeShellIntegration;
     procedure InitializeTaskbarList;
@@ -217,8 +405,12 @@ type
     procedure WMNCHitTest(var Message: TWMNCHitTest); message WM_NCHITTEST;
     procedure WMNCPaint(var Message: TMessage); message WM_NCPAINT;
   public
+{$IFDEF GUI_LAYOUT_QA}
+    procedure RunLayoutAudit(const Destination: string);
+{$ENDIF}
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
+    procedure ScaleForPPI(NewPPI: Integer); override;
   end;
 
 var
@@ -226,54 +418,160 @@ var
 
 implementation
 
+uses Lzma2LanguagePicker, Lzma2GuiResources, Lzma2GuiCatalog, Lzma2GuiSettings,
+  Lzma2GuiEditHints,Lzma2GuiErrors,Lzma2GuiHints,Vcl.Clipbrd;
+
+type
+  TGuiModalForm = class(TForm)
+  private
+    FLogicalFonts: TArray<TGuiFontMetric>;
+  protected
+    procedure WndProc(var Message: TMessage); override;
+  public
+    procedure UseFont(const AFont:TFont; const TextHeight:Integer; const Semibold:Boolean=False);
+    procedure UpdateRegion;
+  end;
+
+  TDialogCopyReport=class(TComponent)
+  public
+    Text:string;
+    procedure CopyReport(Sender:TObject);
+  end;
+
+procedure TDialogCopyReport.CopyReport(Sender:TObject);
+begin Clipboard.AsText:=Text;end;
+
 const
   UiBackground = TColor($0016100B);
-  UiChrome = TColor($00201811);
-  UiSurface = TColor($00261D15);
-  UiSurfaceAlt = TColor($0032261B);
-  UiSurfaceHigh = TColor($003D3024);
-  UiInput = TColor($00201811);
-  UiInputDisabled = TColor($00271F18);
-  UiBorder = TColor($0044362A);
-  UiText = TColor($00FAF7F4);
-  UiMutedText = TColor($00CCC2B8);
-  UiSubtleText = TColor($00988B7F);
-  UiAccent = TColor($00E8A73B);
-  UiAccentHover = TColor($00F5BD55);
-  UiAccentText = TColor($00FFFFFF);
-  UiDanger = TColor($005252E1);
+  UiChrome = TColor($001D1612);
+  UiSurface = TColor($00271F1A);
+  UiSurfaceAlt = TColor($003B2F25);
+  UiSurfaceHigh = TColor($00493B30);
+  UiSelection = TColor($00533E27);
+  UiSelectionBorder = TColor($00967B5C);
+  UiInput = TColor($00201812);
+  UiInputDisabled = TColor($002C231D);
+  UiBorder = TColor($007D6B5A);
+  UiText = TColor($00F8F5F2);
+  UiMutedText = TColor($00D4C8BE);
+  UiSubtleText = TColor($00AF9F92);
+  UiAccent = TColor($00FCBF78);
+  UiAccentHover = TColor($00F8C98E);
+  UiAccentText = UiInput;
+  UiDanger = TColor($005858E8);
   UiSuccess = TColor($007AC155);
   UiWindowCloseHover = TColor($005252E1);
+  UiDefaultWidth = 896;
+  UiDefaultHeight = 520;
+  UiMinimumWidth = 720;
+  UiMinimumHeight = 344;
+  UiHeaderHeight = 36;
+  UiResizeGripSize = 16;
+  UiContentPadding = 24;
+  UiBottomPadding = 20;
+  UiGap = 16;
+  UiLabelHeight = 20;
+  UiLabelGap = 8;
+  UiFieldTop = UiLabelHeight + UiLabelGap;
+  UiOptionHeight = 36;
+  UiOptionArrowWidth = 32;
+  UiModeTop = 52;
+  UiActivityHeight = 68;
+  UiActionInset = 12;
+  UiBenchmarkHeight = 380;
+  UiSmallText = 12;
+  UiBodyText = 14;
+  UiTitleText = 16;
+  UiDialogTitleText = 18;
+  UiModalSurface = UiSurfaceAlt;
+  UiModalBorder = UiSelectionBorder;
+  UiModalCornerRadius = 7;
 
-  DictionaryMbValues: array[0..7] of Integer = (1, 4, 16, 32, 64, 128, 256, 512);
   AppIconResourceName = 'MAINICON';
   TaskbarButtonCreatedMessageName = 'TaskbarButtonCreated';
-
-function ColorToSkia(const Color: TColor; const Alpha: Byte = $FF): TAlphaColor;
 var
-  Rgb: COLORREF;
-begin
-  Rgb := ColorToRGB(Color);
-  Result := TAlphaColor((Cardinal(Alpha) shl 24) or
-    (Cardinal(GetRValue(Rgb)) shl 16) or
-    (Cardinal(GetGValue(Rgb)) shl 8) or
-    Cardinal(GetBValue(Rgb)));
-end;
+  DictionaryMbValues, BenchmarkDictionaryMb, BenchmarkPassCounts: TArray<Integer>;
+  GuiLanguageCodes: array[TGuiLanguage] of string;
+  GuiLanguageNames: array[TGuiLanguage] of string;
 
-function FontPixelSize(const Font: TFont): Single;
+procedure SetLogicalFont(const AFont: TFont; const TextHeight: Integer;
+  const Semibold: Boolean = False);
 begin
-  Result := Abs(Font.Height);
-  if Result <= 0 then
-    Result := Max(10, Font.Size) * Screen.PixelsPerInch / 72;
-end;
-
-function FontStyleToSkia(const Font: TFont): TSkFontStyle;
-begin
-  if fsBold in Font.Style then
-    Result := TSkFontStyle.Bold
+  // Runtime-created fonts start at the system DPI even while the form is at 96.
+  AFont.PixelsPerInch := 96;
+  if Semibold then
+    AFont.Name := 'Segoe UI Semibold'
   else
-    Result := TSkFontStyle.Normal;
+    AFont.Name := 'Segoe UI';
+  AFont.Style := [];
+  AFont.Height := -TextHeight;
 end;
+
+procedure RegisterLogicalFont(var Fonts: TArray<TGuiFontMetric>; const AFont: TFont;
+  const TextHeight: Integer; const Semibold: Boolean=False);
+var Metric: TGuiFontMetric;
+begin
+  SetLogicalFont(AFont, TextHeight, Semibold);
+  Metric.Font := AFont;
+  Metric.LogicalHeight := TextHeight;
+  Fonts := Fonts + [Metric];
+end;
+
+procedure ApplyLogicalFontHeights(const Fonts: TArray<TGuiFontMetric>; const Dpi: Integer);
+begin
+  // Scaling the last rounded pixel height repeatedly can accumulate error.
+  for var Metric in Fonts do
+    Metric.Font.Height := -MulDiv(Metric.LogicalHeight,Dpi,96);
+end;
+
+procedure TGuiModalForm.UseFont(const AFont:TFont; const TextHeight:Integer; const Semibold:Boolean);
+begin
+  RegisterLogicalFont(FLogicalFonts,AFont,TextHeight,Semibold);
+end;
+
+procedure TGuiModalForm.UpdateRegion;
+var Diameter: Integer;
+    Region: HRGN;
+begin
+  ApplyLogicalFontHeights(FLogicalFonts,PixelsPerInch);
+  Diameter := ScaleValue(UiModalCornerRadius*2);
+  Region := CreateRoundRectRgn(0,0,Width+1,Height+1,Diameter,Diameter);
+  if (Region<>0) and (SetWindowRgn(Handle,Region,True)=0) then
+    DeleteObject(Region);
+end;
+
+procedure TGuiModalForm.WndProc(var Message: TMessage);
+begin
+  inherited;
+  if Message.Msg=WM_DPICHANGED then UpdateRegion;
+end;
+
+function GuiNativeEditHeight(const Font:TFont):Integer;
+var DC:HDC;Previous:HGDIOBJ;Metrics:TTextMetric;
+begin
+  DC:=GetDC(0);
+  if DC=0 then RaiseLastOSError;
+  try
+    Previous:=SelectObject(DC,Font.Handle);
+    try
+      if not GetTextMetrics(DC,Metrics) then RaiseLastOSError;
+      // Borderless EDITs need caret clearance, not VCL's six-pixel frame
+      // allowance. Center this actual line box in the surrounding field.
+      Result:=Metrics.tmHeight+2;
+    finally SelectObject(DC,Previous);end;
+  finally ReleaseDC(0,DC);end;
+end;
+
+{$I Lzma2ThreadChoiceMethods.inc}
+
+function GuiProductName: string;
+begin Result:=GuiApplicationValue('name');end;
+function GuiProductVersion: string;
+begin Result:=GuiApplicationValue('version');end;
+function GuiSdkTarget: string;
+begin Result:=GuiApplicationValue('sdkVersion');end;
+function GuiProjectUrl: string;
+begin Result:=GuiApplicationValue('repository');end;
 
 function GuiLanguageFromLangId(const LangId: LANGID): TGuiLanguage;
 const
@@ -346,541 +644,309 @@ begin
   Result := GuiLanguageFromLangId(GetUserDefaultUILanguage);
 end;
 
-function TranslateEnglishText(const Language: TGuiLanguage;
-  const EnglishText: string): string;
+function GuiLanguagePreferencePath: string;
+begin Result:=GuiSettingsPath;end;
 
-  function Pick(const FrenchText, FinnishText, ItalianText, GermanText,
-    SpanishText, CzechText, BrazilianText, PolishText, KoreanText,
-    ChineseSimplifiedText, JapaneseText, TurkishText, DanishText, DutchText,
-    HungarianText, NorwegianText, PortugueseText, SwedishText, RomanianText,
-    BulgarianText, GreekText, UkrainianText: string): string;
-  begin
-    case Language of
-      glFrench: Result := FrenchText;
-      glFinnish: Result := FinnishText;
-      glItalian: Result := ItalianText;
-      glGerman: Result := GermanText;
-      glSpanish: Result := SpanishText;
-      glCzech: Result := CzechText;
-      glBrazilian: Result := BrazilianText;
-      glPolish: Result := PolishText;
-      glKorean: Result := KoreanText;
-      glChineseSimplified: Result := ChineseSimplifiedText;
-      glJapanese: Result := JapaneseText;
-      glTurkish: Result := TurkishText;
-      glDanish: Result := DanishText;
-      glDutch: Result := DutchText;
-      glHungarian: Result := HungarianText;
-      glNorwegian: Result := NorwegianText;
-      glPortuguese: Result := PortugueseText;
-      glSwedish: Result := SwedishText;
-      glRomanian: Result := RomanianText;
-      glBulgarian: Result := BulgarianText;
-      glGreek: Result := GreekText;
-      glUkrainian: Result := UkrainianText;
-    else
-      Result := EnglishText;
-    end;
-    if Result = '' then
-      Result := EnglishText;
-  end;
-
+constructor TOptionCombo.Create(AOwner: TComponent);
 begin
-  if (Language = glEnglish) or (Language = glRussian) then
-    Exit(EnglishText);
+  inherited;
+  FControlBuffer:=TBitmap.Create;
+  FControlBuffer.PixelFormat:=pf32bit;
+  Style := csOwnerDrawFixed;
+  Color := UiInput;
+  SetLogicalFont(Font, UiBodyText);
+  Font.Color := UiText;
+  ItemHeight := GuiPopupRowHeight;
+  DropDownCount := GuiPopupVisibleRows;
+  StyleElements := [];
+end;
 
-  Result := EnglishText;
-  if EnglishText = 'Error' then
-    Exit(Pick('Erreur', 'Virhe', 'Errore', 'Fehler', 'Error', 'Chyba',
-      'Erro', 'Błąd', '오류', '错误', 'エラー', 'Hata', 'Fejl', 'Fout',
-      'Hiba', 'Feil', 'Erro', 'Fel', 'Eroare', 'Грешка', 'Σφάλμα',
-      'Помилка'));
-  if EnglishText = 'OK' then
-    Exit(Pick('OK', 'OK', 'OK', 'OK', 'Aceptar', 'OK', 'OK', 'OK',
-      '확인', '确定', 'OK', 'Tamam', 'OK', 'OK', 'OK', 'OK', 'OK', 'OK',
-      'OK', 'OK', 'OK', 'OK'));
-  if EnglishText = 'File compression' then
-    Exit(Pick('Compression de fichiers', 'Tiedoston pakkaus',
-      'Compressione file', 'Dateikomprimierung', 'Compresión de archivos',
-      'Komprese souborů', 'Compressão de arquivos', 'Kompresja plików',
-      '파일 압축', '文件压缩', 'ファイル圧縮', 'Dosya sıkıştırma',
-      'Filkomprimering', 'Bestandscompressie', 'Fájltömörítés',
-      'Filkomprimering', 'Compressão de ficheiros', 'Filkomprimering',
-      'Comprimare fișiere', 'Компресиране на файлове', 'Συμπίεση αρχείων',
-      'Стиснення файлів'));
-  if EnglishText = 'File extraction' then
-    Exit(Pick('Extraction de fichiers', 'Tiedoston purku',
-      'Estrazione file', 'Dateiextraktion', 'Extracción de archivos',
-      'Rozbalení souborů', 'Extração de arquivos', 'Wypakowywanie plików',
-      '파일 풀기', '文件解压', 'ファイル展開', 'Dosya çıkarma',
-      'Filudpakning', 'Bestanden uitpakken', 'Fájlkibontás',
-      'Filutpakking', 'Extração de ficheiros', 'Filextrahering',
-      'Extragere fișiere', 'Разархивиране на файлове', 'Εξαγωγή αρχείων',
-      'Розпакування файлів'));
-  if EnglishText = 'Start compression' then
-    Exit(Pick('Démarrer la compression', 'Aloita pakkaus',
-      'Avvia compressione', 'Komprimierung starten', 'Iniciar compresión',
-      'Spustit kompresi', 'Iniciar compressão', 'Rozpocznij kompresję',
-      '압축 시작', '开始压缩', '圧縮を開始', 'Sıkıştırmayı başlat',
-      'Start komprimering', 'Compressie starten', 'Tömörítés indítása',
-      'Start komprimering', 'Iniciar compressão', 'Starta komprimering',
-      'Pornește comprimarea', 'Стартирай компресиране',
-      'Έναρξη συμπίεσης', 'Почати стискання'));
-  if EnglishText = 'Start extraction' then
-    Exit(Pick('Démarrer l''extraction', 'Aloita purku',
-      'Avvia estrazione', 'Extraktion starten', 'Iniciar extracción',
-      'Spustit rozbalení', 'Iniciar extração', 'Rozpocznij wypakowywanie',
-      '풀기 시작', '开始解压', '展開を開始', 'Çıkarmayı başlat',
-      'Start udpakning', 'Uitpakken starten', 'Kibontás indítása',
-      'Start utpakking', 'Iniciar extração', 'Starta extrahering',
-      'Pornește extragerea', 'Стартирай разархивиране',
-      'Έναρξη εξαγωγής', 'Почати розпакування'));
-  if EnglishText = 'Custom' then
-    Exit(Pick('Perso', 'Oma', 'Custom', 'Benutzerdef.', 'Personalizado',
-      'Vlastní', 'Personalizado', 'Własne', '사용자 지정', '自定义',
-      'カスタム', 'Özel', 'Tilpasset', 'Aangepast', 'Egyéni',
-      'Egendef.', 'Personalizado', 'Anpassad', 'Personalizat',
-      'Потребителски', 'Προσαρμογή', 'Кастом'));
-  if EnglishText = 'Choose source path' then
-    Exit(Pick('Choisir le chemin source', 'Valitse lähdepolku',
-      'Scegli percorso sorgente', 'Quellpfad wählen',
-      'Elegir ruta de origen', 'Vybrat zdrojovou cestu',
-      'Escolher caminho de origem', 'Wybierz ścieżkę źródłową',
-      '원본 경로 선택', '选择源路径', 'ソースパスを選択',
-      'Kaynak yolunu seç', 'Vælg kildesti', 'Bronpad kiezen',
-      'Forrásútvonal kiválasztása', 'Velg kildebane',
-      'Escolher caminho de origem', 'Välj källsökväg',
-      'Alege calea sursă', 'Изберете изходен път',
-      'Επιλογή διαδρομής προέλευσης', 'Виберіть вихідний шлях'));
-  if EnglishText = 'Choose output file' then
-    Exit(Pick('Choisir le fichier de sortie', 'Valitse tulostiedosto',
-      'Scegli file di output', 'Ausgabedatei wählen',
-      'Elegir archivo de salida', 'Vybrat výstupní soubor',
-      'Escolher arquivo de saída', 'Wybierz plik wynikowy',
-      '출력 파일 선택', '选择输出文件', '出力ファイルを選択',
-      'Çıktı dosyasını seç', 'Vælg outputfil', 'Uitvoerbestand kiezen',
-      'Kimeneti fájl kiválasztása', 'Velg utdatafil',
-      'Escolher ficheiro de saída', 'Välj utdatafil',
-      'Alege fișierul de ieșire', 'Изберете изходен файл',
-      'Επιλογή αρχείου εξόδου', 'Виберіть файл результату'));
-  if EnglishText = 'Select' then
-    Exit(Pick('Sélectionner', 'Valitse', 'Seleziona', 'Auswählen',
-      'Seleccionar', 'Vybrat', 'Selecionar', 'Wybierz', '선택', '选择',
-      '選択', 'Seç', 'Vælg', 'Selecteren', 'Kiválasztás', 'Velg',
-      'Selecionar', 'Välj', 'Selectează', 'Избери', 'Επιλογή', 'Вибрати'));
-  if EnglishText = 'All files' then
-    Exit(Pick('Tous les fichiers', 'Kaikki tiedostot', 'Tutti i file',
-      'Alle Dateien', 'Todos los archivos', 'Všechny soubory',
-      'Todos os arquivos', 'Wszystkie pliki', '모든 파일', '所有文件',
-      'すべてのファイル', 'Tüm dosyalar', 'Alle filer', 'Alle bestanden',
-      'Minden fájl', 'Alle filer', 'Todos os ficheiros', 'Alla filer',
-      'Toate fișierele', 'Всички файлове', 'Όλα τα αρχεία', 'Усі файли'));
-  if EnglishText = 'Minimize' then
-    Exit(Pick('Réduire', 'Pienennä', 'Riduci', 'Minimieren', 'Minimizar',
-      'Minimalizovat', 'Minimizar', 'Minimalizuj', '최소화', '最小化',
-      '最小化', 'Küçült', 'Minimer', 'Minimaliseren', 'Kis méret',
-      'Minimer', 'Minimizar', 'Minimera', 'Minimizează', 'Минимизирай',
-      'Ελαχιστοποίηση', 'Згорнути'));
-  if EnglishText = 'Maximize' then
-    Exit(Pick('Agrandir', 'Suurenna', 'Ingrandisci', 'Maximieren',
-      'Maximizar', 'Maximalizovat', 'Maximizar', 'Maksymalizuj',
-      '최대화', '最大化', '最大化', 'Büyüt', 'Maksimer', 'Maximaliseren',
-      'Teljes méret', 'Maksimer', 'Maximizar', 'Maximera', 'Maximizează',
-      'Максимизирай', 'Μεγιστοποίηση', 'Розгорнути'));
-  if EnglishText = 'Close' then
-    Exit(Pick('Fermer', 'Sulje', 'Chiudi', 'Schließen', 'Cerrar',
-      'Zavřít', 'Fechar', 'Zamknij', '닫기', '关闭', '閉じる', 'Kapat',
-      'Luk', 'Sluiten', 'Bezárás', 'Lukk', 'Fechar', 'Stäng', 'Închide',
-      'Затвори', 'Κλείσιμο', 'Закрити'));
-  if EnglishText = 'Source path' then
-    Exit(Pick('Chemin source', 'Lähdepolku', 'Percorso sorgente',
-      'Quellpfad', 'Ruta de origen', 'Zdrojová cesta', 'Caminho de origem',
-      'Ścieżka źródłowa', '원본 경로', '源路径', 'ソースパス',
-      'Kaynak yolu', 'Kildesti', 'Bronpad', 'Forrásútvonal', 'Kildebane',
-      'Caminho de origem', 'Källsökväg', 'Cale sursă', 'Изходен път',
-      'Διαδρομή προέλευσης', 'Вихідний шлях'));
-  if EnglishText = 'File or folder' then
-    Exit(Pick('Fichier ou dossier', 'Tiedosto tai kansio',
-      'File o cartella', 'Datei oder Ordner', 'Archivo o carpeta',
-      'Soubor nebo složka', 'Arquivo ou pasta', 'Plik lub folder',
-      '파일 또는 폴더', '文件或文件夹', 'ファイルまたはフォルダー',
-      'Dosya veya klasör', 'Fil eller mappe', 'Bestand of map',
-      'Fájl vagy mappa', 'Fil eller mappe', 'Ficheiro ou pasta',
-      'Fil eller mapp', 'Fișier sau folder', 'Файл или папка',
-      'Αρχείο ή φάκελος', 'Файл або папка'));
-  if EnglishText = 'Select path' then
-    Exit(Pick('Choisir un chemin', 'Valitse polku', 'Seleziona percorso',
-      'Pfad wählen', 'Seleccionar ruta', 'Vybrat cestu',
-      'Selecionar caminho', 'Wybierz ścieżkę', '경로 선택', '选择路径',
-      'パスを選択', 'Yol seç', 'Vælg sti', 'Pad selecteren',
-      'Útvonal kiválasztása', 'Velg bane', 'Selecionar caminho',
-      'Välj sökväg', 'Selectează calea', 'Изберете път',
-      'Επιλογή διαδρομής', 'Виберіть шлях'));
-  if EnglishText = 'Browse' then
-    Exit(Pick('Parcourir', 'Selaa', 'Sfoglia', 'Durchsuchen', 'Examinar',
-      'Procházet', 'Procurar', 'Przeglądaj', '찾아보기', '浏览', '参照',
-      'Gözat', 'Gennemse', 'Bladeren', 'Tallózás', 'Bla gjennom',
-      'Procurar', 'Bläddra', 'Răsfoiește', 'Преглед', 'Αναζήτηση',
-      'Огляд'));
-  if EnglishText = 'Output path' then
-    Exit(Pick('Chemin de sortie', 'Tulospolku', 'Percorso output',
-      'Ausgabepfad', 'Ruta de salida', 'Výstupní cesta',
-      'Caminho de saída', 'Ścieżka wyjściowa', '출력 경로', '输出路径',
-      '出力パス', 'Çıktı yolu', 'Outputsti', 'Uitvoerpad',
-      'Kimeneti útvonal', 'Utdatabane', 'Caminho de saída',
-      'Utdatasökväg', 'Cale ieșire', 'Изходен път',
-      'Διαδρομή εξόδου', 'Шлях збереження'));
-  if EnglishText = 'Result file' then
-    Exit(Pick('Fichier résultat', 'Tulostiedosto', 'File risultato',
-      'Ergebnisdatei', 'Archivo resultado', 'Výsledný soubor',
-      'Arquivo resultante', 'Plik wynikowy', '결과 파일', '结果文件',
-      '結果ファイル', 'Sonuç dosyası', 'Resultatfil', 'Resultaatbestand',
-      'Eredményfájl', 'Resultatfil', 'Ficheiro resultante', 'Resultatfil',
-      'Fișier rezultat', 'Резултатен файл', 'Αρχείο αποτελέσματος',
-      'Файл результату'));
-  if EnglishText = 'Select output file' then
-    Exit(Pick('Choisir le fichier de sortie', 'Valitse tulostiedosto',
-      'Seleziona file di output', 'Ausgabedatei wählen',
-      'Seleccionar archivo de salida', 'Vybrat výstupní soubor',
-      'Selecionar arquivo de saída', 'Wybierz plik wynikowy',
-      '출력 파일 선택', '选择输出文件', '出力ファイルを選択',
-      'Çıktı dosyasını seç', 'Vælg outputfil', 'Uitvoerbestand selecteren',
-      'Kimeneti fájl kiválasztása', 'Velg utdatafil',
-      'Selecionar ficheiro de saída', 'Välj utdatafil',
-      'Selectează fișierul de ieșire', 'Изберете изходен файл',
-      'Επιλογή αρχείου εξόδου', 'Виберіть файл результату'));
-  if EnglishText = 'Cancel' then
-    Exit(Pick('Annuler', 'Peruuta', 'Annulla', 'Abbrechen', 'Cancelar',
-      'Zrušit', 'Cancelar', 'Anuluj', '취소', '取消', 'キャンセル',
-      'İptal', 'Annuller', 'Annuleren', 'Mégse', 'Avbryt', 'Cancelar',
-      'Avbryt', 'Anulează', 'Отказ', 'Άκυρο', 'Скасувати'));
-  if EnglishText = 'Settings' then
-    Exit(Pick('Paramètres', 'Asetukset', 'Impostazioni', 'Einstellungen',
-      'Parámetros', 'Nastavení', 'Parâmetros', 'Ustawienia', '설정',
-      '设置', '設定', 'Ayarlar', 'Indstillinger', 'Instellingen',
-      'Beállítások', 'Innstillinger', 'Definições', 'Inställningar',
-      'Setări', 'Настройки', 'Ρυθμίσεις', 'Параметри'));
-  if EnglishText = 'Mode' then
-    Exit(Pick('Mode', 'Tila', 'Modalità', 'Modus', 'Modo', 'Režim',
-      'Modo', 'Tryb', '모드', '模式', 'モード', 'Mod', 'Tilstand',
-      'Modus', 'Mód', 'Modus', 'Modo', 'Läge', 'Mod', 'Режим',
-      'Λειτουργία', 'Режим'));
-  if EnglishText = 'Compression' then
-    Exit(Pick('Compression', 'Pakkaus', 'Compressione', 'Komprimierung',
-      'Compresión', 'Komprese', 'Compressão', 'Kompresja', '압축', '压缩',
-      '圧縮', 'Sıkıştırma', 'Komprimering', 'Compressie', 'Tömörítés',
-      'Komprimering', 'Compressão', 'Komprimering', 'Comprimare',
-      'Компресиране', 'Συμπίεση', 'Стискання'));
-  if EnglishText = 'Extraction' then
-    Exit(Pick('Extraction', 'Purku', 'Estrazione', 'Extraktion',
-      'Extracción', 'Rozbalení', 'Extração', 'Wypakowanie', '풀기',
-      '解压', '展開', 'Çıkarma', 'Udpakning', 'Uitpakken', 'Kibontás',
-      'Utpakking', 'Extração', 'Extrahering', 'Extragere',
-      'Разархивиране', 'Εξαγωγή', 'Розпакування'));
-  if EnglishText = 'Container' then
-    Exit(Pick('Conteneur', 'Säilö', 'Contenitore', 'Container',
-      'Contenedor', 'Kontejner', 'Contêiner', 'Kontener', '컨테이너',
-      '容器', 'コンテナ', 'Kapsayıcı', 'Container', 'Container',
-      'Konténer', 'Container', 'Contentor', 'Behållare', 'Container',
-      'Контейнер', 'Περιέκτης', 'Контейнер'));
-  if EnglishText = 'Compression level' then
-    Exit(Pick('Niveau de compression', 'Pakkaustaso',
-      'Livello compressione', 'Komprimierungsstufe', 'Nivel de compresión',
-      'Úroveň komprese', 'Nível de compressão', 'Poziom kompresji',
-      '압축 수준', '压缩级别', '圧縮レベル', 'Sıkıştırma seviyesi',
-      'Komprimeringsniveau', 'Compressieniveau', 'Tömörítési szint',
-      'Komprimeringsnivå', 'Nível de compressão', 'Komprimeringsnivå',
-      'Nivel comprimare', 'Ниво на компресия', 'Επίπεδο συμπίεσης',
-      'Рівень стискання'));
-  if EnglishText = 'Check' then
-    Exit(Pick('Contrôle', 'Tarkistus', 'Controllo', 'Prüfung',
-      'Comprobación', 'Kontrola', 'Verificação', 'Kontrola', '검사',
-      '校验', 'チェック', 'Denetim', 'Kontrol', 'Controle', 'Ellenőrzés',
-      'Kontroll', 'Verificação', 'Kontroll', 'Verificare', 'Проверка',
-      'Έλεγχος', 'Перевірка'));
-  if EnglishText = 'none' then
-    Exit(Pick('Aucun', 'Ei mitään', 'Nessuno', 'Keine', 'Ninguno',
-      'Žádná', 'Nenhum', 'Brak', '없음', '无', 'なし', 'Yok', 'Ingen',
-      'Geen', 'Nincs', 'Ingen', 'Nenhum', 'Ingen', 'Fără', 'Няма',
-      'Κανένα', 'Немає'));
-  if EnglishText = 'Dictionary' then
-    Exit(Pick('Dictionnaire', 'Sanakirja', 'Dizionario', 'Wörterbuch',
-      'Diccionario', 'Slovník', 'Dicionário', 'Słownik', '사전',
-      '字典', '辞書', 'Sözlük', 'Ordbog', 'Woordenboek', 'Szótár',
-      'Ordbok', 'Dicionário', 'Ordbok', 'Dicționar', 'Речник',
-      'Λεξικό', 'Словник'));
-  if EnglishText = 'Enter dictionary size in MB' then
-    Exit(Pick('Saisir la taille du dictionnaire en MB',
-      'Anna sanakirjan koko MB-yksikkönä',
-      'Inserisci dimensione dizionario in MB',
-      'Wörterbuchgröße in MB eingeben',
-      'Introduce el tamaño del diccionario en MB',
-      'Zadejte velikost slovníku v MB',
-      'Informe o tamanho do dicionário em MB',
-      'Wpisz rozmiar słownika w MB',
-      '사전 크기를 MB로 입력', '输入字典大小 (MB)', '辞書サイズをMBで入力',
-      'Sözlük boyutunu MB olarak gir', 'Indtast ordbogsstørrelse i MB',
-      'Voer woordenboekgrootte in MB in', 'Adja meg a szótár méretét MB-ban',
-      'Angi ordbokstørrelse i MB', 'Introduza o tamanho do dicionário em MB',
-      'Ange ordboksstorlek i MB', 'Introduceți dimensiunea dicționarului în MB',
-      'Въведете размер на речника в MB', 'Εισαγωγή μεγέθους λεξικού σε MB',
-      'Введіть розмір словника в MB'));
-  if EnglishText = 'Threads' then
-    Exit(Pick('Threads', 'Säikeet', 'Thread', 'Threads', 'Hilos',
-      'Vlákna', 'Threads', 'Wątki', '스레드', '线程', 'スレッド',
-      'İş parçacıkları', 'Tråde', 'Threads', 'Szálak', 'Tråder',
-      'Threads', 'Trådar', 'Fire de execuție', 'Нишки', 'Νήματα',
-      'Потоки'));
-  if EnglishText = 'Source path was not found.' then
-    Exit(Pick('Chemin source introuvable.', 'Lähdepolkua ei löytynyt.',
-      'Percorso sorgente non trovato.', 'Quellpfad wurde nicht gefunden.',
-      'No se encontró la ruta de origen.', 'Zdrojová cesta nebyla nalezena.',
-      'Caminho de origem não encontrado.', 'Nie znaleziono ścieżki źródłowej.',
-      '원본 경로를 찾을 수 없습니다.', '找不到源路径。', 'ソースパスが見つかりません。',
-      'Kaynak yolu bulunamadı.', 'Kildestien blev ikke fundet.',
-      'Bronpad is niet gevonden.', 'A forrásútvonal nem található.',
-      'Kildebanen ble ikke funnet.', 'Caminho de origem não encontrado.',
-      'Källsökvägen hittades inte.', 'Calea sursă nu a fost găsită.',
-      'Изходният път не е намерен.', 'Η διαδρομή προέλευσης δεν βρέθηκε.',
-      'Вихідний шлях не знайдено.'));
-  if EnglishText = 'Choose a source path.' then
-    Exit(Pick('Indiquez un chemin source.', 'Valitse lähdepolku.',
-      'Scegli un percorso sorgente.', 'Wählen Sie einen Quellpfad.',
-      'Elige una ruta de origen.', 'Vyberte zdrojovou cestu.',
-      'Escolha um caminho de origem.', 'Wybierz ścieżkę źródłową.',
-      '원본 경로를 선택하세요.', '请选择源路径。', 'ソースパスを選択してください。',
-      'Bir kaynak yolu seçin.', 'Vælg en kildesti.', 'Kies een bronpad.',
-      'Válasszon forrásútvonalat.', 'Velg en kildebane.',
-      'Escolha um caminho de origem.', 'Välj en källsökväg.',
-      'Alegeți o cale sursă.', 'Изберете изходен път.',
-      'Επιλέξτε διαδρομή προέλευσης.', 'Виберіть вихідний шлях.'));
-  if EnglishText = 'Choose an output file.' then
-    Exit(Pick('Indiquez un fichier de sortie.', 'Valitse tulostiedosto.',
-      'Scegli un file di output.', 'Wählen Sie eine Ausgabedatei.',
-      'Elige un archivo de salida.', 'Vyberte výstupní soubor.',
-      'Escolha um arquivo de saída.', 'Wybierz plik wynikowy.',
-      '출력 파일을 선택하세요.', '请选择输出文件。', '出力ファイルを選択してください。',
-      'Bir çıktı dosyası seçin.', 'Vælg en outputfil.',
-      'Kies een uitvoerbestand.', 'Válasszon kimeneti fájlt.',
-      'Velg en utdatafil.', 'Escolha um ficheiro de saída.',
-      'Välj en utdatafil.', 'Alegeți un fișier de ieșire.',
-      'Изберете изходен файл.', 'Επιλέξτε αρχείο εξόδου.',
-      'Виберіть файл результату.'));
-  if EnglishText = 'Folders can only be compressed into a 7Z archive.' then
-    Exit(Pick('Les dossiers peuvent seulement être compressés en archive 7Z.',
-      'Kansiot voi pakata vain 7Z-arkistoksi.',
-      'Le cartelle possono essere compresse solo in un archivio 7Z.',
-      'Ordner können nur in ein 7Z-Archiv komprimiert werden.',
-      'Las carpetas solo se pueden comprimir en un archivo 7Z.',
-      'Složky lze komprimovat pouze do archivu 7Z.',
-      'Pastas só podem ser compactadas em um arquivo 7Z.',
-      'Foldery można kompresować tylko do archiwum 7Z.',
-      '폴더는 7Z 아카이브로만 압축할 수 있습니다.',
-      '文件夹只能压缩为 7Z 归档。', 'フォルダーは7Zアーカイブにのみ圧縮できます。',
-      'Klasörler yalnızca 7Z arşivine sıkıştırılabilir.',
-      'Mapper kan kun komprimeres til et 7Z-arkiv.',
-      'Mappen kunnen alleen naar een 7Z-archief worden gecomprimeerd.',
-      'Mappák csak 7Z archívumba tömöríthetők.',
-      'Mapper kan bare komprimeres til et 7Z-arkiv.',
-      'Pastas só podem ser comprimidas para um arquivo 7Z.',
-      'Mappar kan bara komprimeras till ett 7Z-arkiv.',
-      'Folderele pot fi comprimate doar într-o arhivă 7Z.',
-      'Папките могат да се компресират само в 7Z архив.',
-      'Οι φάκελοι μπορούν να συμπιεστούν μόνο σε αρχείο 7Z.',
-      'Папки можна стискати лише в архів 7Z.'));
-  if EnglishText = 'Cancelling...' then
-    Exit(Pick('Annulation...', 'Peruutetaan...', 'Annullamento...',
-      'Wird abgebrochen...', 'Cancelando...', 'Ruší se...', 'Cancelando...',
-      'Anulowanie...', '취소 중...', '正在取消...', 'キャンセル中...',
-      'İptal ediliyor...', 'Annullerer...', 'Annuleren...',
-      'Megszakítás...', 'Avbryter...', 'A cancelar...', 'Avbryter...',
-      'Se anulează...', 'Отказване...', 'Ακύρωση...', 'Скасування...'));
-  if EnglishText = 'Cancelled' then
-    Exit(Pick('Annulé', 'Peruutettu', 'Annullato', 'Abgebrochen',
-      'Cancelado', 'Zrušeno', 'Cancelado', 'Anulowano', '취소됨',
-      '已取消', 'キャンセル済み', 'İptal edildi', 'Annulleret',
-      'Geannuleerd', 'Megszakítva', 'Avbrutt', 'Cancelado', 'Avbrutet',
-      'Anulat', 'Отказано', 'Ακυρώθηκε', 'Скасовано'));
-  if EnglishText = 'Task failed' then
-    Exit(Pick('La tâche a échoué', 'Tehtävä epäonnistui',
-      'Attività non riuscita', 'Aufgabe fehlgeschlagen', 'La tarea falló',
-      'Úloha selhala', 'A tarefa falhou', 'Zadanie nie powiodło się',
-      '작업 실패', '任务失败', 'タスクに失敗しました', 'Görev başarısız',
-      'Opgaven mislykkedes', 'Taak mislukt', 'A feladat sikertelen',
-      'Oppgaven mislyktes', 'A tarefa falhou', 'Uppgiften misslyckades',
-      'Sarcina a eșuat', 'Задачата е неуспешна', 'Η εργασία απέτυχε',
-      'Завдання не виконано'));
-  if EnglishText = 'The source folder has no files to archive.' then
-    Exit(Pick('Le dossier source ne contient aucun fichier à archiver.',
-      'Lähdekansiossa ei ole arkistoitavia tiedostoja.',
-      'La cartella sorgente non contiene file da archiviare.',
-      'Der Quellordner enthält keine Dateien zum Archivieren.',
-      'La carpeta de origen no contiene archivos para archivar.',
-      'Zdrojová složka neobsahuje žádné soubory k archivaci.',
-      'A pasta de origem não contém arquivos para arquivar.',
-      'Folder źródłowy nie zawiera plików do zarchiwizowania.',
-      '원본 폴더에 보관할 파일이 없습니다.',
-      '源文件夹中没有可归档的文件。', 'ソースフォルダーにアーカイブするファイルがありません。',
-      'Kaynak klasörde arşivlenecek dosya yok.',
-      'Kildemappen indeholder ingen filer til arkivering.',
-      'De bronmap bevat geen bestanden om te archiveren.',
-      'A forrásmappában nincs archiválandó fájl.',
-      'Kildemappen har ingen filer å arkivere.',
-      'A pasta de origem não contém ficheiros para arquivar.',
-      'Källmappen innehåller inga filer att arkivera.',
-      'Folderul sursă nu conține fișiere de arhivat.',
-      'Изходната папка няма файлове за архивиране.',
-      'Ο φάκελος προέλευσης δεν περιέχει αρχεία για αρχειοθέτηση.',
-      'У вихідній папці немає файлів для архівування.'));
-  if EnglishText = 'Enter a dictionary size in MB: 1 or higher.' then
-    Exit(Pick('Saisissez une taille de dictionnaire en MB : 1 ou plus.',
-      'Anna sanakirjan koko MB-yksikkönä: vähintään 1.',
-      'Inserisci una dimensione del dizionario in MB: 1 o superiore.',
-      'Geben Sie eine Wörterbuchgröße in MB ein: 1 oder größer.',
-      'Introduce un tamaño de diccionario en MB: 1 o superior.',
-      'Zadejte velikost slovníku v MB: 1 nebo více.',
-      'Informe um tamanho de dicionário em MB: 1 ou maior.',
-      'Podaj rozmiar słownika w MB: 1 lub więcej.',
-      '사전 크기를 MB 단위로 입력하세요: 1 이상.',
-      '请输入字典大小（MB）：1 或更大。', '辞書サイズをMBで入力してください: 1以上。',
-      'Sözlük boyutunu MB olarak girin: 1 veya daha büyük.',
-      'Indtast ordbogsstørrelse i MB: 1 eller højere.',
-      'Voer een woordenboekgrootte in MB in: 1 of hoger.',
-      'Adja meg a szótár méretét MB-ban: legalább 1.',
-      'Angi ordbokstørrelse i MB: 1 eller høyere.',
-      'Introduza um tamanho de dicionário em MB: 1 ou superior.',
-      'Ange ordboksstorlek i MB: 1 eller högre.',
-      'Introduceți dimensiunea dicționarului în MB: 1 sau mai mult.',
-      'Въведете размер на речника в MB: 1 или повече.',
-      'Εισαγάγετε μέγεθος λεξικού σε MB: 1 ή μεγαλύτερο.',
-      'Введіть розмір словника в MB: 1 або більше.'));
-  if EnglishText = 'Enter a thread count of 1 or higher.' then
-    Exit(Pick('Saisissez un nombre de threads de 1 ou plus.',
-      'Anna säikeiden määrä: vähintään 1.',
-      'Inserisci un numero di thread pari a 1 o superiore.',
-      'Geben Sie eine Threadanzahl von 1 oder größer ein.',
-      'Introduce un número de hilos de 1 o superior.',
-      'Zadejte počet vláken 1 nebo více.',
-      'Informe uma contagem de threads de 1 ou maior.',
-      'Podaj liczbę wątków: 1 lub więcej.',
-      '스레드 수를 1 이상으로 입력하세요.',
-      '请输入线程数：1 或更大。', 'スレッド数を1以上で入力してください。',
-      'İş parçacığı sayısını 1 veya daha büyük girin.',
-      'Indtast et trådantal på 1 eller højere.',
-      'Voer een threadaantal van 1 of hoger in.',
-      'Adja meg a szálak számát: legalább 1.',
-      'Angi antall tråder: 1 eller høyere.',
-      'Introduza uma contagem de threads de 1 ou superior.',
-      'Ange antal trådar: 1 eller högre.',
-      'Introduceți un număr de fire de execuție de 1 sau mai mare.',
-      'Въведете брой нишки: 1 или повече.',
-      'Εισαγάγετε αριθμό νημάτων 1 ή μεγαλύτερο.',
-      'Введіть кількість потоків: 1 або більше.'));
-  if EnglishText = ' archive' then
-    Exit(Pick(' archive', ' arkisto', ' archivio', ' archive', ' archivo',
-      ' archiv', ' arquivo', ' archiwum', ' 아카이브', ' 归档', 'アーカイブ',
-      ' arşivi', '-arkiv', ' archief', ' archívum', '-arkiv', ' arquivo',
-      '-arkiv', ' arhivă', ' архив', ' αρχείο', ' архів'));
-  if EnglishText = 'speed: —' then
-    Exit(Pick('vitesse : —', 'nopeus: —', 'velocità: —',
-      'Geschwindigkeit: —', 'velocidad: —', 'rychlost: —',
-      'velocidade: —', 'szybkość: —', '속도: —', '速度：—', '速度: —',
-      'hız: —', 'hastighed: —', 'snelheid: —', 'sebesség: —',
-      'hastighet: —', 'velocidade: —', 'hastighet: —', 'viteză: —',
-      'скорост: —', 'ταχύτητα: —', 'швидкість: —'));
-  if EnglishText = 'speed: ' then
-    Exit(Pick('vitesse : ', 'nopeus: ', 'velocità: ',
-      'Geschwindigkeit: ', 'velocidad: ', 'rychlost: ',
-      'velocidade: ', 'szybkość: ', '속도: ', '速度：', '速度: ',
-      'hız: ', 'hastighed: ', 'snelheid: ', 'sebesség: ',
-      'hastighet: ', 'velocidade: ', 'hastighet: ', 'viteză: ',
-      'скорост: ', 'ταχύτητα: ', 'швидкість: '));
-  if EnglishText = 'Processed: %s of %s | written: %s | %s' then
-    Exit(Pick('Traité : %s sur %s | écrit : %s | %s',
-      'Käsitelty: %s / %s | kirjoitettu: %s | %s',
-      'Elaborato: %s di %s | scritto: %s | %s',
-      'Verarbeitet: %s von %s | geschrieben: %s | %s',
-      'Procesado: %s de %s | escrito: %s | %s',
-      'Zpracováno: %s z %s | zapsáno: %s | %s',
-      'Processado: %s de %s | escrito: %s | %s',
-      'Przetworzono: %s z %s | zapisano: %s | %s',
-      '처리됨: %s / %s | 기록됨: %s | %s',
-      '已处理：%s / %s | 已写入：%s | %s', '処理済み: %s / %s | 書き込み済み: %s | %s',
-      'İşlendi: %s / %s | yazıldı: %s | %s',
-      'Behandlet: %s af %s | skrevet: %s | %s',
-      'Verwerkt: %s van %s | geschreven: %s | %s',
-      'Feldolgozva: %s / %s | írva: %s | %s',
-      'Behandlet: %s av %s | skrevet: %s | %s',
-      'Processado: %s de %s | escrito: %s | %s',
-      'Bearbetat: %s av %s | skrivet: %s | %s',
-      'Procesat: %s din %s | scris: %s | %s',
-      'Обработено: %s от %s | записано: %s | %s',
-      'Επεξεργάστηκε: %s από %s | γράφτηκε: %s | %s',
-      'Оброблено: %s з %s | записано: %s | %s'));
-  if EnglishText = 'Done: %s -> %s' then
-    Exit(Pick('Terminé : %s -> %s', 'Valmis: %s -> %s',
-      'Completato: %s -> %s', 'Fertig: %s -> %s',
-      'Completado: %s -> %s', 'Hotovo: %s -> %s',
-      'Concluído: %s -> %s', 'Gotowe: %s -> %s',
-      '완료: %s -> %s', '完成：%s -> %s', '完了: %s -> %s',
-      'Tamamlandı: %s -> %s', 'Færdig: %s -> %s',
-      'Voltooid: %s -> %s', 'Kész: %s -> %s',
-      'Ferdig: %s -> %s', 'Concluído: %s -> %s',
-      'Klart: %s -> %s', 'Gata: %s -> %s',
-      'Готово: %s -> %s', 'Ολοκληρώθηκε: %s -> %s',
-      'Готово: %s -> %s'));
-  if EnglishText = ' | Ratio (input/output): %.3f' then
-    Exit(Pick(' | Ratio (entrée/sortie) : %.3f',
-      ' | Suhde (syöte/tulos): %.3f',
-      ' | Rapporto (input/output): %.3f',
-      ' | Verhältnis (Eingabe/Ausgabe): %.3f',
-      ' | Relación (entrada/salida): %.3f',
-      ' | Poměr (vstup/výstup): %.3f',
-      ' | Razão (entrada/saída): %.3f',
-      ' | Współczynnik (wejście/wyjście): %.3f',
-      ' | 비율(입력/출력): %.3f',
-      ' | 比率（输入/输出）：%.3f',
-      ' | 比率 (入力/出力): %.3f',
-      ' | Oran (giriş/çıkış): %.3f',
-      ' | Forhold (input/output): %.3f',
-      ' | Verhouding (invoer/uitvoer): %.3f',
-      ' | Arány (bemenet/kimenet): %.3f',
-      ' | Forhold (inndata/utdata): %.3f',
-      ' | Rácio (entrada/saída): %.3f',
-      ' | Förhållande (in/ut): %.3f',
-      ' | Raport (intrare/ieșire): %.3f',
-      ' | Съотношение (вход/изход): %.3f',
-      ' | Αναλογία (είσοδος/έξοδος): %.3f',
-      ' | Коефіцієнт (вхід/вихід): %.3f'));
-  if EnglishText = ' | Decode requested threads: %d | Decode actual threads: %d | Decode used MT: %s | Decode fallback: %s' then
-    Exit(Pick(' | Threads demandés au décodage : %d | Threads réels : %d | MT utilisé : %s | Repli : %s',
-      ' | Purun pyydetyt säikeet: %d | Todelliset säikeet: %d | MT käytössä: %s | Varareitti: %s',
-      ' | Thread richiesti in decodifica: %d | Thread effettivi: %d | MT usato: %s | Fallback: %s',
-      ' | Dekodierung angeforderte Threads: %d | Tatsächliche Threads: %d | MT verwendet: %s | Fallback: %s',
-      ' | Hilos solicitados al decodificar: %d | Hilos reales: %d | MT usado: %s | Reserva: %s',
-      ' | Požadovaná vlákna dekódování: %d | Skutečná vlákna: %d | Použito MT: %s | Fallback: %s',
-      ' | Threads solicitadas na decodificação: %d | Threads reais: %d | MT usado: %s | Fallback: %s',
-      ' | Żądane wątki dekodowania: %d | Rzeczywiste wątki: %d | Użyto MT: %s | Fallback: %s',
-      ' | 디코드 요청 스레드: %d | 실제 스레드: %d | MT 사용: %s | 대체 경로: %s',
-      ' | 解码请求线程：%d | 实际线程：%d | 使用 MT：%s | 回退：%s',
-      ' | デコード要求スレッド: %d | 実スレッド: %d | MT使用: %s | フォールバック: %s',
-      ' | Çözme istenen iş parçacığı: %d | Gerçek iş parçacığı: %d | MT kullanıldı: %s | Yedek yol: %s',
-      ' | Anmodede dekodningstråde: %d | Faktiske tråde: %d | MT brugt: %s | Fallback: %s',
-      ' | Gevraagde decodeerthreads: %d | Werkelijke threads: %d | MT gebruikt: %s | Fallback: %s',
-      ' | Kért dekódolási szálak: %d | Tényleges szálak: %d | MT használva: %s | Tartalék: %s',
-      ' | Ønskede dekodingstråder: %d | Faktiske tråder: %d | MT brukt: %s | Fallback: %s',
-      ' | Threads pedidas na descodificação: %d | Threads reais: %d | MT usado: %s | Fallback: %s',
-      ' | Begärda avkodningstrådar: %d | Faktiska trådar: %d | MT användes: %s | Reservväg: %s',
-      ' | Fire cerute la decodare: %d | Fire reale: %d | MT folosit: %s | Fallback: %s',
-      ' | Заявени нишки за декодиране: %d | Реални нишки: %d | Използван MT: %s | Резервен път: %s',
-      ' | Ζητούμενα νήματα αποκωδικοποίησης: %d | Πραγματικά νήματα: %d | Χρήση MT: %s | Εφεδρική διαδρομή: %s',
-      ' | Запитано потоків декодування: %d | Фактичні потоки: %d | Використано MT: %s | Резервний шлях: %s'));
-  if EnglishText = ' | %d ms' then
-    Exit(Pick(' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
-      ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
-      ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
-      ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms', ' | %d ms',
-      ' | %d ms', ' | %d ms', ' | %d ms'));
+destructor TOptionCombo.Destroy;
+begin
+  try inherited;
+  finally FControlBuffer.Free;end;
+end;
+
+function TOptionCombo.ArrowBounds: TRect;
+begin
+  Result:=ClientRect;
+  Result.Left:=Max(Result.Left,Result.Right-ScaleValue(UiOptionArrowWidth));
+end;
+
+procedure TOptionCombo.CreateWnd;
+var Info: TComboBoxInfo;
+    Colors: TGuiListColors;
+begin
+  inherited;
+  SetWindowTheme(Handle, 'DarkMode_CFD', nil);
+  UpdateSelectionFieldHeight;
+  Info.cbSize:=SizeOf(Info);
+  if GetComboBoxInfo(Handle,Info) and (Info.hwndList<>0) then
+  begin
+    Colors.Background:=UiInput;Colors.Text:=UiText;Colors.Muted:=UiSubtleText;
+    Colors.Selection:=UiSelection;Colors.Hover:=UiSurfaceAlt;Colors.Accent:=UiAccent;
+    FListPresenter:=TNativeListPresenter.CreateForList(Self,Info.hwndList,
+      PixelsPerInch,Colors,PaintListItem);
+  end;
+end;
+
+procedure TOptionCombo.DestroyWnd;
+begin
+  FArrowPressed:=False;FArrowHover:=False;
+  FreeAndNil(FListPresenter);
+  inherited;
+end;
+
+procedure TOptionCombo.ChangeScale(M, D: Integer; isDpiChange: Boolean);
+begin
+  inherited;
+  if isDpiChange then Font.Height := -MulDiv(UiBodyText,M,96);
+  UpdateSelectionFieldHeight;
+  if FListPresenter<>nil then FListPresenter.Refresh(PixelsPerInch);
+end;
+
+procedure TOptionCombo.UpdateSelectionFieldHeight;
+var
+  WindowRect: TRect;
+  FieldHeight: Integer;
+  NativeTrim: Integer;
+  TargetFieldHeight: Integer;
+begin
+  if not HandleAllocated then
+    Exit;
+  FieldHeight := Integer(Perform(CB_GETITEMHEIGHT, High(WPARAM), 0));
+  if (FieldHeight = CB_ERR) or not GetWindowRect(Handle, WindowRect) then
+    Exit;
+  // Windows sizes the closed field independently of the dropdown rows.
+  NativeTrim := WindowRect.Height - FieldHeight;
+  if NativeTrim < 0 then
+    Exit;
+  TargetFieldHeight := Max(ItemHeight, ScaleValue(UiOptionHeight) - NativeTrim);
+  if TargetFieldHeight <> FieldHeight then
+    Perform(CB_SETITEMHEIGHT, High(WPARAM), TargetFieldHeight);
+end;
+
+function TOptionCombo.InputInvalid: Boolean;
+begin Result:=False;end;
+
+procedure TOptionCombo.PaintControl(const DC: HDC);
+var
+  TargetCanvas: TCanvas;
+  D2D: TDirect2DCanvas;
+  Bounds: TD2D1RoundedRect;
+  TextBounds: TRect;
+  TextFormat: TTextFormat;
+  Text: string;
+  BorderColor: TColor;
+  Foreground: TColor;
+  ArrowX: Single;
+  ArrowY: Single;
+begin
+  if (ClientWidth<=0) or (ClientHeight<=0) then Exit;
+  if (FControlBuffer.Width<>ClientWidth) or (FControlBuffer.Height<>ClientHeight) then
+    FControlBuffer.SetSize(ClientWidth,ClientHeight);
+  TargetCanvas:=FControlBuffer.Canvas;
+  TargetCanvas.Lock;
+  try
+    // Notify the bitmap canvas of the modification before lending its DC to
+    // Direct2D, and keep that DC valid through the final opaque copy.
+    TargetCanvas.Brush.Color:=Color;
+    TargetCanvas.FillRect(ClientRect);
+    D2D := TDirect2DCanvas.Create(TargetCanvas, ClientRect);
+    try
+      D2D.BeginDraw;
+      try
+        D2D.RenderTarget.SetDpi(96, 96);
+        D2D.RenderTarget.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        D2D.RenderTarget.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        if Parent is TPanel then
+          D2D.RenderTarget.Clear(D2D1ColorF(TPanel(Parent).Color))
+        else
+          D2D.RenderTarget.Clear(D2D1ColorF(UiSurface));
+        if not Enabled then
+          Foreground := UiSubtleText
+        else
+          Foreground := UiText;
+        if InputInvalid then
+          BorderColor := UiDanger
+        else if Focused then
+          BorderColor := UiAccent
+        else
+          BorderColor := UiBorder;
+        Bounds := D2D1RoundedRect(D2D1RectF(0.5, 0.5,
+          ClientWidth - 0.5, ClientHeight - 0.5), ScaleValue(6), ScaleValue(6));
+        if Enabled and FHover and (Style<>csDropDown) then
+          D2D.Brush.Color := UiSurfaceAlt
+        else
+          D2D.Brush.Color := UiInput;
+        D2D.FillRoundedRectangle(Bounds);
+        if Enabled and (Style=csDropDown) and (FArrowHover or FArrowPressed) then
+        begin
+          D2D.RenderTarget.PushAxisAlignedClip(D2D1RectF(ArrowBounds.Left,0,
+            ClientWidth,ClientHeight),D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+          try
+            D2D.Brush.Color:=UiSurfaceAlt;
+            D2D.FillRoundedRectangle(Bounds);
+          finally D2D.RenderTarget.PopAxisAlignedClip;end;
+        end;
+        D2D.Pen.Color := BorderColor;
+        D2D.RenderTarget.DrawRoundedRectangle(Bounds, D2D.Pen.Brush.Handle, ScaleValue(1.0));
+        D2D.Font.Assign(Font);
+        D2D.Font.Color := Foreground;
+        D2D.Brush.Style := bsClear;
+        TextBounds := Rect(ScaleValue(12), 0,
+          ClientWidth - ScaleValue(UiOptionArrowWidth), ClientHeight);
+        TextFormat := [tfLeft, tfSingleLine, tfVerticalCenter, tfNoPrefix, tfEndEllipsis];
+        if (ItemIndex >= 0) and (ItemIndex < Items.Count) then
+          Text := Items[ItemIndex]
+        else
+          Text := '';
+        if Style<>csDropDown then D2D.TextRect(TextBounds, Text, TextFormat);
+        D2D.Pen.Color := Foreground;
+        ArrowX := (ArrowBounds.Left+ArrowBounds.Right)*0.5;
+        ArrowY := ClientHeight * 0.5;
+        D2D.RenderTarget.DrawLine(D2D1PointF(ArrowX - ScaleValue(4), ArrowY - ScaleValue(2)),
+          D2D1PointF(ArrowX, ArrowY + ScaleValue(2)), D2D.Pen.Brush.Handle, ScaleValue(1.25));
+        D2D.RenderTarget.DrawLine(D2D1PointF(ArrowX, ArrowY + ScaleValue(2)),
+          D2D1PointF(ArrowX + ScaleValue(4), ArrowY - ScaleValue(2)),
+          D2D.Pen.Brush.Handle, ScaleValue(1.25));
+      finally
+        D2D.EndDraw;
+      end;
+    finally
+      D2D.Free;
+    end;
+  BitBlt(DC,0,0,ClientWidth,ClientHeight,TargetCanvas.Handle,0,0,SRCCOPY);
+  finally TargetCanvas.Unlock;end;
+end;
+
+procedure TOptionCombo.WMPaint(var Message: TWMPaint);
+var
+  PaintStruct: TPaintStruct;
+  DC: HDC;
+begin
+  if not TDirect2DCanvas.Supported then
+  begin
+    inherited;
+    Exit;
+  end;
+  DC := Message.DC;
+  if DC = 0 then
+    DC := BeginPaint(Handle, PaintStruct);
+  try
+    PaintControl(DC);
+  finally
+    if Message.DC = 0 then
+      EndPaint(Handle, PaintStruct);
+  end;
+end;
+
+procedure TOptionCombo.WMPrintClient(var Message: TWMPrintClient);
+begin
+  if not TDirect2DCanvas.Supported then
+  begin
+    inherited;
+    Exit;
+  end;
+  PaintControl(Message.DC);
+  Message.Result := 1;
+end;
+
+procedure TOptionCombo.WndProc(var Message: TMessage);
+var P:TPoint;Hovered,OpenPopup:Boolean;
+begin
+  if (Message.Msg=WM_ERASEBKGND) and TDirect2DCanvas.Supported then
+  begin Message.Result:=1;Exit;end;
+  if Message.Msg=WM_CAPTURECHANGED then
+  begin FArrowPressed:=False;Invalidate;end;
+  if (Style=csDropDown) and Enabled then
+  begin
+    if Message.Msg=WM_MOUSEMOVE then
+    begin
+      P:=Point(SmallInt(LoWord(Message.LParam)),SmallInt(HiWord(Message.LParam)));
+      Hovered:=ArrowBounds.Contains(P);
+      if Hovered<>FArrowHover then begin FArrowHover:=Hovered;Invalidate;end;
+    end;
+    if (Message.Msg=WM_LBUTTONDOWN) and not DroppedDown then
+    begin
+      P:=Point(SmallInt(LoWord(Message.LParam)),SmallInt(HiWord(Message.LParam)));
+      if ArrowBounds.Contains(P) then
+      begin
+        SetFocus;MouseCapture:=True;FArrowPressed:=True;
+        Invalidate;Message.Result:=0;Exit;
+      end;
+    end;
+    if (Message.Msg=WM_LBUTTONUP) and FArrowPressed then
+    begin
+      P:=Point(SmallInt(LoWord(Message.LParam)),SmallInt(HiWord(Message.LParam)));
+      OpenPopup:=ArrowBounds.Contains(P);
+      FArrowPressed:=False;MouseCapture:=False;
+      if OpenPopup then DroppedDown:=True;
+      Invalidate;Message.Result:=0;Exit;
+    end;
+  end;
+  // The editable combo's VCL child already requests popup keys. A readonly
+  // owner-drawn combo receives this query on the combo window itself.
+  if (Message.Msg=WM_GETDLGCODE) and DroppedDown then
+  begin Message.Result:=DLGC_WANTALLKEYS;Exit;end;
+  if (Message.Msg=CN_COMMAND) and (HiWord(Message.WParam)=CBN_DROPDOWN) and
+    (FListPresenter<>nil) then
+  begin Application.CancelHint;FListPresenter.PrepareOpen;end;
+  inherited;
+  if (Message.Msg=CN_COMMAND) and (HiWord(Message.WParam)=CBN_DROPDOWN) and
+    (FListPresenter<>nil) then FListPresenter.Refresh(PixelsPerInch);
+  case Message.Msg of
+    CM_FONTCHANGED:
+      UpdateSelectionFieldHeight;
+    WM_SETFOCUS, WM_KILLFOCUS, CM_ENABLEDCHANGED, CN_COMMAND:
+      Invalidate;
+  end;
+end;
+
+procedure TOptionCombo.CMMouseEnter(var Message: TMessage);
+begin
+  inherited;
+  FHover := True;
+  Invalidate;
+end;
+
+procedure TOptionCombo.CMMouseLeave(var Message: TMessage);
+begin
+  inherited;
+  FHover := False;
+  FArrowHover:=False;
+  Invalidate;
+end;
+
+procedure TOptionCombo.DrawItem(Index: Integer; Rect: TRect; State: TOwnerDrawState);
+begin
+  if odComboBoxEdit in State then
+  begin
+    // PaintControl owns the whole closed field, including its chevron. Native
+    // selection-field drawing would cover half of the DPI-scaled chevron.
+    Invalidate;
+    Exit;
+  end;
+  PaintListItem(Canvas,Index,Rect,odSelected in State);
+end;
+
+procedure TOptionCombo.PaintListItem(const Canvas:TCanvas;const Index:Integer;
+  const Bounds:TRect;const Selected:Boolean);
+var TextBounds:TRect;Text:string;
+begin
+  Canvas.Font.Assign(Font);
+  if Selected then Canvas.Brush.Color:=UiSurfaceHigh
+  else Canvas.Brush.Color:=Color;
+  if Enabled then Canvas.Font.Color:=UiText
+  else Canvas.Font.Color:=UiSubtleText;
+  Canvas.FillRect(Bounds);TextBounds:=Bounds;
+  Inc(TextBounds.Left,ScaleValue(10));Dec(TextBounds.Right,ScaleValue(8));
+  if (Index>=0) and (Index<Items.Count) then
+  begin
+    Text:=Items[Index];
+    Canvas.TextRect(TextBounds,Text,
+      [tfLeft,tfSingleLine,tfVerticalCenter,tfNoPrefix,tfEndEllipsis]);
+  end;
 end;
 
 constructor TRoundedPanel.Create(AOwner: TComponent);
@@ -889,6 +955,7 @@ begin
   BevelOuter := bvNone;
   BorderStyle := bsNone;
   Ctl3D := False;
+  DoubleBuffered := True;
   ParentBackground := False;
   StyleElements := [];
   FCornerRadius := 8;
@@ -896,8 +963,15 @@ begin
   FBorderWidth := 1;
   FCaptionOffsetY := 0;
   FGradientToColor := clNone;
+  FHoverColor := clNone;
   FGlyphKind := pgNone;
   FUseGradient := False;
+end;
+
+procedure TRoundedPanel.CreateParams(var Params:TCreateParams);
+begin
+  inherited;
+  Params.Style:=Params.Style or WS_CLIPCHILDREN;
 end;
 
 procedure TRoundedPanel.CreateWnd;
@@ -908,130 +982,189 @@ end;
 
 procedure TRoundedPanel.Paint;
 var
-  Bitmap: TBitmap;
-  CaptionBounds: TRectF;
-  CaptionFont: ISkFont;
-  CaptionPaint: ISkPaint;
-  FillPaint: ISkPaint;
-  Radius: Single;
-  StrokePaint: ISkPaint;
-  GlyphGap: Single;
+  D2D: TDirect2DCanvas;
+  BackColor: TColor;
+  FillColor: TColor;
+  GradientColor: TColor;
+  PaintBorder: TColor;
+  PaintBorderWidth: Single;
+  CaptionRect: TRect;
+  TextFormat: TTextFormat;
+  CaptionText: string;
+  GlyphGap: Integer;
   GlyphLeft: Single;
-  GlyphPaint: ISkPaint;
-  GlyphSize: Single;
+  GlyphSize: Integer;
   GlyphTop: Single;
-  TextBaseline: Single;
-  TextBlockWidth: Single;
-  TextLeft: Single;
-  TextWidth: Single;
-  Typeface: ISkTypeface;
+  Padding: Integer;
+  Radius: Single;
+  StrokeWidth: Single;
+  TextBlockWidth: Integer;
+  TextWidth: Integer;
+  Pressed: Boolean;
+  Bounds: TD2D1RoundedRect;
 begin
   if (ClientWidth <= 0) or (ClientHeight <= 0) then
     Exit;
+  if not TDirect2DCanvas.Supported then
+  begin
+    inherited;
+    Exit;
+  end;
 
-  Bitmap := TBitmap.Create;
+  BackColor := Color;
+  if Parent is TCustomForm then
+    BackColor := TCustomForm(Parent).Color
+  else if Parent is TPanel then
+    BackColor := TPanel(Parent).Color;
+  FillColor := Color;
+  GradientColor := FGradientToColor;
+  PaintBorder := FBorderColor;
+  PaintBorderWidth := FBorderWidth;
+  if Enabled and TabStop and FHasFocus and FShowKeyboardFocus then
+  begin
+    PaintBorder := UiAccentHover;
+    PaintBorderWidth := 1;
+  end;
+  Pressed := Enabled and (FKeyPressed or (FMousePressed and FHover));
+  if Enabled and Assigned(OnClick) then
+  begin
+    if Pressed then
+    begin
+      FillColor := ColorBlendRGB(Color, UiInput, 0.20);
+      if GradientColor <> clNone then
+        GradientColor := ColorBlendRGB(GradientColor, UiInput, 0.20);
+    end
+    else if FHover and (FHoverColor <> clNone) then
+    begin
+      FillColor := FHoverColor;
+      if FUseGradient then
+        GradientColor := FHoverColor;
+    end;
+  end;
+
+  D2D := TDirect2DCanvas.Create(Canvas, ClientRect);
   try
-    Bitmap.SetSize(ClientWidth, ClientHeight);
-    Bitmap.SkiaDraw(
-      procedure(const ACanvas: ISkCanvas)
-      var
-        Bounds: TRectF;
+    D2D.BeginDraw;
+    try
+      D2D.RenderTarget.SetDpi(96, 96);
+      D2D.RenderTarget.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+      D2D.RenderTarget.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+      D2D.RenderTarget.Clear(D2D1ColorF(BackColor));
+      Radius := Max(0, ScaleValue(Double(FCornerRadius)));
+      Bounds := D2D1RoundedRect(D2D1RectF(0.5, 0.5, ClientWidth - 0.5,
+        ClientHeight - 0.5), Radius, Radius);
+      if FUseGradient and (GradientColor <> clNone) then
+        D2D.Brush.Handle := D2D.CreateBrush([FillColor, GradientColor],
+          D2D1PointF(0, 0), D2D1PointF(0, ClientHeight))
+      else
+        D2D.Brush.Color := FillColor;
+      D2D.FillRoundedRectangle(Bounds);
+      if (PaintBorderWidth > 0) and (PaintBorder <> clNone) then
       begin
-        Radius := Max(0, FCornerRadius);
-        Bounds := RectF(0.5, 0.5, ClientWidth - 0.5, ClientHeight - 0.5);
+        D2D.Pen.Color := PaintBorder;
+        D2D.Pen.Brush.Handle.SetOpacity($9A / $FF);
+        StrokeWidth := ScaleValue(Double(PaintBorderWidth));
+        D2D.RenderTarget.DrawRoundedRectangle(Bounds, D2D.Pen.Brush.Handle, StrokeWidth);
+      end;
+      if Caption = '' then
+        Exit;
 
-        FillPaint := TSkPaint.Create;
-        FillPaint.AntiAlias := True;
-        FillPaint.Style := TSkPaintStyle.Fill;
-        if FUseGradient and (FGradientToColor <> clNone) then
-          FillPaint.Shader := TSkShader.MakeGradientLinear(
-            PointF(0, 0), PointF(0, ClientHeight),
-            ColorToSkia(Color), ColorToSkia(FGradientToColor))
-        else
-          FillPaint.Color := ColorToSkia(Color);
-        ACanvas.DrawRoundRect(Bounds, Radius, Radius, FillPaint);
-
-        if (FBorderWidth > 0) and (FBorderColor <> clNone) then
-        begin
-          StrokePaint := TSkPaint.Create;
-          StrokePaint.AntiAlias := True;
-          StrokePaint.Style := TSkPaintStyle.Stroke;
-          StrokePaint.StrokeWidth := FBorderWidth;
-          StrokePaint.Color := ColorToSkia(FBorderColor, $9A);
-          ACanvas.DrawRoundRect(Bounds, Radius, Radius, StrokePaint);
-        end;
-
-        if Caption <> '' then
-        begin
-          CaptionPaint := TSkPaint.Create;
-          CaptionPaint.AntiAlias := True;
-          CaptionPaint.Color := ColorToSkia(Font.Color);
-          Typeface := TSkTypeface.MakeFromName(Font.Name, FontStyleToSkia(Font));
-          CaptionFont := TSkFont.Create(Typeface, FontPixelSize(Font));
-          TextWidth := CaptionFont.MeasureText(Caption, CaptionBounds, CaptionPaint);
-          TextBaseline := (ClientHeight - CaptionBounds.Height) * 0.5 -
-            CaptionBounds.Top + FCaptionOffsetY;
-          GlyphSize := 0;
-          GlyphGap := 0;
-          if FGlyphKind <> pgNone then
-          begin
-            GlyphSize := Min(20, Max(16, ClientHeight - 24));
-            GlyphGap := 8;
-          end;
-          TextBlockWidth := TextWidth + GlyphSize + GlyphGap;
-          case Alignment of
-            taRightJustify:
-              GlyphLeft := ClientWidth - TextBlockWidth - 14;
-            taCenter:
-              GlyphLeft := (ClientWidth - TextBlockWidth) * 0.5;
-          else
-            GlyphLeft := 14;
-          end;
-          TextLeft := GlyphLeft + GlyphSize + GlyphGap - CaptionBounds.Left;
-          if FGlyphKind <> pgNone then
-          begin
-            GlyphTop := (ClientHeight - GlyphSize) * 0.5;
-            GlyphPaint := TSkPaint.Create;
-            GlyphPaint.AntiAlias := True;
-            GlyphPaint.Color := ColorToSkia(Font.Color);
-            GlyphPaint.StrokeCap := TSkStrokeCap.Round;
-            GlyphPaint.StrokeJoin := TSkStrokeJoin.Round;
-            GlyphPaint.StrokeWidth := 1.45;
-            GlyphPaint.Style := TSkPaintStyle.Stroke;
-            case FGlyphKind of
-              pgFile:
-                begin
-                  ACanvas.DrawRoundRect(
-                    RectF(GlyphLeft + 3, GlyphTop + 1, GlyphLeft + GlyphSize - 2,
-                      GlyphTop + GlyphSize - 1), 1.5, 1.5, GlyphPaint);
-                  ACanvas.DrawLine(GlyphLeft + GlyphSize - 6, GlyphTop + 1,
-                    GlyphLeft + GlyphSize - 2, GlyphTop + 5, GlyphPaint);
-                  ACanvas.DrawLine(GlyphLeft + GlyphSize - 6, GlyphTop + 1,
-                    GlyphLeft + GlyphSize - 6, GlyphTop + 5, GlyphPaint);
-                  ACanvas.DrawLine(GlyphLeft + GlyphSize - 6, GlyphTop + 5,
-                    GlyphLeft + GlyphSize - 2, GlyphTop + 5, GlyphPaint);
-                end;
-              pgFolder:
-                begin
-                  ACanvas.DrawLine(GlyphLeft + 2, GlyphTop + 5,
-                    GlyphLeft + 6, GlyphTop + 2, GlyphPaint);
-                  ACanvas.DrawLine(GlyphLeft + 6, GlyphTop + 2,
-                    GlyphLeft + 10, GlyphTop + 5, GlyphPaint);
-                  ACanvas.DrawRoundRect(
-                    RectF(GlyphLeft + 1, GlyphTop + 5, GlyphLeft + GlyphSize - 1,
-                      GlyphTop + GlyphSize - 1), 2, 2, GlyphPaint);
-                end;
+      D2D.Font.Assign(Font);
+      // The family already supplies the semibold face; do not synthesize bold again.
+      if SameText(Font.Name, 'Segoe UI Semibold') then
+        D2D.Font.Style := Font.Style - [fsBold];
+      D2D.Brush.Style := bsClear;
+      GlyphSize := 0;
+      GlyphGap := 0;
+      Padding := ScaleValue(14);
+      if Alignment = taCenter then
+        Padding := ScaleValue(2);
+      if FGlyphKind <> pgNone then
+      begin
+        GlyphSize := Min(ScaleValue(20), Max(ScaleValue(16), ClientHeight - ScaleValue(24)));
+        GlyphGap := ScaleValue(8);
+      end;
+      TextWidth := Min(D2D.TextWidth(Caption),
+        Max(0, ClientWidth - Padding * 2 - GlyphSize - GlyphGap));
+      TextBlockWidth := TextWidth + GlyphSize + GlyphGap;
+      case Alignment of
+        taRightJustify:
+          GlyphLeft := ClientWidth - TextBlockWidth - Padding;
+        taCenter:
+          GlyphLeft := (ClientWidth - TextBlockWidth) * 0.5;
+      else
+        GlyphLeft := Padding;
+      end;
+      if FGlyphKind <> pgNone then
+      begin
+        GlyphTop := (ClientHeight - GlyphSize) * 0.5;
+        D2D.Pen.Color := Font.Color;
+        D2D.Pen.Brush.Handle.SetOpacity(1);
+        case FGlyphKind of
+          pgFile:
+            begin
+              D2D.RenderTarget.DrawRoundedRectangle(D2D1RoundedRect(
+                D2D1RectF(GlyphLeft + ScaleValue(3), GlyphTop + ScaleValue(1),
+                  GlyphLeft + GlyphSize - ScaleValue(2), GlyphTop + GlyphSize - ScaleValue(1)),
+                ScaleValue(1.5), ScaleValue(1.5)), D2D.Pen.Brush.Handle, ScaleValue(1.45));
+              D2D.RenderTarget.DrawLine(D2D1PointF(GlyphLeft + GlyphSize - ScaleValue(6), GlyphTop + ScaleValue(1)),
+                D2D1PointF(GlyphLeft + GlyphSize - ScaleValue(6), GlyphTop + ScaleValue(5)),
+                D2D.Pen.Brush.Handle, ScaleValue(1.45));
+              D2D.RenderTarget.DrawLine(D2D1PointF(GlyphLeft + GlyphSize - ScaleValue(6), GlyphTop + ScaleValue(5)),
+                D2D1PointF(GlyphLeft + GlyphSize - ScaleValue(2), GlyphTop + ScaleValue(5)),
+                D2D.Pen.Brush.Handle, ScaleValue(1.45));
             end;
-          end;
-          ACanvas.DrawSimpleText(Caption, TextLeft, TextBaseline, CaptionFont, CaptionPaint);
+          pgLanguage:
+            begin
+              D2D.RenderTarget.DrawEllipse(D2D1Ellipse(
+                D2D1PointF(GlyphLeft + GlyphSize * 0.5, GlyphTop + GlyphSize * 0.5),
+                GlyphSize * 0.45, GlyphSize * 0.45),
+                D2D.Pen.Brush.Handle, ScaleValue(1.25));
+              D2D.RenderTarget.DrawEllipse(D2D1Ellipse(
+                D2D1PointF(GlyphLeft + GlyphSize * 0.5, GlyphTop + GlyphSize * 0.5),
+                GlyphSize * 0.20, GlyphSize * 0.45),
+                D2D.Pen.Brush.Handle, ScaleValue(1.25));
+              D2D.RenderTarget.DrawLine(
+                D2D1PointF(GlyphLeft + GlyphSize * 0.05, GlyphTop + GlyphSize * 0.5),
+                D2D1PointF(GlyphLeft + GlyphSize * 0.95, GlyphTop + GlyphSize * 0.5),
+                D2D.Pen.Brush.Handle, ScaleValue(1.25));
+            end;
+          pgFolder:
+            begin
+              D2D.RenderTarget.DrawLine(D2D1PointF(GlyphLeft + ScaleValue(2), GlyphTop + ScaleValue(5)),
+                D2D1PointF(GlyphLeft + ScaleValue(6), GlyphTop + ScaleValue(2)),
+                D2D.Pen.Brush.Handle, ScaleValue(1.45));
+              D2D.RenderTarget.DrawLine(D2D1PointF(GlyphLeft + ScaleValue(6), GlyphTop + ScaleValue(2)),
+                D2D1PointF(GlyphLeft + ScaleValue(10), GlyphTop + ScaleValue(5)),
+                D2D.Pen.Brush.Handle, ScaleValue(1.45));
+              D2D.RenderTarget.DrawRoundedRectangle(D2D1RoundedRect(
+                D2D1RectF(GlyphLeft + ScaleValue(1), GlyphTop + ScaleValue(5),
+                  GlyphLeft + GlyphSize - ScaleValue(1), GlyphTop + GlyphSize - ScaleValue(1)),
+                ScaleValue(2), ScaleValue(2)), D2D.Pen.Brush.Handle, ScaleValue(1.45));
+            end;
         end;
-      end);
-    Canvas.Draw(0, 0, Bitmap);
+      end;
+      CaptionRect := Rect(Round(GlyphLeft + GlyphSize + GlyphGap), 0,
+        ClientWidth - Padding, ClientHeight);
+      TextFormat := [tfLeft, tfSingleLine, tfVerticalCenter, tfEndEllipsis, tfNoPrefix];
+      if FGlyphKind = pgNone then
+      begin
+        CaptionRect.Left := Padding;
+        case Alignment of
+          taCenter: Include(TextFormat, tfCenter);
+          taRightJustify: Include(TextFormat, tfRight);
+        end;
+      end;
+      OffsetRect(CaptionRect, 0, Round(ScaleValue(Double(FCaptionOffsetY))) + Ord(Pressed) * ScaleValue(1));
+      CaptionText := Caption;
+      D2D.TextRect(CaptionRect, CaptionText, TextFormat);
+    finally
+      D2D.EndDraw;
+    end;
   finally
-    Bitmap.Free;
+    D2D.Free;
   end;
 end;
-
 procedure TRoundedPanel.Resize;
 begin
   inherited;
@@ -1039,30 +1172,143 @@ begin
 end;
 
 procedure TRoundedPanel.UpdateRegion;
-var
-  Radius: Integer;
-  Region: HRGN;
 begin
-  if not HandleAllocated then
-    Exit;
-  if (Width <= 0) or (Height <= 0) then
-    Exit;
-  Radius := Max(0, FCornerRadius);
-  if Radius = 0 then
-  begin
+  // Keep a rectangular backing so antialiasing can blend into the parent surface.
+  if HandleAllocated then
     SetWindowRgn(Handle, 0, True);
-    Exit;
-  end;
-  Region := CreateRoundRectRgn(0, 0, Width + 1, Height + 1, Radius, Radius);
-  SetWindowRgn(Handle, Region, True);
 end;
 
+procedure TRoundedPanel.CMMouseEnter(var Message: TMessage);
+begin
+  inherited;
+  if not FHover then
+  begin
+    FHover:=True;
+    if (FHoverColor<>clNone) or FMousePressed then Invalidate;
+  end;
+end;
+
+procedure TRoundedPanel.CMDialogKey(var Message: TCMDialogKey);
+begin
+  if Enabled and TabStop and FHasFocus and Assigned(OnClick) and
+    (Message.CharCode = VK_RETURN) and (KeyDataToShiftState(Message.KeyData) = []) then
+  begin
+    FShowKeyboardFocus := True;
+    Click;
+    Message.Result := 1;
+  end
+  else
+    inherited;
+end;
+
+procedure TRoundedPanel.CMMouseLeave(var Message: TMessage);
+begin
+  inherited;
+  if FHover then
+  begin
+    FHover:=False;
+    if (FHoverColor<>clNone) or FMousePressed then Invalidate;
+  end;
+end;
+
+procedure TRoundedPanel.WMCaptureChanged(var Message: TMessage);
+begin
+  inherited;
+  FMousePressed := False;
+  Invalidate;
+end;
+
+procedure TRoundedPanel.DoEnter;
+begin
+  inherited;
+  FHasFocus := True;
+  FShowKeyboardFocus := not FMousePressed;
+  Invalidate;
+end;
+
+procedure TRoundedPanel.DoExit;
+begin
+  inherited;
+  FHasFocus := False;
+  FKeyPressed := False;
+  Invalidate;
+end;
+
+procedure TRoundedPanel.FocusWithCue(const Keyboard: Boolean);
+begin
+  FMousePressed:=not Keyboard;
+  try
+    if CanFocus then SetFocus;
+  finally FMousePressed:=False;end;
+  FShowKeyboardFocus:=Keyboard;
+  Invalidate;
+end;
+
+procedure TRoundedPanel.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+  inherited;
+  FShowKeyboardFocus := True;
+  Invalidate;
+  if Enabled and TabStop and Assigned(OnClick) and (Shift = []) then
+    case Key of
+      VK_SPACE:
+        begin
+          FKeyPressed := True;
+          Key := 0;
+          Invalidate;
+        end;
+      VK_RETURN:
+        begin
+          Key := 0;
+          Click;
+        end;
+    end;
+end;
+
+procedure TRoundedPanel.KeyUp(var Key: Word; Shift: TShiftState);
+begin
+  inherited;
+  if Key = VK_SPACE then
+  begin
+    if FKeyPressed then
+    begin
+      FKeyPressed := False;
+      Invalidate;
+      Key := 0;
+      if Enabled and TabStop and Assigned(OnClick) then
+        Click;
+    end;
+  end;
+end;
+
+procedure TRoundedPanel.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  if (Button = mbLeft) and Enabled and Assigned(OnClick) then
+  begin
+    FShowKeyboardFocus := False;
+    FMousePressed := True;
+    if Showing and CanFocus then
+      SetFocus;
+    Invalidate;
+  end;
+  inherited;
+end;
+
+procedure TRoundedPanel.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  FMousePressed := False;
+  Invalidate;
+  inherited;
+end;
 constructor TWindowButton.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   Width := 46;
   Height := 42;
+  Color := UiChrome;
+  ParentColor := False;
   Cursor := crHandPoint;
+  DoubleBuffered := True;
   StyleElements := [];
 end;
 
@@ -1096,12 +1342,19 @@ end;
 procedure TWindowButton.Paint;
 var
   BackColor: TColor;
-  Bitmap: TBitmap;
-  CX: Integer;
-  CY: Integer;
-  S: Integer;
+  CX: Single;
+  CY: Single;
+  S: Single;
+  StrokeWidth: Single;
+  D2D: TDirect2DCanvas;
 begin
-  inherited;
+  if (ClientWidth <= 0) or (ClientHeight <= 0) then
+    Exit;
+  if not TDirect2DCanvas.Supported then
+  begin
+    inherited;
+    Exit;
+  end;
   if FHover then
   begin
     if FKind = wbClose then
@@ -1110,54 +1363,64 @@ begin
       BackColor := UiSurfaceAlt;
   end
   else
-    BackColor := UiChrome;
-  CX := ClientWidth div 2;
-  CY := ClientHeight div 2;
-  S := Max(9, Min(ClientWidth, ClientHeight) div 5);
+    BackColor := Color;
 
-  Bitmap := TBitmap.Create;
+  D2D := TDirect2DCanvas.Create(Canvas, ClientRect);
   try
-    Bitmap.SetSize(ClientWidth, ClientHeight);
-    Bitmap.SkiaDraw(
-      procedure(const ACanvas: ISkCanvas)
-      var
-        GlyphPaint: ISkPaint;
-        Radius: Single;
+    D2D.BeginDraw;
+    try
+      D2D.RenderTarget.SetDpi(96, 96);
+      D2D.RenderTarget.Clear(D2D1ColorF(Color));
+      if BackColor<>Color then
       begin
-        Radius := 1;
-        GlyphPaint := TSkPaint.Create;
-        GlyphPaint.AntiAlias := True;
-        GlyphPaint.Color := ColorToSkia(BackColor);
-        GlyphPaint.Style := TSkPaintStyle.Fill;
-        ACanvas.DrawRoundRect(RectF(0, 0, ClientWidth, ClientHeight), Radius, Radius, GlyphPaint);
-
-        GlyphPaint := TSkPaint.Create;
-        GlyphPaint.AntiAlias := True;
-        GlyphPaint.Color := ColorToSkia(UiMutedText);
-        if (FKind = wbClose) and FHover then
-          GlyphPaint.Color := ColorToSkia(clWhite);
-        GlyphPaint.StrokeCap := TSkStrokeCap.Round;
-        GlyphPaint.StrokeWidth := 1.7;
-        GlyphPaint.Style := TSkPaintStyle.Stroke;
-
-        case FKind of
-          wbMinimize:
-            ACanvas.DrawLine(CX - S, CY + S div 2, CX + S, CY + S div 2, GlyphPaint);
-          wbMaximize:
-            ACanvas.DrawRoundRect(RectF(CX - S, CY - S, CX + S, CY + S), 1.5, 1.5, GlyphPaint);
-          wbClose:
-            begin
-              ACanvas.DrawLine(CX - S, CY - S, CX + S, CY + S, GlyphPaint);
-              ACanvas.DrawLine(CX + S, CY - S, CX - S, CY + S, GlyphPaint);
-            end;
-        end;
-      end);
-    Canvas.Draw(0, 0, Bitmap);
+        D2D.Brush.Color:=BackColor;
+        D2D.FillRoundedRectangle(D2D1RoundedRect(
+          D2D1RectF(0,0,ClientWidth,ClientHeight),ScaleValue(FCornerRadius),ScaleValue(FCornerRadius)));
+      end;
+      D2D.Pen.Color := UiMutedText;
+      if (FKind = wbClose) and FHover then
+        D2D.Pen.Color := clWhite;
+      CX := ClientWidth * 0.5;
+      CY := ClientHeight * 0.5;
+      S := ScaleValue(5);
+      StrokeWidth := ScaleValue(1.0);
+      case FKind of
+        wbMinimize:
+          D2D.RenderTarget.DrawLine(D2D1PointF(CX - S, CY + S * 0.5),
+            D2D1PointF(CX + S, CY + S * 0.5), D2D.Pen.Brush.Handle, StrokeWidth);
+        wbMaximize:
+          if IsZoomed(GetAncestor(Handle, GA_ROOT)) then
+          begin
+            D2D.RenderTarget.DrawRectangle(
+              D2D1RectF(CX - S + ScaleValue(3), CY - S,
+                CX + S, CY + S - ScaleValue(3)), D2D.Pen.Brush.Handle, StrokeWidth);
+            D2D.Brush.Color := BackColor;
+            D2D.RenderTarget.FillRectangle(
+              D2D1RectF(CX - S, CY - S + ScaleValue(3),
+                CX + S - ScaleValue(3), CY + S), D2D.Brush.Handle);
+            D2D.RenderTarget.DrawRectangle(
+              D2D1RectF(CX - S, CY - S + ScaleValue(3),
+                CX + S - ScaleValue(3), CY + S), D2D.Pen.Brush.Handle, StrokeWidth);
+          end
+          else
+            D2D.RenderTarget.DrawRectangle(
+              D2D1RectF(CX - S, CY - S, CX + S, CY + S),
+              D2D.Pen.Brush.Handle, StrokeWidth);
+        wbClose:
+          begin
+            D2D.RenderTarget.DrawLine(D2D1PointF(CX - S, CY - S),
+              D2D1PointF(CX + S, CY + S), D2D.Pen.Brush.Handle, StrokeWidth);
+            D2D.RenderTarget.DrawLine(D2D1PointF(CX + S, CY - S),
+              D2D1PointF(CX - S, CY + S), D2D.Pen.Brush.Handle, StrokeWidth);
+          end;
+      end;
+    finally
+      D2D.EndDraw;
+    end;
   finally
-    Bitmap.Free;
+    D2D.Free;
   end;
 end;
-
 function ShellItemPath(const Item: IShellItem): string;
 var
   DisplayName: LPCWSTR;
@@ -1189,25 +1452,84 @@ begin
   end;
 end;
 
+destructor TApplicationMark.Destroy;
+begin
+  if FResourceIcon<>0 then DestroyIcon(FResourceIcon);
+  inherited;
+end;
+
+procedure TApplicationMark.Paint;
+var NewIcon: HICON;
+begin
+  if (Width<=0) or (Height<=0) then Exit;
+  if (FResourceIcon=0) or (FIconWidth<>Width) or (FIconHeight<>Height) then
+  begin
+    NewIcon := HICON(LoadImage(HInstance,PChar(AppIconResourceName),IMAGE_ICON,
+      Width,Height,LR_DEFAULTCOLOR));
+    if NewIcon<>0 then
+    begin
+      if FResourceIcon<>0 then DestroyIcon(FResourceIcon);
+      FResourceIcon := NewIcon;
+      FIconWidth := Width;
+      FIconHeight := Height;
+    end;
+  end;
+  Canvas.Brush.Color := Color;
+  Canvas.FillRect(ClientRect);
+  if FResourceIcon<>0 then
+    DrawIconEx(Canvas.Handle,0,0,FResourceIcon,Width,Height,0,0,DI_NORMAL);
+end;
+
+procedure TGuiResizeGrip.Paint;
+var
+  Row, Column, X, Y, DotSize: Integer;
+begin
+  DotSize := ScaleValue(2);
+  Canvas.Brush.Color := UiBorder;
+  for Row := 0 to 2 do
+  begin
+    Y := Height - ScaleValue(14-Row*4);
+    for Column := 0 to Row do
+    begin
+      X := Width - ScaleValue(6+Column*4);
+      Canvas.FillRect(Rect(X, Y, X+DotSize, Y+DotSize));
+    end;
+  end;
+end;
+
 constructor TMainForm.Create(AOwner: TComponent);
 var
   OleResult: HRESULT;
 begin
   inherited CreateNew(AOwner);
+  ScaleForPPI(96);
+  Font.PixelsPerInch := 96;
+  ConfigureGuiHints(UiModalSurface,UiModalBorder,UiText);
   OleResult := OleInitialize(nil);
   FOleInitialized := Succeeded(OleResult);
   FTaskbarButtonCreatedMessage := RegisterWindowMessage(TaskbarButtonCreatedMessageName);
-  FLanguage := DetectGuiLanguage;
+  LoadLanguagePreference;
   BuildUi;
+  ScaleForCurrentDpi;
+  // CreateNew builds controls from logical pixels. VCL can retain zero cached
+  // client extents while scaling them; assign both startup extents explicitly.
+  ClientWidth := ScaleValue(UiDefaultWidth);
+  ClientHeight := ScaleValue(UiDefaultHeight);
+  ConstrainToWorkArea;
   LoadApplicationIcon;
   InitializeShellIntegration;
 end;
 
 destructor TMainForm.Destroy;
 begin
+  try SavePackingPreference;
+  except OutputDebugString('LZMA2 GUI preferences could not be saved');end;
+  if FBenchTimer <> nil then FBenchTimer.Enabled := False;
+  FreeAndNil(FBenchBackend);
   ClearTaskbarProgress;
   TInterlocked.Exchange(FCancelRequested, 1);
-  FPollTimer.Enabled := False;
+  if FPollTimer <> nil then
+    FPollTimer.Enabled := False;
   if FTask <> nil then
   begin
     try
@@ -1221,6 +1543,7 @@ begin
   CleanupOutputFile;
   FTaskbarList := nil;
   inherited Destroy;
+  FSmallWindowIcon.Free;
   if FOleInitialized then
     OleUninitialize;
 end;
@@ -1250,13 +1573,24 @@ begin
 end;
 
 procedure TMainForm.ApplyDwmWindowAttributes;
+const
+  DwmImmersiveDarkModeAttribute = 20;
+  DwmBorderColorAttribute = 35;
 var
+  BorderColor: COLORREF;
+  DarkMode: BOOL;
   CornerPreference: Integer;
   NcRenderingPolicy: Integer;
   TransitionsForcedDisabled: BOOL;
 begin
   if not HandleAllocated then
     Exit;
+
+  // Published Windows11 DWM attributes; older Windows safely ignores them.
+  BorderColor := $FFFFFFFE; // DWMWA_COLOR_NONE
+  DwmSetWindowAttribute(Handle, DwmBorderColorAttribute, @BorderColor, SizeOf(BorderColor));
+  DarkMode := True;
+  DwmSetWindowAttribute(Handle, DwmImmersiveDarkModeAttribute, @DarkMode, SizeOf(DarkMode));
 
   NcRenderingPolicy := DWMNCRP_ENABLED;
   DwmSetWindowAttribute(Handle, DWMWA_NCRENDERING_POLICY,
@@ -1275,18 +1609,27 @@ end;
 procedure TMainForm.LoadApplicationIcon;
 var
   ResourceIcon: HICON;
+  Size: Integer;
 begin
-  ResourceIcon := LoadIcon(HInstance, PChar(AppIconResourceName));
-  if ResourceIcon <> 0 then
+  Size := ScaleValue(32);
+  ResourceIcon := HICON(LoadImage(HInstance,PChar(AppIconResourceName),IMAGE_ICON,
+    Size,Size,LR_DEFAULTCOLOR));
+  if ResourceIcon<>0 then
   begin
-    Icon.Handle := CopyIcon(ResourceIcon);
+    Icon.Handle := ResourceIcon;
     Application.Icon.Assign(Icon);
-    if HandleAllocated then
-    begin
-      SendMessage(Handle, WM_SETICON, ICON_SMALL, LPARAM(Icon.Handle));
-      SendMessage(Handle, WM_SETICON, ICON_BIG, LPARAM(Icon.Handle));
-    end;
+    if HandleAllocated then SendMessage(Handle,WM_SETICON,ICON_BIG,LPARAM(Icon.Handle));
   end;
+  Size := ScaleValue(16);
+  ResourceIcon := HICON(LoadImage(HInstance,PChar(AppIconResourceName),IMAGE_ICON,
+    Size,Size,LR_DEFAULTCOLOR));
+  if ResourceIcon<>0 then
+  begin
+    if FSmallWindowIcon=nil then FSmallWindowIcon:=TIcon.Create;
+    FSmallWindowIcon.Handle:=ResourceIcon;
+    if HandleAllocated then SendMessage(Handle,WM_SETICON,ICON_SMALL,LPARAM(FSmallWindowIcon.Handle));
+  end;
+  if FTitleIcon<>nil then FTitleIcon.Invalidate;
 end;
 
 procedure TMainForm.InitializeTaskbarList;
@@ -1329,7 +1672,7 @@ begin
     Exit;
 
   NormalizedPercent := UInt64(Max(0, Min(100, Percent)));
-  if IsError then
+  if IsError and ((FTask <> nil) or BenchmarkBusy) then
   begin
     FTaskbarList.SetProgressState(Handle, TBPF_ERROR);
     FTaskbarList.SetProgressValue(Handle, NormalizedPercent, 100);
@@ -1339,8 +1682,17 @@ begin
     FTaskbarList.SetProgressState(Handle, TBPF_NORMAL);
     FTaskbarList.SetProgressValue(Handle, NormalizedPercent, 100);
   end
-  else
-    FTaskbarList.SetProgressState(Handle, TBPF_NOPROGRESS);
+  else if BenchmarkBusy then
+  begin
+    if FBenchLast.CompletedPasses=0 then
+      FTaskbarList.SetProgressState(Handle,TBPF_INDETERMINATE)
+    else
+    begin
+      FTaskbarList.SetProgressState(Handle,TBPF_NORMAL);
+      FTaskbarList.SetProgressValue(Handle,NormalizedPercent,100);
+    end;
+  end
+  else FTaskbarList.SetProgressState(Handle, TBPF_NOPROGRESS);
 end;
 
 procedure TMainForm.MinimizeToTaskbar;
@@ -1361,6 +1713,31 @@ begin
     Exit;
   end;
   inherited WndProc(Message);
+  if Message.Msg=WM_DPICHANGED then
+  begin
+    LoadApplicationIcon;
+    ConstrainToWorkArea;
+    LayoutMainPanels;
+  end
+  else if (Message.Msg=WM_SETTINGCHANGE) or (Message.Msg=WM_DISPLAYCHANGE) then
+    ConstrainToWorkArea;
+end;
+
+procedure TMainForm.ConstrainToWorkArea;
+var Info: TMonitorInfo;
+    W,H,X,Y: Integer;
+begin
+  if not HandleAllocated then Exit;
+  Info.cbSize:=SizeOf(Info);
+  if not GetMonitorInfo(MonitorFromWindow(Handle,MONITOR_DEFAULTTONEAREST),@Info) then Exit;
+  Constraints.MinWidth := Min(ScaleValue(UiMinimumWidth), Info.rcWork.Width);
+  Constraints.MinHeight := Min(ScaleValue(UiMinimumHeight), Info.rcWork.Height);
+  if WindowState<>wsNormal then Exit;
+  W:=Min(Width,Info.rcWork.Right-Info.rcWork.Left);
+  H:=Min(Height,Info.rcWork.Bottom-Info.rcWork.Top);
+  X:=EnsureRange(Left,Info.rcWork.Left,Info.rcWork.Right-W);
+  Y:=EnsureRange(Top,Info.rcWork.Top,Info.rcWork.Bottom-H);
+  if (X<>Left) or (Y<>Top) or (W<>Width) or (H<>Height) then SetBounds(X,Y,W,H);
 end;
 
 procedure TMainForm.WMNCActivate(var Message: TMessage);
@@ -1397,116 +1774,272 @@ begin
   Message.Result := 0;
 end;
 
-procedure TMainForm.Resize;
+procedure TMainForm.ScaleForPPI(NewPPI: Integer);
 begin
   inherited;
-  if not HandleAllocated then
-    Exit;
   LayoutMainPanels;
 end;
 
-procedure TMainForm.LayoutMainPanels;
+procedure TMainForm.Resize;
 var
-  ActionWidth: Integer;
-  ActivityTop: Integer;
-  ButtonLeft: Integer;
-  EditRight: Integer;
-  MetricsLeft: Integer;
-  PanelHeight: Integer;
-  PanelWidth: Integer;
-  RowTop: Integer;
-  RowWidth: Integer;
+  Kind: TWindowButtonKind;
 begin
-  if (FMainPanel = nil) or (FFilesPanel = nil) or (FActivityPanel = nil) then
+  inherited;
+  if FLanguagePopup <> nil then
+    FLanguagePopup.Hide;
+  if not HandleAllocated then
     Exit;
-  if FMainPanel.ClientWidth <= 0 then
-    Exit;
+  if FResizeGrip<>nil then
+    FResizeGrip.Visible := WindowState=wsNormal;
+  LayoutMainPanels;
+  for Kind := Low(TWindowButtonKind) to High(TWindowButtonKind) do
+    if FWindowButtons[Kind] <> nil then
+      FWindowButtons[Kind].Invalidate;
+end;
 
-  PanelWidth := FMainPanel.ClientWidth;
-  PanelHeight := Max(500, FMainPanel.ClientHeight);
-  FFilesPanel.SetBounds(0, 0, PanelWidth, PanelHeight);
+function TMainForm.CaptionWidth(const Text: string; const TextFont: TFont): Integer;
+begin
+  Canvas.Font.Assign(TextFont);
+  Result := Canvas.TextWidth(Text);
+end;
 
-  RowWidth := Max(584, FFilesPanel.ClientWidth - 48);
-  if FInputRow <> nil then
+procedure TMainForm.LayoutTitleBar(Sender: TObject);
+var RightEdge, BarHeight, ButtonWidth: Integer;
+    Kind: TWindowButtonKind;
+begin
+  if (FLanguageButton=nil) or (FAboutButton=nil) or (FWindowButtons[wbClose]=nil) then Exit;
+  RightEdge := FLanguageButton.Parent.ClientWidth;
+  BarHeight := FLanguageButton.Parent.ClientHeight;
+  ButtonWidth := ScaleValue(46);
+  for Kind := High(TWindowButtonKind) downto Low(TWindowButtonKind) do
   begin
-    FInputRow.Left := 24;
-    FInputRow.Top := 96;
-    FInputRow.Width := RowWidth;
-    FInputRow.Height := 112;
+    Dec(RightEdge, ButtonWidth);
+    FWindowButtons[Kind].SetBounds(RightEdge, 0, ButtonWidth, BarHeight);
   end;
-  if FOutputRow <> nil then
-  begin
-    FOutputRow.Left := 24;
-    FOutputRow.Top := 240;
-    FOutputRow.Width := RowWidth;
-    FOutputRow.Height := 112;
-  end;
+  ButtonWidth := Max(ScaleValue(72), CaptionWidth(FAboutButton.Caption, FAboutButton.Font)+ScaleValue(24));
+  Dec(RightEdge, ButtonWidth);
+  FAboutButton.SetBounds(RightEdge, 0, ButtonWidth, BarHeight);
+  ButtonWidth := Max(ScaleValue(64), CaptionWidth(FLanguageButton.Caption, FLanguageButton.Font)+ScaleValue(40));
+  Dec(RightEdge, ButtonWidth);
+  FLanguageButton.SetBounds(RightEdge, 0, ButtonWidth, BarHeight);
+  FTitleLabel.Width := Max(0, RightEdge - ScaleValue(12) - FTitleLabel.Left);
+end;
 
-  ButtonLeft := RowWidth - 20 - 152;
-  EditRight := ButtonLeft - 16;
+procedure TMainForm.LayoutMainPanels;
+const
+  PathHeight = UiFieldTop + UiOptionHeight;
+  OutputTop = UiModeTop + PathHeight + 12;
+  SettingsTop = OutputTop + PathHeight + 20;
+  OptionRowTop = PathHeight + UiGap;
+var
+  PanelWidth, ViewportHeight, SettingsHeight, Gap, FieldHeight, LabelHeight, FieldTop: Integer;
+  GroupWidth, ColumnWidth, DictionaryLeft, ThreadsLeft, OptionTop, CheckTop: Integer;
+  ContainerMinWidth, CheckMinWidth: Integer;
+  ActionLeft, ActionTop, ActionWidth, StatusWidth, I, X, W, ModeMinWidth: Integer;
+  Compression, CustomDictionary, StackedCheck: Boolean;
+  ModeButtons: array[0..2] of TPanel;
+  ModeWidths: array[0..2] of Integer;
 
-  if FInputBrowseButton <> nil then
+  procedure PlaceLabel(const LabelControl: TLabel; const X, Y, AWidth: Integer);
   begin
-    FInputBrowseButton.Width := 152;
-    FInputBrowseButton.Height := 48;
-    FInputBrowseButton.Left := ButtonLeft;
-    FInputBrowseButton.Top := 36;
-  end;
-  if FOutputBrowseButton <> nil then
-  begin
-    FOutputBrowseButton.Width := 152;
-    FOutputBrowseButton.Height := 48;
-    FOutputBrowseButton.Left := ButtonLeft;
-    FOutputBrowseButton.Top := 36;
-  end;
-
-  if FInputShell <> nil then
-  begin
-    FInputShell.Width := Max(180, EditRight - FInputShell.Left);
-    FInputShell.Height := 48;
-    FInputShell.Top := 36;
-  end;
-  if FOutputShell <> nil then
-  begin
-    FOutputShell.Width := Max(180, EditRight - FOutputShell.Left);
-    FOutputShell.Height := 48;
-    FOutputShell.Top := 36;
-  end;
-
-  if FActivityPanel <> nil then
-  begin
-    ActivityTop := Max(376, PanelHeight - 24 - 128);
-    FActivityPanel.SetBounds(24, ActivityTop, RowWidth, 128);
-    ActionWidth := 300;
-    RowTop := 24;
-    if FStartButton <> nil then
-      FStartButton.SetBounds(0, RowTop, ActionWidth, 52);
-    if FCancelButton <> nil then
-      FCancelButton.SetBounds(0, RowTop, ActionWidth, 52);
+    LabelControl.SetBounds(X, Y, AWidth, LabelHeight);
   end;
 
-  MetricsLeft := 336;
-  if FProgressTrack <> nil then
+  procedure LayoutPathRow(const Row, Shell, BrowseButton: TPanel;
+    const Edit: TEdit; const LabelControl: TLabel; const Top: Integer);
+  var BrowseWidth, EditHeight, Inset: Integer;
   begin
-    FProgressTrack.Left := MetricsLeft;
-    FProgressTrack.Top := 28;
-    FProgressTrack.Width := Max(260, FActivityPanel.ClientWidth - MetricsLeft);
+    BrowseWidth := Max(ScaleValue(100), CaptionWidth(BrowseButton.Caption,BrowseButton.Font)+ScaleValue(24));
+    Inset := ScaleValue(12);
+    Row.SetBounds(0, Top, PanelWidth, FieldTop+FieldHeight);
+    PlaceLabel(LabelControl, 0, 0, PanelWidth);
+    Shell.SetBounds(0, FieldTop, PanelWidth-BrowseWidth-ScaleValue(12), FieldHeight);
+    BrowseButton.SetBounds(PanelWidth-BrowseWidth, FieldTop, BrowseWidth, FieldHeight);
+    Edit.AutoSize := False;
+    EditHeight := GuiNativeEditHeight(Edit.Font);
+    Edit.SetBounds(Inset, (Shell.ClientHeight-EditHeight+1) div 2,
+      Shell.ClientWidth-2*Inset, EditHeight);
   end;
-  if FStatusLabel <> nil then
+
+  function SegmentMinimum(const Buttons: array of TPanel): Integer;
+  var TextWidth: Integer;
   begin
-    FStatusLabel.Left := MetricsLeft;
-    FStatusLabel.Top := 48;
-    FStatusLabel.Width := Max(260, FActivityPanel.ClientWidth - MetricsLeft);
-    FStatusLabel.Height := 64;
+    TextWidth := 0;
+    for var Button in Buttons do
+      TextWidth := Max(TextWidth, CaptionWidth(Button.Caption,Button.Font));
+    Result := 2*ScaleValue(2)+Length(Buttons)*(TextWidth+ScaleValue(12));
   end;
-  if FStatsLabel <> nil then
+
+  procedure LayoutSegments(const Group: TPanel; const Buttons: array of TPanel);
+  var J, Inset, InnerWidth, LeftEdge, RightEdge: Integer;
   begin
-    FStatsLabel.Left := MetricsLeft;
-    FStatsLabel.Top := 48;
-    FStatsLabel.Width := Max(260, FActivityPanel.ClientWidth - MetricsLeft);
-    FStatsLabel.Height := 64;
+    Inset := ScaleValue(2);
+    InnerWidth := Group.ClientWidth - 2*Inset;
+    for J := Low(Buttons) to High(Buttons) do
+    begin
+      LeftEdge := Inset + MulDiv(J, InnerWidth, Length(Buttons));
+      RightEdge := Inset + MulDiv(J+1, InnerWidth, Length(Buttons));
+      Buttons[J].SetBounds(LeftEdge, Inset, RightEdge-LeftEdge, Group.ClientHeight-2*Inset);
+    end;
   end;
-  SetProgressVisual(FProgressPercent, FProgressError);
+
+begin
+  if FLayoutActive then Exit;
+  if (FMainPanel=nil) or (FBenchCopy=nil) or (FMainPanel.ClientWidth<=0) then Exit;
+  FLayoutActive := True;
+  try
+    ApplyLogicalFontHeights(FLogicalFonts, PixelsPerInch);
+    LayoutTitleBar(nil);
+    FMainPanel.Parent.Padding.Bottom := ScaleValue(UiBottomPadding) -
+      Ord(FResizeGrip.Visible)*FResizeGrip.Height;
+    ViewportHeight := FMainPanel.Parent.ClientHeight -
+      FMainPanel.Parent.Padding.Top - FMainPanel.Parent.Padding.Bottom;
+    Compression := FModeIndex=0;
+    CustomDictionary := Compression and FDictionaryCustomShell.Visible;
+    Gap := ScaleValue(UiGap);
+    ContainerMinWidth := SegmentMinimum(FContainerButtons);
+    CheckMinWidth := SegmentMinimum(FCheckButtons);
+    StackedCheck := FCheckGroup.Visible and
+      (ContainerMinWidth+Gap+CheckMinWidth>FMainPanel.ClientWidth);
+    SettingsHeight := PathHeight;
+    if Compression then Inc(SettingsHeight, OptionRowTop);
+    if CustomDictionary then Inc(SettingsHeight, UiOptionHeight+8);
+    if StackedCheck then Inc(SettingsHeight, OptionRowTop);
+    if FModeIndex=2 then
+      FMainPanel.Height := Max(ViewportHeight,ScaleValue(UiModeTop+UiBenchmarkHeight))
+    else
+      FMainPanel.Height := Max(ViewportHeight,ScaleValue(SettingsTop+SettingsHeight+UiGap+UiActivityHeight));
+
+    PanelWidth := FMainPanel.ClientWidth;
+    // A custom dictionary can add the vertical scrollbar at this width.
+    if FCheckGroup.Visible and not StackedCheck and
+      (ContainerMinWidth+Gap+CheckMinWidth>PanelWidth) then
+    begin
+      StackedCheck := True;
+      Inc(SettingsHeight, OptionRowTop);
+      FMainPanel.Height := Max(ViewportHeight,ScaleValue(SettingsTop+SettingsHeight+UiGap+UiActivityHeight));
+      PanelWidth := FMainPanel.ClientWidth;
+    end;
+    FieldHeight := ScaleValue(UiOptionHeight);
+    LabelHeight := ScaleValue(UiLabelHeight);
+    FieldTop := ScaleValue(UiFieldTop);
+    FFilesPanel.SetBounds(0, 0, PanelWidth, FMainPanel.ClientHeight);
+
+    ModeButtons[0] := FCompressModeButton;
+    ModeButtons[1] := FDecompressModeButton;
+    ModeButtons[2] := FBenchmarkModeButton;
+    ModeMinWidth := Min(ScaleValue(108), (PanelWidth-ScaleValue(8)) div 3);
+    W := ScaleValue(8);
+    for I := Low(ModeButtons) to High(ModeButtons) do
+    begin
+      ModeWidths[I] := Max(ModeMinWidth, CaptionWidth(ModeButtons[I].Caption, ModeButtons[I].Font)+ScaleValue(24));
+      Inc(W, ModeWidths[I]);
+    end;
+    if W>PanelWidth then
+    begin
+      for I := Low(ModeButtons) to High(ModeButtons) do
+        ModeWidths[I] := MulDiv(ModeWidths[I], PanelWidth-ScaleValue(8), W-ScaleValue(8));
+      W := PanelWidth;
+    end;
+    FModePanel.SetBounds(0, 0, W, FieldHeight);
+    X := ScaleValue(2);
+    for I := Low(ModeButtons) to High(ModeButtons) do
+    begin
+      ModeButtons[I].SetBounds(X, ScaleValue(2), ModeWidths[I], FieldHeight-ScaleValue(4));
+      Inc(X, ModeWidths[I]+ScaleValue(2));
+    end;
+
+    if FModeIndex=2 then
+    begin
+      LayoutBenchmark;
+      Exit;
+    end;
+
+    LayoutPathRow(FInputRow, FInputShell, FInputBrowseButton, FInputEdit, FInputLabel, ScaleValue(UiModeTop));
+    LayoutPathRow(FOutputRow, FOutputShell, FOutputBrowseButton, FOutputEdit, FOutputLabel, ScaleValue(OutputTop));
+    FSettingsPanel.SetBounds(0, ScaleValue(SettingsTop), PanelWidth, ScaleValue(SettingsHeight));
+    GroupWidth := (PanelWidth-Gap) div 2;
+    if StackedCheck then GroupWidth := PanelWidth
+    else if FCheckGroup.Visible then
+      GroupWidth := EnsureRange(GroupWidth,ContainerMinWidth,PanelWidth-Gap-CheckMinWidth);
+    PlaceLabel(FContainerLabel, 0, 0, GroupWidth);
+    FContainerGroup.SetBounds(0, FieldTop, GroupWidth, FieldHeight);
+    LayoutSegments(FContainerGroup, FContainerButtons);
+    if FCheckGroup.Visible then
+    begin
+      if StackedCheck then
+      begin
+        X := 0;
+        CheckTop := ScaleValue(OptionRowTop);
+      end
+      else
+      begin
+        X := GroupWidth+Gap;
+        CheckTop := 0;
+      end;
+      PlaceLabel(FCheckLabel, X, CheckTop, PanelWidth-X);
+      FCheckGroup.SetBounds(X, CheckTop+FieldTop, PanelWidth-X, FieldHeight);
+      LayoutSegments(FCheckGroup, FCheckButtons);
+    end;
+
+    if Compression then
+    begin
+      ColumnWidth := (PanelWidth-Gap*2) div 3;
+      DictionaryLeft := ColumnWidth+Gap;
+      ThreadsLeft := PanelWidth-ColumnWidth;
+      OptionTop := ScaleValue(OptionRowTop);
+      if StackedCheck then Inc(OptionTop, ScaleValue(OptionRowTop));
+      PlaceLabel(FLevelLabel, 0, OptionTop, ColumnWidth);
+      PlaceLabel(FDictionaryLabel, DictionaryLeft, OptionTop, ColumnWidth);
+      FLevelCombo.SetBounds(0, OptionTop+FieldTop, ColumnWidth, FieldHeight);
+      FDictionaryCombo.SetBounds(DictionaryLeft, OptionTop+FieldTop, ColumnWidth, FieldHeight);
+      if CustomDictionary then
+      begin
+        FDictionaryCustomShell.SetBounds(DictionaryLeft,
+          OptionTop+FieldTop+FieldHeight+ScaleValue(8), ColumnWidth, FieldHeight);
+        FDictionaryCustomEdit.AutoSize := False;
+        W := GuiNativeEditHeight(FDictionaryCustomEdit.Font);
+        FDictionaryCustomEdit.SetBounds(ScaleValue(12), (FieldHeight-W+1) div 2,
+          ColumnWidth-ScaleValue(24), W);
+      end;
+    end
+    else
+    begin
+      OptionTop := 0;
+      ColumnWidth := PanelWidth-GroupWidth-Gap;
+      ThreadsLeft := GroupWidth+Gap;
+    end;
+    PlaceLabel(FThreadsLabel, ThreadsLeft, OptionTop, ColumnWidth);
+    FThreadsCombo.SetBounds(ThreadsLeft, OptionTop+FieldTop, ColumnWidth, FieldHeight);
+
+    FActivityPanel.SetBounds(0, FMainPanel.ClientHeight-ScaleValue(UiActivityHeight),
+      PanelWidth, ScaleValue(UiActivityHeight));
+    ActionWidth := Max(ScaleValue(160), Max(CaptionWidth(FStartButton.Caption,FStartButton.Font),
+      CaptionWidth(FCancelButton.Caption,FCancelButton.Font))+ScaleValue(32));
+    ActionLeft := PanelWidth-ActionWidth;
+    ActionTop := FActivityPanel.ClientHeight-FieldHeight-ScaleValue(UiActionInset);
+    StatusWidth := Max(0, ActionLeft-Gap);
+    FStartButton.SetBounds(ActionLeft, ActionTop, ActionWidth, FieldHeight);
+    FCancelButton.SetBounds(ActionLeft, ActionTop, ActionWidth, FieldHeight);
+    FProgressTrack.SetBounds(0, ScaleValue(28), StatusWidth, ScaleValue(4));
+    FProgressLabel.SetBounds(Max(0, StatusWidth-ScaleValue(48)), 0, ScaleValue(48), LabelHeight);
+    if FStatusLabel.Visible and FStatsLabel.Visible then
+    begin
+      W := StatusWidth;
+      if FTask<>nil then W := Max(0, FProgressLabel.Left-ScaleValue(8));
+      FStatusLabel.SetBounds(0, 0, W, ScaleValue(24));
+      FStatsLabel.SetBounds(0, ScaleValue(36), StatusWidth, ScaleValue(UiActivityHeight-36));
+    end
+    else
+    begin
+      FStatusLabel.SetBounds(0, ScaleValue(4), StatusWidth, ScaleValue(52));
+      FStatsLabel.SetBounds(0, ScaleValue(4), StatusWidth, ScaleValue(52));
+    end;
+    FReadyLabel.SetBounds(0, ActionTop, StatusWidth, FieldHeight);
+    SetProgressVisual(FProgressPercent, FProgressError);
+  finally
+    FLayoutActive := False;
+  end;
 end;
 
 procedure TMainForm.MainPanelResize(Sender: TObject);
@@ -1514,64 +2047,28 @@ begin
   LayoutMainPanels;
 end;
 
-function TMainForm.TextOf(const RussianText, EnglishText: string): string;
+function TMainForm.TextOf(const Key: string): string;
 begin
-  if FLanguage = glRussian then
-    Result := RussianText
-  else
-    Result := TranslateEnglishText(FLanguage, EnglishText);
+  Result:=GuiText(Ord(FLanguage),Key);
 end;
 
 function TMainForm.DictionaryCaption(const ValueMb: Integer): string;
 begin
-  if FLanguage = glRussian then
-    Result := Format('%d МБ', [ValueMb])
-  else
-    Result := Format('%d MB', [ValueMb]);
+  Result:=Format('%d %s',[ValueMb,TextOf('MB')]);
 end;
 
 function GuiFormatBytes(const Value: UInt64; const Language: TGuiLanguage): string;
-const
-  Kilo = 1024.0;
-  Mega = 1024.0 * 1024.0;
-  Giga = 1024.0 * 1024.0 * 1024.0;
+var Scaled: Double; UnitIndex: Integer;
 begin
-  if Value >= Trunc(Giga) then
-  begin
-    if Language = glRussian then
-      Result := Format('%.1f Гбайт', [Value / Giga])
-    else
-      Result := Format('%.1f GB', [Value / Giga]);
-  end
-  else if Value >= Trunc(Mega) then
-  begin
-    if Language = glRussian then
-      Result := Format('%.1f Мбайт', [Value / Mega])
-    else
-      Result := Format('%.1f MB', [Value / Mega]);
-  end
-  else if Value >= Trunc(Kilo) then
-  begin
-    if Language = glRussian then
-      Result := Format('%.1f Кбайт', [Value / Kilo])
-    else
-      Result := Format('%.1f KB', [Value / Kilo]);
-  end
-  else
-  begin
-    if Language = glRussian then
-      Result := Format('%d байт', [Value])
-    else
-      Result := Format('%d bytes', [Value]);
-  end;
+  Scaled:=Value;UnitIndex:=0;
+  while (Scaled>=1024) and (UnitIndex<3) do begin Scaled:=Scaled/1024;Inc(UnitIndex);end;
+  if UnitIndex=0 then Result:=Format('%d %s',[Value,GuiByteUnit(Ord(Language),UnitIndex)],GuiNumberFormat(Ord(Language)))
+  else Result:=Format('%.1f %s',[Scaled,GuiByteUnit(Ord(Language),UnitIndex)],GuiNumberFormat(Ord(Language)));
 end;
 
 function GuiFormatRate(const BytesPerSecond: Double; const Language: TGuiLanguage): string;
 begin
-  if Language = glRussian then
-    Result := Format('%.2f Мбайт/с', [BytesPerSecond / 1048576.0])
-  else
-    Result := Format('%.2f MB/s', [BytesPerSecond / 1048576.0]);
+  Result:=Format('%.2f %s/s',[BytesPerSecond/1048576.0,GuiByteUnit(Ord(Language),2)],GuiNumberFormat(Ord(Language)));
 end;
 
 function ArchiveStoredPathFromFullPath(const BaseParent, FullPath: string): string;
@@ -1650,17 +2147,9 @@ begin
     AddSevenZipGuiEntry(Entries, SourcePaths, ExtractFileName(FullInput), FullInput,
       False, TotalInputBytes)
   else
-    raise EArgumentException.Create(TextOf('Исходный путь не найден.', 'Source path was not found.'));
+    raise EArgumentException.Create(TextOf('Source path was not found.'));
   if Length(Entries) = 0 then
-    raise EArgumentException.Create(TextOf('В исходной папке нет файлов для архивации.',
-      'The source folder has no files to archive.'));
-end;
-
-procedure TMainForm.UpdateDictionaryDetail;
-begin
-  if FDictionaryDetailLabel = nil then
-    Exit;
-  FDictionaryDetailLabel.Caption := '';
+    raise EArgumentException.Create(TextOf('The source folder has no files to archive.'));
 end;
 
 procedure TMainForm.UpdateDefaultOutputPath(const Force: Boolean);
@@ -1739,6 +2228,10 @@ begin
   begin
     TRoundedPanel(Button).UseGradient := Enabled and Primary;
     TRoundedPanel(Button).GradientToColor := UiAccentHover;
+    if Primary then
+      TRoundedPanel(Button).HoverColor := UiAccentHover
+    else
+      TRoundedPanel(Button).HoverColor := UiBorder;
     TRoundedPanel(Button).BorderColor := UiBorder;
     TRoundedPanel(Button).BorderWidth := 1;
   end;
@@ -1771,6 +2264,11 @@ begin
     Exit;
 
   FProgressTrack.Visible := (FTask <> nil) or (FProgressPercent > 0) or IsError;
+  if FProgressLabel <> nil then
+  begin
+    FProgressLabel.Caption := Format('%d%%', [FProgressPercent]);
+    FProgressLabel.Visible := FTask <> nil;
+  end;
   FillWidth := MulDiv(FProgressTrack.ClientWidth, FProgressPercent, 100);
   FProgressFill.SetBounds(0, 0, FillWidth, FProgressTrack.ClientHeight);
   FProgressFill.Visible := FProgressPercent > 0;
@@ -1792,6 +2290,8 @@ begin
   ClearTaskbarProgress;
   if FProgressTrack <> nil then
     FProgressTrack.Visible := False;
+  if FProgressLabel <> nil then
+    FProgressLabel.Visible := False;
   if FProgressFill <> nil then
   begin
     FProgressFill.Visible := False;
@@ -1808,28 +2308,37 @@ begin
     FStatsLabel.Caption := '';
     FStatsLabel.Visible := False;
   end;
+  UpdateStartState;
 end;
 
-procedure TMainForm.SetInlineStatus(const StatusText: string; const IsError: Boolean);
+procedure TMainForm.SetInlineStatus(const StatusText: string; const IsError: Boolean;
+  const DetailsText: string);
 begin
+  if FReadyLabel <> nil then
+    FReadyLabel.Visible := False;
   if FStatusLabel <> nil then
   begin
     FStatusLabel.Caption := StatusText;
+    FStatusLabel.Hint := StatusText;
     FStatusLabel.Visible := StatusText <> '';
     if IsError then
       FStatusLabel.Font.Color := UiDanger
     else
-      FStatusLabel.Font.Color := UiMutedText;
+      FStatusLabel.Font.Color := UiText;
   end;
   if FStatsLabel <> nil then
   begin
-    FStatsLabel.Caption := '';
-    FStatsLabel.Visible := False;
+    FStatsLabel.Caption := DetailsText;
+    FStatsLabel.Hint := DetailsText;
+    FStatsLabel.Visible := DetailsText <> '';
   end;
   if FProgressTrack <> nil then
     FProgressTrack.Visible := False;
   if FProgressFill <> nil then
     FProgressFill.Visible := False;
+  if FProgressLabel <> nil then
+    FProgressLabel.Visible := False;
+  LayoutMainPanels;
 end;
 
 procedure TMainForm.SetOutputPathText(const Value: string; const AutoGenerated: Boolean);
@@ -1846,93 +2355,230 @@ begin
   end;
 end;
 
-procedure TMainForm.ShowErrorDialog(const MessageText: string);
-var
-  Dialog: TForm;
-  TitleBar: TPanel;
-  TitleLabel: TLabel;
-  MessageLabel: TLabel;
-  AccentBar: TPanel;
-  OkButton: TPanel;
+procedure TMainForm.ModalKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+var Dialog:TForm;
 begin
-  Dialog := TForm.CreateNew(Self);
-  try
-    Dialog.BorderStyle := bsNone;
-    Dialog.Position := poOwnerFormCenter;
-    Dialog.Width := 460;
-    Dialog.Height := 220;
-    Dialog.Color := UiSurface;
-    Dialog.Font.Name := 'Segoe UI';
-    Dialog.Font.Size := 10;
-    Dialog.Font.Color := UiText;
-    Dialog.StyleElements := [];
-    SetWindowRgn(Dialog.Handle, CreateRoundRectRgn(0, 0, Dialog.Width + 1, Dialog.Height + 1, 14, 14), True);
-
-    TitleBar := TRoundedPanel.Create(Dialog);
-    TitleBar.Parent := Dialog;
-    TitleBar.Align := alTop;
-    TitleBar.Height := 46;
-    TitleBar.BevelOuter := bvNone;
-    TitleBar.ParentBackground := False;
-    TitleBar.Color := UiChrome;
-    TitleBar.OnMouseDown := TitleBarMouseDown;
-
-    TitleLabel := TLabel.Create(Dialog);
-    TitleLabel.Parent := TitleBar;
-    TitleLabel.Left := 20;
-    TitleLabel.Top := 14;
-    TitleLabel.Caption := TextOf('Ошибка', 'Error');
-    TitleLabel.Font.Name := 'Segoe UI Semibold';
-    TitleLabel.Font.Size := 10;
-    TitleLabel.Font.Color := UiText;
-    TitleLabel.Transparent := True;
-    TitleLabel.OnMouseDown := TitleBarMouseDown;
-
-    AccentBar := TRoundedPanel.Create(Dialog);
-    AccentBar.Parent := Dialog;
-    AccentBar.Align := alLeft;
-    AccentBar.Width := 4;
-    AccentBar.BevelOuter := bvNone;
-    AccentBar.ParentBackground := False;
-    AccentBar.Color := UiDanger;
-
-    MessageLabel := TLabel.Create(Dialog);
-    MessageLabel.Parent := Dialog;
-    MessageLabel.Left := 30;
-    MessageLabel.Top := 76;
-    MessageLabel.Width := Dialog.ClientWidth - 60;
-    MessageLabel.Height := 72;
-    MessageLabel.AutoSize := False;
-    MessageLabel.WordWrap := True;
-    MessageLabel.Caption := MessageText;
-    MessageLabel.Font.Name := 'Segoe UI';
-    MessageLabel.Font.Size := 10;
-    MessageLabel.Font.Color := UiText;
-    MessageLabel.Transparent := True;
-    MessageLabel.Anchors := [akLeft, akTop, akRight];
-
-    OkButton := TRoundedPanel.Create(Dialog);
-    OkButton.Parent := Dialog;
-    OkButton.Left := Dialog.ClientWidth - 142;
-    OkButton.Top := Dialog.ClientHeight - 58;
-    OkButton.Width := 112;
-    OkButton.Height := 36;
-    OkButton.Anchors := [akRight, akBottom];
-    OkButton.BevelOuter := bvNone;
-    OkButton.ParentBackground := False;
-    OkButton.Color := UiAccent;
-    OkButton.Caption := TextOf('OK', 'OK');
-    OkButton.Alignment := taCenter;
-    OkButton.Font.Name := 'Segoe UI Semibold';
-    OkButton.Font.Size := 9;
-    OkButton.Font.Color := UiAccentText;
-    OkButton.Cursor := crHandPoint;
-    OkButton.OnClick := ModalOkClick;
-
-    Dialog.ShowModal;
-  finally
-    Dialog.Free;
+  Dialog:=TForm(Sender);
+  if (Key=Ord('A')) and (Shift=[ssCtrl]) and (Dialog.ActiveControl is TCustomEdit) then
+  begin
+    TCustomEdit(Dialog.ActiveControl).SelectAll;
+    Key:=0;
+    Exit;
   end;
+  if Key=VK_ESCAPE then begin TForm(Sender).ModalResult:=mrCancel;Key:=0;end;
+end;
+
+function TMainForm.NewModalDialog(const Caption:string;const W,H:Integer):TForm;
+begin
+  Application.CancelHint;
+  Result:=TGuiModalForm.CreateNew(Self);
+  Result.ScaleForPPI(96);Result.Font.PixelsPerInch:=96;
+  Result.BorderStyle:=bsNone;Result.Position:=poOwnerFormCenter;
+  Result.PopupMode:=pmExplicit;Result.PopupParent:=Self;
+  Result.Caption:=Caption;Result.ClientWidth:=W;Result.ClientHeight:=H;
+  Result.Color:=UiModalSurface;Result.StyleElements:=[];
+  Result.OnPaint:=PaintModalSurface;Result.DoubleBuffered:=True;
+  TGuiModalForm(Result).UseFont(Result.Font, UiBodyText);
+  Result.Font.Color:=UiText;
+  Result.KeyPreview:=True;Result.OnKeyDown:=ModalKeyDown;
+end;
+
+procedure TMainForm.PrepareModalDialog(const Dialog:TForm;const Corner:TWindowButton;
+  const W,H:Integer);
+var Dark:BOOL;
+begin
+  Dark:=True;DwmSetWindowAttribute(Dialog.Handle,20,@Dark,SizeOf(Dark));
+  Dialog.ScaleForPPI(PixelsPerInch);
+  Dialog.ClientWidth:=ScaleValue(W);Dialog.ClientHeight:=ScaleValue(H);
+  Corner.SetBounds(Dialog.ClientWidth-ScaleValue(44),ScaleValue(12),ScaleValue(32),ScaleValue(32));
+  TGuiModalForm(Dialog).UpdateRegion;
+end;
+
+procedure TMainForm.PaintModalSurface(Sender:TObject);
+var Dialog:TForm;D2D:TDirect2DCanvas;Stroke,Radius:Single;
+begin
+  Dialog:=TForm(Sender);
+  Stroke:=Max(1,Dialog.PixelsPerInch/96);
+  Radius:=MulDiv(UiModalCornerRadius,Dialog.PixelsPerInch,96);
+  if not TDirect2DCanvas.Supported then
+  begin
+    Dialog.Canvas.Brush.Color:=UiModalSurface;Dialog.Canvas.Pen.Color:=UiModalBorder;
+    Dialog.Canvas.Pen.Width:=Round(Stroke);
+    Dialog.Canvas.RoundRect(0,0,Dialog.ClientWidth,Dialog.ClientHeight,
+      Round(Radius*2),Round(Radius*2));
+    Exit;
+  end;
+  D2D:=TDirect2DCanvas.Create(Dialog.Canvas,Dialog.ClientRect);
+  try
+    D2D.BeginDraw;
+    try
+      D2D.RenderTarget.SetDpi(96,96);
+      D2D.RenderTarget.Clear(D2D1ColorF(UiModalSurface));
+      D2D.Pen.Color:=UiModalBorder;
+      D2D.RenderTarget.DrawRoundedRectangle(D2D1RoundedRect(
+        D2D1RectF(Stroke*0.5,Stroke*0.5,Dialog.ClientWidth-Stroke*0.5,
+          Dialog.ClientHeight-Stroke*0.5),Radius,Radius),D2D.Pen.Brush.Handle,Stroke);
+    finally D2D.EndDraw;end;
+  finally D2D.Free;end;
+end;
+
+procedure TMainForm.OpenProjectPage(Sender: TObject);
+begin
+  ShellExecute(Handle,'open',PChar(GuiProjectUrl),nil,nil,SW_SHOWNORMAL);
+end;
+
+procedure TMainForm.AboutClick(Sender: TObject);
+const
+  DialogWidth = 432;
+  DialogHeight = 224;
+  Margin = 24;
+  FooterTop = 164;
+  FooterGap = 12;
+  FooterWidth = (DialogWidth-2*Margin-FooterGap) div 2;
+  HeaderTextLeft = 84;
+  HeaderCloseGap = 12;
+var Dialog: TForm;
+    Mark: TApplicationMark;
+    CloseButton, ProjectButton: TRoundedPanel;
+    CloseCorner: TWindowButton;
+    HeaderTextWidth:Integer;
+  procedure AddLine(const Text: string; const X,Y,W,Size: Integer; const Strong: Boolean=False);
+  var TextControl: TEdit;
+  begin
+    TextControl:=TEdit.Create(Dialog);TextControl.Parent:=Dialog;
+    TextControl.BorderStyle:=bsNone;TextControl.Ctl3D:=False;
+    TextControl.ReadOnly:=True;TextControl.AutoSelect:=False;
+    TextControl.Color:=UiModalSurface;TextControl.StyleElements:=[];
+    TGuiModalForm(Dialog).UseFont(TextControl.Font, Size, Strong);
+    TextControl.Font.Color:=UiText;
+    TextControl.AutoSize:=True;TextControl.SetBounds(X,Y,W,TextControl.Height);
+    TextControl.Text:=Text;TextControl.TabStop:=True;
+  end;
+begin
+  if (FTask<>nil) or BenchmarkBusy then Exit;
+  Dialog:=NewModalDialog(TextOf('About'),DialogWidth,DialogHeight);
+  try
+    CloseCorner:=TWindowButton.Create(Dialog);CloseCorner.Parent:=Dialog;
+    CloseCorner.SetBounds(DialogWidth-44,12,32,32);CloseCorner.Anchors:=[akTop,akRight];
+    CloseCorner.Color:=UiModalSurface;CloseCorner.CornerRadius:=6;
+    CloseCorner.Kind:=wbClose;CloseCorner.Caption:=TextOf('Close');
+    CloseCorner.Hint:=CloseCorner.Caption;CloseCorner.ShowHint:=True;
+    CloseCorner.OnClick:=ModalOkClick;
+    Mark:=TApplicationMark.Create(Dialog);Mark.Parent:=Dialog;Mark.ParentColor:=False;Mark.Color:=UiModalSurface;Mark.SetBounds(Margin,28,44,44);
+    // Selectable EDITs are opaque windows. Keep the entire header text box
+    // clear of the corner button, including its lower-left hover/hit area.
+    HeaderTextWidth:=CloseCorner.Left-HeaderCloseGap-HeaderTextLeft;
+    AddLine(GuiProductName,HeaderTextLeft,28,HeaderTextWidth,UiDialogTitleText,True);
+{$IFDEF WIN64}
+    AddLine(GuiProductVersion+' · Win64',HeaderTextLeft,56,HeaderTextWidth,UiBodyText);
+{$ELSE}
+    AddLine(GuiProductVersion+' · Win32',HeaderTextLeft,56,HeaderTextWidth,UiBodyText);
+{$ENDIF}
+    AddLine(Format(GuiApplicationValue('description'),[GuiSdkTarget]),Margin,96,DialogWidth-2*Margin,UiBodyText);
+    AddLine(TextOf('License: MIT'),Margin,120,DialogWidth-2*Margin,UiBodyText);
+    CloseButton:=TRoundedPanel.Create(Dialog);CloseButton.Parent:=Dialog;
+    CloseButton.SetBounds(Margin+FooterWidth+FooterGap,FooterTop,FooterWidth,UiOptionHeight);CloseButton.Caption:=TextOf('Close');
+    CloseButton.Color:=UiAccent;CloseButton.Font.Color:=UiAccentText;
+    TGuiModalForm(Dialog).UseFont(CloseButton.Font, UiBodyText, True);CloseButton.Alignment:=taCenter;
+    CloseButton.BevelOuter:=bvNone;CloseButton.ParentBackground:=False;
+    CloseButton.TabStop:=True;CloseButton.Cursor:=crHandPoint;CloseButton.OnClick:=ModalOkClick;
+    SetPanelButtonEnabled(CloseButton,True,True);CloseButton.UseGradient:=False;
+    CloseButton.BorderColor:=clNone;CloseButton.BorderWidth:=0;
+    ProjectButton:=TRoundedPanel.Create(Dialog);ProjectButton.Parent:=Dialog;
+    ProjectButton.SetBounds(Margin,FooterTop,FooterWidth,UiOptionHeight);ProjectButton.Caption:=TextOf('GitHub');
+    ProjectButton.Hint:=GuiProjectUrl;ProjectButton.ShowHint:=True;
+    ProjectButton.Color:=UiSurfaceHigh;ProjectButton.Font.Color:=UiText;
+    TGuiModalForm(Dialog).UseFont(ProjectButton.Font, UiBodyText, True);ProjectButton.Alignment:=taCenter;
+    ProjectButton.BevelOuter:=bvNone;ProjectButton.ParentBackground:=False;
+    ProjectButton.TabStop:=True;ProjectButton.Cursor:=crHandPoint;ProjectButton.OnClick:=OpenProjectPage;
+    SetPanelButtonEnabled(ProjectButton,True,False);
+    ProjectButton.Color:=UiSurfaceHigh;
+    ProjectButton.BorderColor:=UiBorder;ProjectButton.BorderWidth:=1;
+    ProjectButton.TabOrder:=4;CloseButton.TabOrder:=5;
+    PrepareModalDialog(Dialog,CloseCorner,DialogWidth,DialogHeight);
+    Dialog.ActiveControl:=CloseButton;
+    Dialog.ShowModal;
+  finally Dialog.Free;end;
+end;
+
+procedure TMainForm.ShowErrorDialog(const MessageText:string;const DiagnosticDetails:string);
+const Width=472;Margin=24;ContentWidth=Width-Margin*2;Gap=12;ButtonHeight=UiOptionHeight;
+var Dialog:TForm;Corner:TWindowButton;Title,MessageLabel,DetailLabel:TLabel;
+    DetailHost,CopyButton,OkButton:TRoundedPanel;DetailEdit:TEdit;
+    Report:TDialogCopyReport;R:TRect;BodyHeight,NextTop,FooterTop,Height:Integer;
+  function FooterButton(const X:Integer;const Caption:string;const Primary:Boolean):TRoundedPanel;
+  begin
+    Result:=TRoundedPanel.Create(Dialog);Result.Parent:=Dialog;
+    Result.SetBounds(X,FooterTop,(ContentWidth-Gap) div 2,ButtonHeight);
+    Result.Caption:=Caption;
+    TGuiModalForm(Dialog).UseFont(Result.Font, UiBodyText, True);
+    Result.Alignment:=taCenter;Result.TabStop:=True;Result.Cursor:=crHandPoint;
+    Result.BevelOuter:=bvNone;Result.ParentBackground:=False;
+    SetPanelButtonEnabled(Result,True,Primary);Result.UseGradient:=False;
+    if Primary then begin Result.BorderColor:=clNone;Result.BorderWidth:=0;end;
+  end;
+begin
+  Dialog:=NewModalDialog(TextOf('Error'),Width,260);
+  try
+    Corner:=TWindowButton.Create(Dialog);Corner.Parent:=Dialog;
+    Corner.SetBounds(Width-44,12,32,32);Corner.Anchors:=[akTop,akRight];
+    Corner.Color:=UiModalSurface;Corner.CornerRadius:=6;Corner.Kind:=wbClose;
+    Corner.Caption:=TextOf('Close');Corner.OnClick:=ModalOkClick;
+    Title:=TLabel.Create(Dialog);Title.Parent:=Dialog;
+    Title.SetBounds(Margin,24,Corner.Left-12-Margin,28);Title.AutoSize:=False;
+    Title.Caption:=TextOf('Error');TGuiModalForm(Dialog).UseFont(Title.Font, UiDialogTitleText, True);
+    Title.Font.Color:=UiText;Title.Transparent:=True;Title.OnMouseDown:=TitleBarMouseDown;
+    Dialog.Canvas.Font.Assign(Dialog.Font);
+    R:=Rect(0,0,ContentWidth,0);
+    DrawText(Dialog.Canvas.Handle,PChar(MessageText),Length(MessageText),R,
+      DT_CALCRECT or DT_WORDBREAK or DT_NOPREFIX or DT_EDITCONTROL);
+    BodyHeight:=Max(Dialog.Canvas.TextHeight('Agjp'),R.Height);
+    MessageLabel:=TLabel.Create(Dialog);MessageLabel.Parent:=Dialog;
+    MessageLabel.AutoSize:=False;MessageLabel.WordWrap:=True;
+    MessageLabel.SetBounds(Margin,64,ContentWidth,BodyHeight);
+    MessageLabel.Caption:=MessageText;MessageLabel.Font.Assign(Dialog.Font);
+    MessageLabel.Transparent:=True;
+    NextTop:=MessageLabel.Top+MessageLabel.Height+16;
+    if DiagnosticDetails<>'' then
+    begin
+      DetailLabel:=TLabel.Create(Dialog);DetailLabel.Parent:=Dialog;
+      DetailLabel.Caption:=TextOf('Details');DetailLabel.Font.Color:=UiMutedText;
+      DetailLabel.SetBounds(Margin,NextTop,ContentWidth,UiLabelHeight);DetailLabel.Transparent:=True;
+      Inc(NextTop,UiFieldTop);
+      DetailHost:=TRoundedPanel.Create(Dialog);DetailHost.Parent:=Dialog;
+      DetailHost.SetBounds(Margin,NextTop,ContentWidth,UiOptionHeight);DetailHost.Color:=UiInput;
+      DetailHost.BevelOuter:=bvNone;DetailHost.ParentBackground:=False;
+      DetailHost.CornerRadius:=6;DetailHost.BorderColor:=UiBorder;
+      DetailEdit:=TEdit.Create(Dialog);DetailEdit.Parent:=DetailHost;
+      DetailEdit.BorderStyle:=bsNone;DetailEdit.Ctl3D:=False;
+      DetailEdit.StyleElements:=[];DetailEdit.ReadOnly:=True;DetailEdit.AutoSelect:=False;
+      DetailEdit.Color:=UiInput;TGuiModalForm(Dialog).UseFont(DetailEdit.Font, UiBodyText);DetailEdit.Font.Color:=UiText;
+      DetailEdit.AutoSize:=False;
+      DetailEdit.Height:=GuiNativeEditHeight(DetailEdit.Font);
+      DetailEdit.SetBounds(12,(UiOptionHeight-DetailEdit.Height+1) div 2,ContentWidth-24,DetailEdit.Height);
+      DetailEdit.Text:=StringReplace(StringReplace(DiagnosticDetails,#13#10,'; ',[rfReplaceAll]),#10,'; ',[rfReplaceAll]);
+      Inc(NextTop,UiOptionHeight+16);
+    end;
+    FooterTop:=NextTop;Height:=FooterTop+ButtonHeight+Margin;
+    Dialog.ClientHeight:=Height;
+    Report:=TDialogCopyReport.Create(Dialog);
+    Report.Text:=GuiProductName+' '+GuiProductVersion+sLineBreak+MessageText;
+    if DiagnosticDetails<>'' then Report.Text:=Report.Text+sLineBreak+DiagnosticDetails;
+    CopyButton:=FooterButton(Margin,TextOf('Copy'),False);
+    CopyButton.OnClick:=Report.CopyReport;
+    OkButton:=FooterButton(Margin+(ContentWidth+Gap) div 2,TextOf('OK'),True);
+    OkButton.OnClick:=ModalOkClick;
+    PrepareModalDialog(Dialog,Corner,Width,Height);
+    Dialog.ActiveControl:=OkButton;Dialog.ShowModal;
+  finally Dialog.Free;end;
+end;
+
+procedure TMainForm.ReportException(const Error:Exception);
+var Failure:TGuiFailure;
+begin
+  Failure:=DescribeGuiFailure(Error,Ord(FLanguage));
+  SetInlineStatus(Failure.Summary,True);
+  ShowErrorDialog(Failure.Summary,Failure.Details);
 end;
 
 procedure TMainForm.UpdateModeButtons;
@@ -1946,26 +2592,40 @@ procedure TMainForm.UpdateModeButtons;
     if Button is TRoundedPanel then
     begin
       TRoundedPanel(Button).UseGradient := False;
+      TRoundedPanel(Button).HoverColor := UiSurfaceAlt;
       TRoundedPanel(Button).GradientToColor := UiAccentHover;
-      if Button.Enabled and Selected then
-        TRoundedPanel(Button).BorderColor := UiAccent
+      if Selected and Button.Enabled then
+      begin
+        TRoundedPanel(Button).BorderColor := UiSelectionBorder;
+        TRoundedPanel(Button).BorderWidth := 1;
+      end
       else
-        TRoundedPanel(Button).BorderColor := UiSurfaceAlt;
-      TRoundedPanel(Button).BorderWidth := 1;
+      begin
+        TRoundedPanel(Button).BorderColor := clNone;
+        TRoundedPanel(Button).BorderWidth := 0;
+      end;
     end;
     if not Button.Enabled then
     begin
-      Button.Color := UiInputDisabled;
-      Button.Font.Color := UiSubtleText;
+      if Selected then
+      begin
+        Button.Color := UiSurfaceAlt;
+        Button.Font.Color := UiMutedText;
+      end
+      else
+      begin
+        Button.Color := UiInputDisabled;
+        Button.Font.Color := UiSubtleText;
+      end;
     end
     else if Selected then
     begin
-      Button.Color := UiSurfaceAlt;
-      Button.Font.Color := UiAccent;
+      Button.Color := UiSelection;
+      Button.Font.Color := UiAccentHover;
     end
     else
     begin
-      Button.Color := UiSurfaceAlt;
+      Button.Color := UiInput;
       Button.Font.Color := UiMutedText;
     end;
     Button.Invalidate;
@@ -1974,27 +2634,21 @@ procedure TMainForm.UpdateModeButtons;
 begin
   ApplyModeButton(FCompressModeButton, FModeIndex = 0);
   ApplyModeButton(FDecompressModeButton, FModeIndex = 1);
-  if FHeaderLabel <> nil then
+  ApplyModeButton(FBenchmarkModeButton, FModeIndex = 2);
+  if FBenchmarkPanel <> nil then
   begin
-    FHeaderLabel.Font.Name := 'Segoe UI Semibold';
-    FHeaderLabel.Font.Size := 15;
-    FHeaderLabel.Font.Style := [fsBold];
-    if FModeIndex = 0 then
-    begin
-      FHeaderLabel.Caption := TextOf('Сжатие файлов', 'File compression');
-    end
-    else
-    begin
-      FHeaderLabel.Caption := TextOf('Распаковка файлов', 'File extraction');
-    end;
+    FBenchmarkPanel.Visible := FModeIndex = 2;
+    FInputRow.Visible := FModeIndex <> 2;
+    FOutputRow.Visible := FModeIndex <> 2;
+    FSettingsPanel.Visible := FModeIndex <> 2;
+    FActivityPanel.Visible := FModeIndex <> 2;
   end;
   if FStartButton <> nil then
   begin
     if FModeIndex = 0 then
-      FStartButton.Caption := TextOf('Начать сжатие', 'Start compression')
+      FStartButton.Caption := TextOf('Start compression')
     else
-      FStartButton.Caption := TextOf('Начать распаковку', 'Start extraction');
-    FStartButton.Font.Size := 12;
+      FStartButton.Caption := TextOf('Start extraction');
     SetPanelButtonEnabled(FStartButton, FStartButton.Enabled, True);
   end;
 end;
@@ -2010,21 +2664,35 @@ procedure TMainForm.UpdateOptionButtons;
     if Button is TRoundedPanel then
     begin
       TRoundedPanel(Button).UseGradient := False;
-      if Button.Enabled and Selected then
-        TRoundedPanel(Button).BorderColor := UiAccent
+      TRoundedPanel(Button).HoverColor := UiSurfaceAlt;
+      if Selected then
+      begin
+        if Button.Enabled then
+          TRoundedPanel(Button).BorderColor := UiSelectionBorder
+        else
+          TRoundedPanel(Button).BorderColor := UiBorder;
+      end
       else
-        TRoundedPanel(Button).BorderColor := UiSurfaceAlt;
-      TRoundedPanel(Button).BorderWidth := 1;
+        TRoundedPanel(Button).BorderColor := clNone;
+      TRoundedPanel(Button).BorderWidth := Ord(Selected);
     end;
     if not Button.Enabled then
     begin
-      Button.Color := UiInputDisabled;
-      Button.Font.Color := UiSubtleText;
+      if Selected then
+      begin
+        Button.Color := UiSurfaceAlt;
+        Button.Font.Color := UiMutedText;
+      end
+      else
+      begin
+        Button.Color := UiInput;
+        Button.Font.Color := UiSubtleText;
+      end;
     end
     else if Selected then
     begin
-      Button.Color := UiSurfaceHigh;
-      Button.Font.Color := UiAccent;
+      Button.Color := UiSelection;
+      Button.Font.Color := UiAccentHover;
     end
     else
     begin
@@ -2035,48 +2703,42 @@ procedure TMainForm.UpdateOptionButtons;
   end;
 
 var
-  CompressionMode: Boolean;
+  CompressionMode, HasXzCheck, Idle: Boolean;
   I: Integer;
-  Idle: Boolean;
 begin
   CompressionMode := FModeIndex = 0;
+  HasXzCheck := CompressionMode and (FContainerIndex=2);
   Idle := FTask = nil;
+  FCheckLabel.Visible := HasXzCheck;
+  FCheckGroup.Visible := HasXzCheck;
+  FLevelLabel.Visible := CompressionMode;
+  FLevelCombo.Visible := CompressionMode;
+  FDictionaryLabel.Visible := CompressionMode;
+  FDictionaryCombo.Visible := CompressionMode;
   for I := Low(FContainerButtons) to High(FContainerButtons) do
   begin
     FContainerButtons[I].Enabled := Idle;
     ApplyOptionButton(FContainerButtons[I], FContainerIndex = I);
   end;
-  for I := Low(FLevelButtons) to High(FLevelButtons) do
-  begin
-    FLevelButtons[I].Enabled := Idle and CompressionMode;
-    ApplyOptionButton(FLevelButtons[I], FLevelIndex = I);
-  end;
+  FLevelCombo.Enabled := Idle and CompressionMode;
+  FLevelCombo.ItemIndex := FLevelIndex;
+  FLevelCombo.Invalidate;
   for I := Low(FCheckButtons) to High(FCheckButtons) do
   begin
-    FCheckButtons[I].Enabled := Idle and CompressionMode;
+    FCheckButtons[I].Enabled := Idle and HasXzCheck;
     ApplyOptionButton(FCheckButtons[I], FCheckIndex = I);
   end;
-  for I := Low(FDictionaryButtons) to High(FDictionaryButtons) do
-  begin
-    FDictionaryButtons[I].Enabled := Idle and CompressionMode;
-    ApplyOptionButton(FDictionaryButtons[I], FDictionaryIndex = I);
-  end;
+  FDictionaryCombo.Enabled := Idle and CompressionMode;
+  FDictionaryCombo.ItemIndex := FDictionaryIndex;
+  FDictionaryCombo.Invalidate;
   if FDictionaryCustomEdit <> nil then
   begin
-    FDictionaryCustomEdit.Visible := FDictionaryIndex = High(FDictionaryButtons);
-    FDictionaryCustomEdit.Enabled := FDictionaryCustomEdit.Visible and
-      FDictionaryButtons[High(FDictionaryButtons)].Enabled and CompressionMode;
-    FDictionaryCustomEdit.Color := FDictionaryButtons[High(FDictionaryButtons)].Color;
-    if FDictionaryCustomEdit.Enabled then
-      FDictionaryCustomEdit.Font.Color := UiAccent
-    else
-      FDictionaryCustomEdit.Font.Color := UiSubtleText;
-    if FDictionaryCustomEdit.Visible then
-      FDictionaryButtons[High(FDictionaryButtons)].Caption := ''
-    else
-      FDictionaryButtons[High(FDictionaryButtons)].Caption := TextOf('Кастом', 'Custom');
+    FDictionaryCustomShell.Visible := CompressionMode and (FDictionaryIndex=Length(DictionaryMbValues));
+    FDictionaryCustomEdit.Enabled := FDictionaryCustomShell.Visible and
+      Idle and CompressionMode;
   end;
-  UpdateDictionaryDetail;
+  UpdateAutoThreads;
+  LayoutMainPanels;
 end;
 
 procedure TMainForm.ContainerClick(Sender: TObject);
@@ -2090,11 +2752,11 @@ begin
   end;
 end;
 
-procedure TMainForm.LevelClick(Sender: TObject);
+procedure TMainForm.LevelChange(Sender: TObject);
 begin
-  if (Sender is TPanel) and TPanel(Sender).Enabled then
+  if FLevelCombo.Enabled and (FLevelCombo.ItemIndex >= 0) then
   begin
-    FLevelIndex := TPanel(Sender).Tag;
+    FLevelIndex := FLevelCombo.ItemIndex;
     ResetActivityState;
     UpdateOptionButtons;
   end;
@@ -2110,14 +2772,15 @@ begin
   end;
 end;
 
-procedure TMainForm.DictionaryClick(Sender: TObject);
+procedure TMainForm.DictionaryChange(Sender: TObject);
 begin
-  if (Sender is TPanel) and TPanel(Sender).Enabled then
+  if FDictionaryCombo.Enabled and (FDictionaryCombo.ItemIndex >= 0) then
   begin
-    FDictionaryIndex := TPanel(Sender).Tag;
+    FDictionaryIndex := FDictionaryCombo.ItemIndex;
     ResetActivityState;
     UpdateOptionButtons;
-    if (FDictionaryIndex = High(FDictionaryButtons)) and (FDictionaryCustomEdit <> nil) then
+    if (FDictionaryIndex = Length(DictionaryMbValues)) and (FDictionaryCustomEdit <> nil) and
+      FDictionaryCustomEdit.Showing and FDictionaryCustomEdit.CanFocus then
     begin
       FDictionaryCustomEdit.SetFocus;
       FDictionaryCustomEdit.SelectAll;
@@ -2127,8 +2790,8 @@ end;
 
 procedure TMainForm.DictionaryCustomEditChange(Sender: TObject);
 begin
-  if FDictionaryIndex <> High(FDictionaryButtons) then
-    FDictionaryIndex := High(FDictionaryButtons);
+  if FDictionaryIndex <> Length(DictionaryMbValues) then
+    FDictionaryIndex := Length(DictionaryMbValues);
   ResetActivityState;
   UpdateOptionButtons;
 end;
@@ -2177,58 +2840,61 @@ begin
     Exit;
 
   Ready := (FTask = nil) and (Trim(FInputEdit.Text) <> '') and
-    (Trim(FOutputEdit.Text) <> '');
+    (Trim(FOutputEdit.Text) <> '') and
+    ((FModeIndex<>0) or FThreadsCombo.InputValid);
   FStartButton.Visible := FTask = nil;
   if FCancelButton <> nil then
     FCancelButton.Visible := FTask <> nil;
   SetPanelButtonEnabled(FStartButton, Ready, True);
+  if FReadyLabel <> nil then
+  begin
+    FReadyLabel.Visible := (FTask = nil) and Ready and not FStatusLabel.Visible and not FStatsLabel.Visible;
+    if Trim(FInputEdit.Text) = '' then
+      FReadyLabel.Caption := TextOf('Choose source path')
+    else if Trim(FOutputEdit.Text) = '' then
+      FReadyLabel.Caption := TextOf('Choose an output file.')
+    else
+      FReadyLabel.Caption := ExtractFileName(ExcludeTrailingPathDelimiter(Trim(FInputEdit.Text))) +
+        '  →  ' + ExtractFileName(ExcludeTrailingPathDelimiter(Trim(FOutputEdit.Text)));
+    FReadyLabel.Hint := FReadyLabel.Caption;
+  end;
 end;
 
-procedure TMainForm.ButtonMouseEnter(Sender: TObject);
-var
-  Button: TPanel;
+procedure TMainForm.ThreadsChange(Sender: TObject);
 begin
-  if not (Sender is TPanel) then
-    Exit;
-  Button := TPanel(Sender);
-  if not Button.Enabled then
-    Exit;
-  if Button = FStartButton then
-    Button.Color := UiAccentHover
-  else if (Button = FInputBrowseButton) or (Button = FOutputBrowseButton) or
-    (Button = FCancelButton) then
-    Button.Color := UiBorder
-  else if (Button <> FCompressModeButton) and (Button <> FDecompressModeButton) then
-    Button.Color := UiSurfaceAlt;
-  Button.Invalidate;
+  ResetActivityState;
+  UpdateAutoThreads;
+  UpdateStartState;
 end;
 
-procedure TMainForm.ButtonMouseLeave(Sender: TObject);
+procedure TMainForm.UpdateAutoThreads;
+var Options: TLzma2Options;
+    N, Selected: Integer;
+    Budget: UInt64;
+    AutoCaption: string;
 begin
-  SetPanelButtonEnabled(FInputBrowseButton, FInputBrowseButton.Enabled, False);
-  SetPanelButtonEnabled(FOutputBrowseButton, FOutputBrowseButton.Enabled, False);
-  SetPanelButtonEnabled(FStartButton, FStartButton.Enabled, True);
-  SetPanelButtonEnabled(FCancelButton, FCancelButton.Enabled, False);
-  SetPanelButtonEnabled(FThreadsDecButton, FThreadsDecButton.Enabled, False);
-  SetPanelButtonEnabled(FThreadsIncButton, FThreadsIncButton.Enabled, False);
-  UpdateModeButtons;
-  UpdateOptionButtons;
-end;
-
-procedure TMainForm.ThreadsStepClick(Sender: TObject);
-var
-  Step: Integer;
-  Value: Integer;
-begin
-  if not (Sender is TPanel) then
-    Exit;
-  if not TPanel(Sender).Enabled then
-    Exit;
-  if not TryStrToInt(Trim(FThreadsEdit.Text), Value) then
-    Value := 1;
-  Step := TPanel(Sender).Tag;
-  Value := Max(1, Min(128, Value + Step));
-  FThreadsEdit.Text := IntToStr(Value);
+  if FThreadsCombo = nil then Exit;
+  Options := TLzma2.DefaultOptions;
+  case FContainerIndex of
+    0: Options.Container := lcLzma;
+    1: Options.Container := lcRawLzma2;
+    3: Options.Container := lc7z;
+  else Options.Container := lcXz;
+  end;
+  Options.Level := TLzma2CompressionLevel(FLevelIndex);
+  Budget:=GuiMemoryBudget;
+  try Options.DictionarySize:=ResolvedDictionary(Budget);
+  except Options.DictionarySize:=UInt64(1) shl 20;end;
+  if (FDictionaryCombo<>nil) and (FDictionaryCombo.Items.Count>Length(DictionaryMbValues)+1) then
+  begin
+    Selected:=FDictionaryCombo.ItemIndex;
+    FDictionaryCombo.Items[Length(DictionaryMbValues)+1]:=TextOf('Auto')+' ('+
+      DictionaryCaption(Integer(GuiAutomaticDictionary(FLevelIndex,Max(1,FThreadsCombo.RequestedWorkers),Budget) shr 20))+')';
+    FDictionaryCombo.ItemIndex:=Selected;
+  end;
+  N := AutoThreadCount(Options, Budget, GuiProcessorCount);
+  AutoCaption := Format(TextOf('Auto (up to %d)'), [N]);
+  FThreadsCombo.UpdateCaptions(AutoCaption,TextOf('Other...'),TextOf('Manual: %d'));
 end;
 
 procedure TMainForm.MinimizeWindowClick(Sender: TObject);
@@ -2294,29 +2960,26 @@ end;
 procedure TMainForm.TitleBarContextPopup(Sender: TObject; MousePos: TPoint;
   var Handled: Boolean);
 var
-  TitleBottom: Integer;
+  TitleBar: TWinControl;
   MenuPoint: TPoint;
 begin
-  if (Sender = Self) and ((MousePos.X < 0) or (MousePos.Y < 0) or
-    (MousePos.Y > 52)) then
-  begin
-    Handled := False;
+  if (FLanguageButton = nil) or not (Sender is TControl) then
     Exit;
-  end;
-
-  Handled := True;
-  if Sender is TControl then
+  TitleBar := FLanguageButton.Parent;
+  if (MousePos.X < 0) or (MousePos.Y < 0) then
   begin
-    if (MousePos.X < 0) or (MousePos.Y < 0) then
-      MenuPoint := TControl(Sender).ClientToScreen(Point(12, TControl(Sender).Height - 4))
-    else
-      MenuPoint := TControl(Sender).ClientToScreen(MousePos);
+    if Sender = Self then
+      Exit;
+    MenuPoint := TitleBar.ClientToScreen(Point(ScaleValue(12), 0));
   end
   else
-    MenuPoint := ClientToScreen(Point(12, 28));
-  TitleBottom := ClientToScreen(Point(0, 52)).Y + 2;
-  if (MenuPoint.Y < TitleBottom) and (MenuPoint.X < ClientToScreen(Point(380, 0)).X) then
-    MenuPoint.Y := TitleBottom;
+  begin
+    MenuPoint := TControl(Sender).ClientToScreen(MousePos);
+    if not PtInRect(TitleBar.ClientRect, TitleBar.ScreenToClient(MenuPoint)) then
+      Exit;
+  end;
+  MenuPoint.Y := TitleBar.ClientToScreen(Point(0, TitleBar.ClientHeight)).Y;
+  Handled := True;
   ShowTitleSystemMenu(MenuPoint);
 end;
 
@@ -2348,23 +3011,25 @@ begin
 end;
 
 procedure TMainForm.WMNCHitTest(var Message: TWMNCHitTest);
-const
-  ResizeGrip = 8;
 var
   HitPoint: TPoint;
+  ResizeGrip, ResizeCorner: Integer;
 begin
   inherited;
   if WindowState = wsMaximized then
     Exit;
+  ResizeGrip := ScaleValue(8);
+  ResizeCorner := ScaleValue(UiResizeGripSize);
   HitPoint := ScreenToClient(Point(Message.XPos, Message.YPos));
-  if (HitPoint.X < ResizeGrip) and (HitPoint.Y < ResizeGrip) then
+  if (HitPoint.X >= ClientWidth - ResizeCorner) and
+    (HitPoint.Y >= ClientHeight - ResizeCorner) then
+    Message.Result := HTBOTTOMRIGHT
+  else if (HitPoint.X < ResizeGrip) and (HitPoint.Y < ResizeGrip) then
     Message.Result := HTTOPLEFT
   else if (HitPoint.X > ClientWidth - ResizeGrip) and (HitPoint.Y < ResizeGrip) then
     Message.Result := HTTOPRIGHT
   else if (HitPoint.X < ResizeGrip) and (HitPoint.Y > ClientHeight - ResizeGrip) then
     Message.Result := HTBOTTOMLEFT
-  else if (HitPoint.X > ClientWidth - ResizeGrip) and (HitPoint.Y > ClientHeight - ResizeGrip) then
-    Message.Result := HTBOTTOMRIGHT
   else if HitPoint.X < ResizeGrip then
     Message.Result := HTLEFT
   else if HitPoint.X > ClientWidth - ResizeGrip then
@@ -2376,15 +3041,26 @@ begin
 end;
 
 procedure TMainForm.ModeClick(Sender: TObject);
+var PreviousFileMode: Integer;
 begin
+  if BenchmarkBusy then Exit;
   if (Sender is TPanel) and TPanel(Sender).Enabled then
   begin
+    PreviousFileMode := FFileModeIndex;
     FModeIndex := TPanel(Sender).Tag;
-    ResetActivityState;
-    UpdateDefaultOutputPath(False);
+    if FModeIndex <> 2 then
+    begin
+      FFileModeIndex := FModeIndex;
+      if PreviousFileMode <> FModeIndex then
+      begin
+        ResetActivityState;
+        UpdateDefaultOutputPath(False);
+      end;
+    end;
     UpdateModeButtons;
     UpdateOptionButtons;
     UpdateStartState;
+    BenchmarkSettingsChanged(nil);
   end;
 end;
 
@@ -2450,13 +3126,13 @@ begin
   Dialog := TFileOpenDialog.Create(Self);
   try
     FSourceDialogSelectedPath := '';
-    Dialog.Title := TextOf('Выберите исходный путь', 'Choose source path');
-    Dialog.OkButtonLabel := TextOf('Выбрать', 'Select');
+    Dialog.Title := TextOf('Choose source path');
+    Dialog.OkButtonLabel := TextOf('Select');
     Dialog.DefaultFolder := StartDir;
     Dialog.FileTypeIndex := 1;
     Dialog.Options := [fdoPathMustExist, fdoFileMustExist, fdoForceFileSystem];
     FileType := Dialog.FileTypes.Add;
-    FileType.DisplayName := TextOf('Все файлы', 'All files');
+    FileType.DisplayName := TextOf('All files');
     FileType.FileMask := '*.*';
     Dialog.OnFolderChanging := SourceFolderChanging;
     DialogAccepted := Dialog.Execute(Handle);
@@ -2483,142 +3159,309 @@ begin
   end;
 end;
 
+function TMainForm.ResolvedDictionary(const Budget: UInt64): UInt64;
+var N: Int64;
+begin
+  if FDictionaryIndex=Length(DictionaryMbValues)+1 then
+    Exit(GuiAutomaticDictionary(FLevelIndex,Max(1,FThreadsCombo.RequestedWorkers),Budget));
+  if FDictionaryIndex<Length(DictionaryMbValues) then
+    Exit(UInt64(DictionaryMbValues[FDictionaryIndex]) shl 20);
+  if (FDictionaryCustomEdit=nil) or not TryStrToInt64(Trim(FDictionaryCustomEdit.Text),N) or
+    (N<1) or (N>4095) then raise EArgumentException.Create(TextOf('Enter a dictionary size from 1 to 4095 MB.'));
+  Result:=UInt64(N) shl 20;
+end;
+
+procedure TMainForm.SavePackingPreference;
+const Containers: array[0..3] of string=('lzma','lzma2','xz','7z');
+      Checks: array[0..3] of string=('none','CRC32','CRC64','SHA256');
+var P: TGuiPackingPreferences; N: Integer;
+begin
+  if (FThreadsCombo=nil) or (FDictionaryCustomEdit=nil) then Exit;
+  FThreadsCombo.CommitInput(False);
+  P:=DefaultPackingPreferences;
+  P.Container:=Containers[FContainerIndex];P.Level:=FLevelIndex;
+  P.Threads:=FThreadsCombo.RequestedWorkers;P.Check:=Checks[FCheckIndex];
+  if FDictionaryIndex=Length(DictionaryMbValues)+1 then P.DictionaryMode:='auto'
+  else if FDictionaryIndex=Length(DictionaryMbValues) then
+  begin
+    if not TryStrToInt(Trim(FDictionaryCustomEdit.Text),N) or (N<1) or (N>4095) then Exit;
+    P.DictionaryMode:='custom';P.DictionaryMiB:=N;
+  end
+  else begin P.DictionaryMode:='preset';P.DictionaryMiB:=DictionaryMbValues[FDictionaryIndex];end;
+  SavePackingPreferences(P);
+end;
+
+procedure TMainForm.LoadLanguagePreference;
+var
+  FileName: string;
+  Preference: string;
+  Ini: TMemIniFile;
+  Language: TGuiLanguage;
+begin
+  FPreferredLanguage := -1;
+  FLanguage := DetectGuiLanguage;
+  try
+    FileName := GuiLanguagePreferencePath;
+    if (FileName = '') or not FileExists(FileName) then
+      Exit;
+    Ini := TMemIniFile.Create(FileName, TEncoding.UTF8);
+    try
+      Preference := Trim(Ini.ReadString('Interface', 'Language', 'auto'));
+      for Language := Low(TGuiLanguage) to High(TGuiLanguage) do
+        if SameText(Preference, GuiLanguageCodes[Language]) then
+        begin
+          FPreferredLanguage := Ord(Language);
+          FLanguage := Language;
+          Break;
+        end;
+    finally
+      Ini.Free;
+    end;
+  except
+    // A damaged or inaccessible preference must not prevent startup.
+    FPreferredLanguage := -1;
+    FLanguage := DetectGuiLanguage;
+  end;
+end;
+
+procedure TMainForm.SaveLanguagePreference;
+var
+  FileName: string;
+  Preference: string;
+  Ini: TMemIniFile;
+begin
+  FileName := GuiLanguagePreferencePath;
+  if FileName = '' then
+    raise EInOutError.Create('Windows per-user application data folder is unavailable.');
+  TDirectory.CreateDirectory(ExtractFileDir(FileName));
+  if FPreferredLanguage < 0 then
+    Preference := 'auto'
+  else
+    Preference := GuiLanguageCodes[TGuiLanguage(FPreferredLanguage)];
+  Ini := TMemIniFile.Create(FileName, TEncoding.UTF8);
+  try
+    Ini.WriteString('Interface', 'Language', Preference);
+    Ini.UpdateFile;
+  finally
+    Ini.Free;
+  end;
+end;
+
+procedure TMainForm.ApplyLanguage(const PreferredLanguage: Integer);
+var
+  I: Integer;
+  NewLanguage: TGuiLanguage;
+begin
+  if (FTask <> nil) or BenchmarkBusy then
+    Exit;
+  if (PreferredLanguage >= Ord(Low(TGuiLanguage))) and
+    (PreferredLanguage <= Ord(High(TGuiLanguage))) then
+  begin
+    FPreferredLanguage := PreferredLanguage;
+    NewLanguage := TGuiLanguage(PreferredLanguage);
+  end
+  else
+  begin
+    FPreferredLanguage := -1;
+    NewLanguage := DetectGuiLanguage;
+  end;
+  FLanguage := NewLanguage;
+  FLanguageButton.Caption := UpperCase(GuiLanguageCodes[FLanguage]);
+  FLanguageButton.Hint := TextOf('Language') + ': ' +
+    GuiLanguageNames[FLanguage];
+  if FPreferredLanguage < 0 then
+    FLanguageButton.Hint := FLanguageButton.Hint + ' – ' +
+      TextOf('Auto (Windows)');
+  FAboutButton.Caption := TextOf('About');
+  FWindowButtons[wbMinimize].Hint := TextOf('Minimize');
+  FWindowButtons[wbMaximize].Hint := TextOf('Maximize');
+  FWindowButtons[wbClose].Hint := TextOf('Close');
+  FCompressModeButton.Caption := TextOf('Compression');
+  FDecompressModeButton.Caption := TextOf('Extraction');
+  FBenchmarkModeButton.Caption := TextOf('Benchmark');
+  FInputLabel.Caption := TextOf('Source path');
+  FOutputLabel.Caption := TextOf('Output path');
+  FInputEdit.TextHint := TextOf('Select path');
+  FOutputEdit.TextHint := TextOf('Select output file');
+  FInputBrowseButton.Caption := TextOf('Browse')+'…';
+  FOutputBrowseButton.Caption := TextOf('Browse')+'…';
+  FContainerLabel.Caption := TextOf('Container');
+  FLevelLabel.Caption := TextOf('Compression level');
+  FDictionaryLabel.Caption := TextOf('Dictionary');
+  FCheckLabel.Caption := TextOf('Check')+' (XZ)';
+  FThreadsLabel.Caption := TextOf('Threads');
+  UpdateAutoThreads;
+  FCheckButtons[0].Caption := TextOf('none');
+  FDictionaryCombo.Items.BeginUpdate;
+  try
+    for I := Low(DictionaryMbValues) to High(DictionaryMbValues) do
+      FDictionaryCombo.Items[I] := DictionaryCaption(DictionaryMbValues[I]);
+    FDictionaryCombo.Items[Length(DictionaryMbValues)] :=
+      TextOf('Custom') + ' (' + TextOf('MB') + ')';
+    FDictionaryCombo.ItemIndex := FDictionaryIndex;
+  finally
+    FDictionaryCombo.Items.EndUpdate;
+  end;
+  FDictionaryCustomEdit.TextHint := TextOf('MB');
+  FCancelButton.Caption := TextOf('Cancel');
+  ApplyBenchmarkLanguage;
+  // Match an idle mode change: clear transient results, retain paths/options.
+  ResetActivityState;
+  UpdateModeButtons;
+  UpdateOptionButtons;
+  UpdateStartState;
+end;
+
+procedure TMainForm.LanguageButtonClick(Sender: TObject);
+var Languages: TStringList;
+    Colors: TLanguagePickerColors;
+    Language: TGuiLanguage;
+begin
+  if (FTask<>nil) or BenchmarkBusy then Exit;
+  Application.CancelHint;
+  if (FLanguagePopup<>nil) and FLanguagePopup.Visible then
+  begin FLanguagePopup.Hide; Exit; end;
+  FreeAndNil(FLanguagePopup);
+  Languages:=TStringList.Create;
+  try
+    Languages.Add(TextOf('Auto (Windows)'));
+    for Language:=Low(TGuiLanguage) to High(TGuiLanguage) do
+      Languages.Add(GuiLanguageNames[Language]+'  '+UpperCase(GuiLanguageCodes[Language]));
+    Colors.Background:=UiInput;
+    Colors.Text:=UiText;
+    Colors.Muted:=UiSubtleText;
+    Colors.Selection:=UiSelection;
+    Colors.Hover:=UiSurfaceHigh;
+    Colors.Accent:=UiAccent;
+    FLanguagePopup:=ShowLanguagePicker(Self,FLanguageButton,Languages,FPreferredLanguage+1,
+      TextOf('Find language'),TextOf('No languages found'),Colors,
+      procedure(const Chosen: Integer)
+      begin
+        ApplyLanguage(Chosen-1);
+        try SaveLanguagePreference;
+        except on E: Exception do
+          ShowErrorDialog(TextOf('Could not save the language preference.'),DescribeGuiFailure(E,Ord(FLanguage)).Details);
+        end;
+      end,
+      procedure(Keyboard: Boolean)
+      begin
+        TRoundedPanel(FLanguageButton).FocusWithCue(Keyboard);
+      end);
+  finally Languages.Free; end;
+end;
+
 procedure TMainForm.BuildUi;
 var
-  ActivityPanel: TPanel;
-  BodyPanel: TPanel;
-  DotPanel: TPanel;
-  FilesPanel: TPanel;
-  HeaderPanel: TPanel;
-  InputRow: TPanel;
-  MainPanel: TPanel;
-  OutputRow: TPanel;
-  SettingsPanel: TPanel;
-  MetaLabel: TLabel;
-  InputShell: TPanel;
-  OutputShell: TPanel;
-  ThreadShell: TPanel;
+  BodyPanel: TScrollBox;
   TitleBarPanel: TPanel;
   TitleBorderPanel: TPanel;
   TitleButton: TWindowButton;
-  TitleLabel: TLabel;
   I: Integer;
+  Initial: TGuiPackingPreferences;
 
   function AddText(const Parent: TWinControl; const ACaption: string;
-    const ALeft, ATop, AWidth: Integer; const Muted: Boolean = False;
-    const ASize: Integer = 9; const Bold: Boolean = False): TLabel;
+    const ASize: Integer = UiSmallText; const Muted: Boolean = False;
+    const Semibold: Boolean = False): TLabel;
   begin
     Result := TLabel.Create(Self);
     Result.Parent := Parent;
     Result.Caption := ACaption;
-    Result.Left := ALeft;
-    Result.Top := ATop;
-    Result.Width := AWidth;
-    Result.Height := Max(34, (ASize + 1) * 2 + 14);
     Result.AutoSize := False;
     Result.WordWrap := False;
     Result.Transparent := True;
     Result.StyleElements := [];
-    Result.Font.Name := 'Segoe UI';
-    Result.Font.Size := ASize + 1;
+    RegisterLogicalFont(FLogicalFonts, Result.Font, ASize, Semibold);
+    Result.EllipsisPosition := epEndEllipsis;
     if Muted then
       Result.Font.Color := UiMutedText
     else
       Result.Font.Color := UiText;
-    if Bold then
-    begin
-      Result.Font.Name := 'Segoe UI Semibold';
-      Result.Font.Style := [fsBold];
-    end;
-    Result.OnMouseDown := TitleBarMouseDown;
   end;
 
-  function MakeSurface(const Parent: TWinControl; const SurfaceColor: TColor = UiSurface): TPanel;
+  function MakeSurface(const Parent: TWinControl;
+    const SurfaceColor: TColor = UiSurface; const Framed: Boolean = False): TPanel;
   begin
     Result := TRoundedPanel.Create(Self);
     Result.Parent := Parent;
-    Result.BevelOuter := bvNone;
-    Result.BorderStyle := bsNone;
-    Result.ParentBackground := False;
     Result.Color := SurfaceColor;
-    Result.Ctl3D := False;
-    Result.StyleElements := [];
-    Result.OnMouseDown := TitleBarMouseDown;
-    TRoundedPanel(Result).CornerRadius := 12;
-    TRoundedPanel(Result).BorderColor := UiBorder;
-    TRoundedPanel(Result).BorderWidth := 1;
+    if Framed then
+    begin
+      TRoundedPanel(Result).CornerRadius := 6;
+      TRoundedPanel(Result).BorderColor := UiBorder;
+    end
+    else
+    begin
+      TRoundedPanel(Result).CornerRadius := 0;
+      TRoundedPanel(Result).BorderColor := clNone;
+      TRoundedPanel(Result).BorderWidth := 0;
+    end;
   end;
 
   function MakeButton(const Parent: TWinControl; const ACaption: string;
-    const ALeft, ATop, AWidth, AHeight: Integer; const Primary: Boolean;
-    const AOnClick: TNotifyEvent): TPanel;
+    const Primary: Boolean; const AOnClick: TNotifyEvent): TPanel;
   begin
-    Result := MakeSurface(Parent, UiSurfaceHigh);
-    Result.Left := ALeft;
-    Result.Top := ATop;
-    Result.Width := AWidth;
-    Result.Height := AHeight;
+    Result := MakeSurface(Parent, UiSurfaceHigh, True);
     Result.Caption := ACaption;
     Result.Alignment := taCenter;
-    Result.Padding.Left := 14;
-    Result.Padding.Right := 14;
-    Result.Font.Name := 'Segoe UI Semibold';
-    Result.Font.Size := 11;
-    Result.Font.Style := [fsBold];
+    RegisterLogicalFont(FLogicalFonts, Result.Font, UiBodyText, True);
+    Result.TabStop := True;
     Result.Cursor := crHandPoint;
     Result.OnClick := AOnClick;
-    Result.OnMouseDown := nil;
-    Result.OnMouseEnter := ButtonMouseEnter;
-    Result.OnMouseLeave := ButtonMouseLeave;
-    TRoundedPanel(Result).CornerRadius := 6;
-    TRoundedPanel(Result).BorderColor := UiBorder;
-    TRoundedPanel(Result).BorderWidth := 1;
     SetPanelButtonEnabled(Result, True, Primary);
   end;
 
   procedure StyleEdit(const Edit: TEdit; const HintText: string);
   begin
-    Edit.AutoSize := False;
+    Edit.AutoSize := True;
     Edit.BorderStyle := bsNone;
     Edit.Ctl3D := False;
     Edit.Color := UiInput;
-    Edit.Font.Name := 'Segoe UI';
-    Edit.Font.Size := 11;
+    RegisterLogicalFont(FLogicalFonts, Edit.Font, UiBodyText);
     Edit.Font.Color := UiText;
     Edit.StyleElements := [];
+    TGuiEditHint.CreateForEdit(Edit,UiSubtleText);
     Edit.TextHint := HintText;
     Edit.OnEnter := EditEnter;
     Edit.OnExit := EditExit;
   end;
 
+{$I Lzma2BenchmarkBuild.inc}
+
 begin
-  Caption := 'LZMA2 GUI';
+  Caption := GuiProductName;
   Position := poScreenCenter;
   BorderStyle := bsNone;
   Scaled := True;
-  Width := 1540;
-  Height := 660;
-  Constraints.MinWidth := 1360;
-  Constraints.MinHeight := 620;
+  Width := UiDefaultWidth;
+  Height := UiDefaultHeight;
+  Constraints.MinWidth := UiMinimumWidth;
+  Constraints.MinHeight := UiMinimumHeight;
   DoubleBuffered := True;
-  Color := UiBackground;
+  Color := UiSurface;
   OnMouseDown := TitleBarMouseDown;
   OnContextPopup := TitleBarContextPopup;
-  Font.Name := 'Segoe UI';
-  Font.Size := 11;
+  RegisterLogicalFont(FLogicalFonts, Font, UiBodyText);
   Font.Color := UiText;
   FModeIndex := 0;
-  FContainerIndex := 2;
-  FLevelIndex := 1;
-  FCheckIndex := 2;
-  FDictionaryIndex := 0;
+  Initial:=LoadPackingPreferences;
+  if Initial.Container='lzma' then FContainerIndex:=0
+  else if Initial.Container='lzma2' then FContainerIndex:=1
+  else if Initial.Container='xz' then FContainerIndex:=2 else FContainerIndex:=3;
+  FLevelIndex:=Initial.Level;
+  if Initial.Check='none' then FCheckIndex:=0 else if Initial.Check='CRC32' then FCheckIndex:=1
+  else if Initial.Check='SHA256' then FCheckIndex:=3 else FCheckIndex:=2;
+  FDictionaryIndex:=Length(DictionaryMbValues)+1;
+  if Initial.DictionaryMode='custom' then FDictionaryIndex:=Length(DictionaryMbValues)
+  else if Initial.DictionaryMode='preset' then
+    for I:=Low(DictionaryMbValues) to High(DictionaryMbValues) do
+      if DictionaryMbValues[I]=Initial.DictionaryMiB then FDictionaryIndex:=I;
   FProgressPercent := 0;
   FProgressError := False;
 
   TitleBarPanel := TPanel.Create(Self);
   TitleBarPanel.Parent := Self;
   TitleBarPanel.Align := alTop;
-  TitleBarPanel.Height := 52;
+  TitleBarPanel.Height := UiHeaderHeight;
   TitleBarPanel.BevelOuter := bvNone;
   TitleBarPanel.ParentBackground := False;
   TitleBarPanel.Color := UiChrome;
@@ -2626,7 +3469,7 @@ begin
   TitleBarPanel.OnMouseDown := TitleBarMouseDown;
   TitleBarPanel.OnMouseUp := TitleBarMouseUp;
   TitleBarPanel.OnContextPopup := TitleBarContextPopup;
-
+  TitleBarPanel.OnResize := LayoutTitleBar;
   TitleBorderPanel := TPanel.Create(Self);
   TitleBorderPanel.Parent := TitleBarPanel;
   TitleBorderPanel.Align := alBottom;
@@ -2635,408 +3478,234 @@ begin
   TitleBorderPanel.ParentBackground := False;
   TitleBorderPanel.Color := UiBorder;
   TitleBorderPanel.StyleElements := [];
+  TitleBorderPanel.Visible := False;
   TitleBorderPanel.OnMouseDown := TitleBarMouseDown;
   TitleBorderPanel.OnMouseUp := TitleBarMouseUp;
   TitleBorderPanel.OnContextPopup := TitleBarContextPopup;
 
-  DotPanel := MakeSurface(TitleBarPanel, UiSurfaceHigh);
-  DotPanel.Left := 20;
-  DotPanel.Top := 11;
-  DotPanel.Width := 30;
-  DotPanel.Height := 30;
-  DotPanel.Caption := 'LZ';
-  DotPanel.Alignment := taCenter;
-  DotPanel.Font.Name := 'Segoe UI Semibold';
-  DotPanel.Font.Size := 9;
-  DotPanel.Font.Color := UiAccentHover;
-  TRoundedPanel(DotPanel).CornerRadius := 6;
-  TRoundedPanel(DotPanel).BorderColor := UiBorder;
-  DotPanel.OnMouseUp := TitleBarMouseUp;
-  DotPanel.OnContextPopup := TitleBarContextPopup;
+  FTitleIcon := TApplicationMark.Create(Self);
+  FTitleIcon.Parent := TitleBarPanel;
+  FTitleIcon.ParentColor := False;FTitleIcon.Color := UiChrome;
+  FTitleIcon.SetBounds(16, 8, 20, 20);
+  FTitleIcon.OnMouseDown := TitleBarMouseDown;
+  FTitleIcon.OnMouseUp := TitleBarMouseUp;
+  FTitleIcon.OnContextPopup := TitleBarContextPopup;
+  FTitleLabel := AddText(TitleBarPanel, GuiProductName, UiTitleText, False, True);
+  FTitleLabel.SetBounds(48, 0, 216, UiHeaderHeight);
+  FTitleLabel.Layout := tlCenter;
+  FTitleLabel.OnMouseDown := TitleBarMouseDown;
+  FTitleLabel.OnMouseUp := TitleBarMouseUp;
+  FTitleLabel.OnContextPopup := TitleBarContextPopup;
 
-  TitleLabel := AddText(TitleBarPanel, 'LZMA2 GUI', 62, 9, 220, True, 10, False);
-  TitleLabel.Height := 30;
-  TitleLabel.OnMouseDown := TitleBarMouseDown;
-  TitleLabel.OnMouseUp := TitleBarMouseUp;
-  TitleLabel.OnContextPopup := TitleBarContextPopup;
+  TitleBarPanel.DisableAlign;
+  try
+    FAboutButton := MakeButton(TitleBarPanel,TextOf('About'),False,AboutClick);
+    FAboutButton.Width := 112;
+    FAboutButton.Left := 72;
+    FAboutButton.Align := alNone;
+    TRoundedPanel(FAboutButton).CornerRadius := 0;
+    TRoundedPanel(FAboutButton).BorderColor := clNone;
+    TRoundedPanel(FAboutButton).BorderWidth := 0;
+    FAboutButton.Color := UiChrome;
+    FLanguageButton := MakeButton(TitleBarPanel, '', False, LanguageButtonClick);
+    FLanguageButton.Width := 72;
+    TRoundedPanel(FLanguageButton).GlyphKind := pgLanguage;
+    FLanguageButton.Left := 0;
+    FLanguageButton.Align := alNone;
+    FLanguageButton.TabOrder := 0;
+    FAboutButton.TabOrder := 1;
+    FLanguageButton.ShowHint := True;
+    TRoundedPanel(FLanguageButton).CornerRadius := 0;
+    TRoundedPanel(FLanguageButton).BorderColor := clNone;
+    TRoundedPanel(FLanguageButton).BorderWidth := 0;
+    FLanguageButton.Color := UiChrome;
 
-  TitleButton := TWindowButton.Create(Self);
-  TitleButton.Parent := TitleBarPanel;
-  TitleButton.Align := alRight;
-  TitleButton.AlignWithMargins := False;
-  TitleButton.Margins.Left := 0;
-  TitleButton.Margins.Top := 0;
-  TitleButton.Margins.Right := 0;
-  TitleButton.Margins.Bottom := 0;
-  TitleButton.Width := 46;
-  TitleButton.Kind := wbMinimize;
-  TitleButton.Hint := TextOf('Свернуть', 'Minimize');
-  TitleButton.OnClick := MinimizeWindowClick;
+    for I := Ord(Low(TWindowButtonKind)) to Ord(High(TWindowButtonKind)) do
+    begin
+      TitleButton := TWindowButton.Create(Self);
+      TitleButton.Parent := TitleBarPanel;
+      TitleButton.Width := 46;
+      TitleButton.Left := FAboutButton.Width + FLanguageButton.Width + I * TitleButton.Width;
+      TitleButton.Align := alNone;
+      TitleButton.Kind := TWindowButtonKind(I);
+      TitleButton.ShowHint := True;
+      FWindowButtons[TitleButton.Kind] := TitleButton;
+      case TitleButton.Kind of
+        wbMinimize:
+          begin
+            TitleButton.Hint := TextOf('Minimize');
+            TitleButton.OnClick := MinimizeWindowClick;
+          end;
+        wbMaximize:
+          begin
+            TitleButton.Hint := TextOf('Maximize');
+            TitleButton.OnClick := MaximizeWindowClick;
+          end;
+        wbClose:
+          begin
+            TitleButton.Hint := TextOf('Close');
+            TitleButton.OnClick := CloseWindowClick;
+          end;
+      end;
+    end;
 
-  TitleButton := TWindowButton.Create(Self);
-  TitleButton.Parent := TitleBarPanel;
-  TitleButton.Align := alRight;
-  TitleButton.AlignWithMargins := False;
-  TitleButton.Margins.Left := 0;
-  TitleButton.Margins.Top := 0;
-  TitleButton.Margins.Right := 0;
-  TitleButton.Margins.Bottom := 0;
-  TitleButton.Width := 46;
-  TitleButton.Kind := wbMaximize;
-  TitleButton.Hint := TextOf('Развернуть', 'Maximize');
-  TitleButton.OnClick := MaximizeWindowClick;
-
-  TitleButton := TWindowButton.Create(Self);
-  TitleButton.Parent := TitleBarPanel;
-  TitleButton.Align := alRight;
-  TitleButton.AlignWithMargins := False;
-  TitleButton.Margins.Left := 0;
-  TitleButton.Margins.Top := 0;
-  TitleButton.Margins.Right := 0;
-  TitleButton.Margins.Bottom := 0;
-  TitleButton.Width := 46;
-  TitleButton.Kind := wbClose;
-  TitleButton.Hint := TextOf('Закрыть', 'Close');
-  TitleButton.OnClick := CloseWindowClick;
+  finally
+    TitleBarPanel.EnableAlign;
+  end;
   TitleBorderPanel.BringToFront;
 
-  HeaderPanel := TPanel.Create(Self);
-  HeaderPanel.Parent := Self;
-  HeaderPanel.Align := alTop;
-  HeaderPanel.Height := 0;
-  HeaderPanel.BevelOuter := bvNone;
-  HeaderPanel.ParentBackground := False;
-  HeaderPanel.Color := UiBackground;
-  HeaderPanel.StyleElements := [];
-  HeaderPanel.Padding.Left := 24;
-  HeaderPanel.Padding.Right := 24;
-  HeaderPanel.OnMouseDown := TitleBarMouseDown;
+  FResizeGrip := TGuiResizeGrip.Create(Self);
+  FResizeGrip.Parent := Self;
+  FResizeGrip.Height := UiResizeGripSize;
+  FResizeGrip.Align := alBottom;
 
-  FHeaderLabel := TLabel.Create(Self);
-  FHeaderLabel.Parent := HeaderPanel;
-  FHeaderLabel.Left := 28;
-  FHeaderLabel.Top := 8;
-  FHeaderLabel.Width := 520;
-  FHeaderLabel.Height := 46;
-  FHeaderLabel.AutoSize := False;
-  FHeaderLabel.Caption := TextOf('Сжатие файлов', 'File compression');
-  FHeaderLabel.Font.Color := clWhite;
-  FHeaderLabel.Font.Name := 'Segoe UI Semibold';
-  FHeaderLabel.Font.Size := 17;
-  FHeaderLabel.Font.Style := [fsBold];
-  FHeaderLabel.Transparent := True;
-  FHeaderLabel.StyleElements := [];
-  FHeaderLabel.OnMouseDown := TitleBarMouseDown;
-
-  MetaLabel := AddText(HeaderPanel, 'SDK 26.01  |  Win64', 1080, 18, 150, True, 9, False);
-  MetaLabel.Visible := False;
-  MetaLabel.Alignment := taRightJustify;
-  MetaLabel.Anchors := [akTop, akRight];
-
-  BodyPanel := TPanel.Create(Self);
+  BodyPanel := TScrollBox.Create(Self);
   BodyPanel.Parent := Self;
   BodyPanel.Align := alClient;
-  BodyPanel.BevelOuter := bvNone;
-  BodyPanel.ParentBackground := False;
-  BodyPanel.Color := UiBackground;
+  BodyPanel.BorderStyle := bsNone;
+  BodyPanel.Ctl3D := False;
+  BodyPanel.HorzScrollBar.Visible := False;
+  BodyPanel.VertScrollBar.Smooth := True;
+  BodyPanel.Color := UiSurface;
   BodyPanel.StyleElements := [];
-  BodyPanel.Padding.Left := 32;
-  BodyPanel.Padding.Top := 32;
-  BodyPanel.Padding.Right := 32;
-  BodyPanel.Padding.Bottom := 32;
-  BodyPanel.OnMouseDown := TitleBarMouseDown;
+  BodyPanel.Padding.SetBounds(UiContentPadding, 24, UiContentPadding, UiBottomPadding-UiResizeGripSize);
+  SetWindowTheme(BodyPanel.Handle,'DarkMode_Explorer',nil);
+  FMainPanel := TPanel.Create(Self);
+  FMainPanel.Parent := BodyPanel;
+  FMainPanel.Align := alTop;
+  FMainPanel.Height := UiModeTop+UiBenchmarkHeight;
+  FMainPanel.BevelOuter := bvNone;
+  FMainPanel.ParentBackground := False;
+  FMainPanel.Color := UiSurface;
+  FMainPanel.StyleElements := [];
+  FMainPanel.OnResize := MainPanelResize;
+  FFilesPanel := MakeSurface(FMainPanel);
+  FFilesPanel.Anchors := [akLeft, akTop, akRight, akBottom];
+  FModePanel := MakeSurface(FFilesPanel, UiInput, True);
+  FCompressModeButton := MakeButton(FModePanel, TextOf('Compression'), False, ModeClick);
+  FCompressModeButton.Tag := 0;
+  FDecompressModeButton := MakeButton(FModePanel, TextOf('Extraction'), False, ModeClick);
+  FDecompressModeButton.Tag := 1;
+  FBenchmarkModeButton := MakeButton(FModePanel, TextOf('Benchmark'), False, ModeClick);
+  FBenchmarkModeButton.Tag := 2;
 
-  SettingsPanel := MakeSurface(BodyPanel);
-  SettingsPanel.Align := alRight;
-  SettingsPanel.Width := 700;
-  SettingsPanel.Constraints.MinWidth := 700;
-  SettingsPanel.AlignWithMargins := True;
-  SettingsPanel.Margins.Left := 24;
-  SettingsPanel.Margins.Top := 0;
-  SettingsPanel.Margins.Right := 0;
-  SettingsPanel.Margins.Bottom := 0;
-  SettingsPanel.Padding.Left := 24;
-  SettingsPanel.Padding.Top := 24;
-  SettingsPanel.Padding.Right := 24;
-  SettingsPanel.Padding.Bottom := 24;
-
-  MainPanel := TPanel.Create(Self);
-  MainPanel.Parent := BodyPanel;
-  MainPanel.Align := alClient;
-  MainPanel.Width := 742;
-  MainPanel.BevelOuter := bvNone;
-  MainPanel.ParentBackground := False;
-  MainPanel.Color := UiBackground;
-  MainPanel.StyleElements := [];
-  MainPanel.OnMouseDown := TitleBarMouseDown;
-  MainPanel.OnResize := MainPanelResize;
-  FMainPanel := MainPanel;
-
-  FilesPanel := MakeSurface(MainPanel);
-  FilesPanel.Align := alNone;
-  FilesPanel.Left := 0;
-  FilesPanel.Top := 0;
-  FilesPanel.Width := 814;
-  FilesPanel.Height := 500;
-  FilesPanel.Anchors := [akLeft, akTop, akRight];
-  FilesPanel.Padding.Left := 24;
-  FilesPanel.Padding.Top := 24;
-  FilesPanel.Padding.Right := 24;
-  FilesPanel.Padding.Bottom := 24;
-  FFilesPanel := FilesPanel;
-  FHeaderLabel.Parent := FilesPanel;
-  FHeaderLabel.Left := 24;
-  FHeaderLabel.Top := 24;
-  FHeaderLabel.Width := 360;
-  FHeaderLabel.Height := 44;
-  FHeaderLabel.Font.Size := 14;
-
-  InputRow := MakeSurface(FilesPanel, UiSurfaceAlt);
-  InputRow.Left := 24;
-  InputRow.Top := 96;
-  InputRow.Width := 766;
-  InputRow.Height := 112;
-  InputRow.Anchors := [akLeft, akTop, akRight];
-  InputRow.Color := UiSurfaceAlt;
-  TRoundedPanel(InputRow).CornerRadius := 8;
-  TRoundedPanel(InputRow).BorderColor := UiBorder;
-  FInputRow := InputRow;
-  AddText(InputRow, TextOf('Исходный путь', 'Source path'), 20, 22, 190, False, 9, True);
-  AddText(InputRow, TextOf('Файл или папка', 'File or folder'), 20, 56, 190, True, 8);
-  InputShell := MakeSurface(InputRow, UiInput);
-  InputShell.Left := 222;
-  InputShell.Top := 36;
-  InputShell.Width := 386;
-  InputShell.Height := 48;
-  InputShell.Anchors := [akLeft, akTop, akRight];
-  TRoundedPanel(InputShell).CornerRadius := 6;
-  TRoundedPanel(InputShell).BorderColor := UiBorder;
-  FInputShell := InputShell;
+  FInputRow := MakeSurface(FFilesPanel);
+  FInputLabel := AddText(FInputRow, TextOf('Source path'), UiBodyText, False, True);
+  FInputShell := MakeSurface(FInputRow, UiInput, True);
   FInputEdit := TEdit.Create(Self);
-  FInputEdit.Parent := InputShell;
-  FInputEdit.Left := 14;
-  FInputEdit.Top := 5;
-  FInputEdit.Width := 352;
-  FInputEdit.Height := 38;
-  FInputEdit.Anchors := [akLeft, akTop, akRight];
-  StyleEdit(FInputEdit, TextOf('Выберите путь', 'Select path'));
+  FInputEdit.Parent := FInputShell;
+  StyleEdit(FInputEdit, TextOf('Select path'));
   FInputEdit.ShowHint := True;
   FInputEdit.OnChange := EditChange;
-  FInputBrowseButton := MakeButton(InputRow, TextOf('Обзор', 'Browse'), 622, 36, 152, 48, False, BrowseInputClick);
-  FInputBrowseButton.Anchors := [akTop, akRight];
+  FInputLabel.FocusControl := FInputEdit;
+  FInputBrowseButton := MakeButton(FInputRow, TextOf('Browse'), False, BrowseInputClick);
   TRoundedPanel(FInputBrowseButton).GlyphKind := pgNone;
-
-  OutputRow := MakeSurface(FilesPanel, UiSurfaceAlt);
-  OutputRow.Left := 24;
-  OutputRow.Top := 240;
-  OutputRow.Width := 766;
-  OutputRow.Height := 112;
-  OutputRow.Anchors := [akLeft, akTop, akRight];
-  OutputRow.Color := UiSurfaceAlt;
-  TRoundedPanel(OutputRow).CornerRadius := 8;
-  TRoundedPanel(OutputRow).BorderColor := UiBorder;
-  FOutputRow := OutputRow;
-  AddText(OutputRow, TextOf('Путь сохранения', 'Output path'), 20, 22, 190, False, 9, True);
-  AddText(OutputRow, TextOf('Файл результата', 'Result file'), 20, 56, 190, True, 8);
-  OutputShell := MakeSurface(OutputRow, UiInput);
-  OutputShell.Left := 222;
-  OutputShell.Top := 36;
-  OutputShell.Width := 386;
-  OutputShell.Height := 48;
-  OutputShell.Anchors := [akLeft, akTop, akRight];
-  TRoundedPanel(OutputShell).CornerRadius := 6;
-  TRoundedPanel(OutputShell).BorderColor := UiBorder;
-  FOutputShell := OutputShell;
+  FOutputRow := MakeSurface(FFilesPanel);
+  FOutputLabel := AddText(FOutputRow, TextOf('Output path'), UiBodyText, False, True);
+  FOutputShell := MakeSurface(FOutputRow, UiInput, True);
   FOutputEdit := TEdit.Create(Self);
-  FOutputEdit.Parent := OutputShell;
-  FOutputEdit.Left := 14;
-  FOutputEdit.Top := 5;
-  FOutputEdit.Width := 352;
-  FOutputEdit.Height := 38;
-  FOutputEdit.Anchors := [akLeft, akTop, akRight];
-  StyleEdit(FOutputEdit, TextOf('Выберите путь', 'Select output file'));
+  FOutputEdit.Parent := FOutputShell;
+  StyleEdit(FOutputEdit, TextOf('Select output file'));
   FOutputEdit.ShowHint := True;
   FOutputEdit.OnChange := EditChange;
-  FOutputBrowseButton := MakeButton(OutputRow, TextOf('Обзор', 'Browse'), 622, 36, 152, 48, False, BrowseOutputClick);
-  FOutputBrowseButton.Anchors := [akTop, akRight];
+  FOutputLabel.FocusControl := FOutputEdit;
+  FOutputBrowseButton := MakeButton(FOutputRow, TextOf('Browse'), False, BrowseOutputClick);
   TRoundedPanel(FOutputBrowseButton).GlyphKind := pgNone;
 
-  ActivityPanel := MakeSurface(FilesPanel, UiSurface);
-  ActivityPanel.Align := alNone;
-  ActivityPanel.Left := 24;
-  ActivityPanel.Top := 392;
-  ActivityPanel.Width := 766;
-  ActivityPanel.Height := 128;
-  ActivityPanel.Anchors := [akLeft, akTop, akRight];
-  ActivityPanel.AlignWithMargins := True;
-  ActivityPanel.Margins.Left := 0;
-  ActivityPanel.Margins.Top := 18;
-  ActivityPanel.Margins.Right := 0;
-  ActivityPanel.Margins.Bottom := 0;
-  ActivityPanel.Padding.Left := 22;
-  ActivityPanel.Padding.Top := 22;
-  ActivityPanel.Padding.Right := 22;
-  ActivityPanel.Padding.Bottom := 22;
-  ActivityPanel.Color := UiSurface;
-  TRoundedPanel(ActivityPanel).CornerRadius := 0;
-  TRoundedPanel(ActivityPanel).BorderColor := clNone;
-  FActivityPanel := ActivityPanel;
+  FSettingsPanel := MakeSurface(FFilesPanel);
+  FContainerLabel := AddText(FSettingsPanel, TextOf('Container'), UiBodyText, True);
+  FLevelLabel := AddText(FSettingsPanel, TextOf('Compression level'), UiBodyText, True);
+  FDictionaryLabel := AddText(FSettingsPanel, TextOf('Dictionary'), UiBodyText, True);
+  FCheckLabel := AddText(FSettingsPanel, TextOf('Check'), UiBodyText, True);
+  FThreadsLabel := AddText(FSettingsPanel, TextOf('Threads'), UiBodyText, True);
+  FContainerGroup := MakeSurface(FSettingsPanel, UiInput, True);
+  FCheckGroup := MakeSurface(FSettingsPanel, UiInput, True);
+  FContainerButtons[0] := MakeButton(FContainerGroup, 'LZMA', False, ContainerClick);
+  FContainerButtons[1] := MakeButton(FContainerGroup, 'LZMA2', False, ContainerClick);
+  FContainerButtons[2] := MakeButton(FContainerGroup, 'XZ', False, ContainerClick);
+  FContainerButtons[3] := MakeButton(FContainerGroup, '7Z', False, ContainerClick);
+  for I := Low(FContainerButtons) to High(FContainerButtons) do
+    FContainerButtons[I].Tag := I;
+  FCheckButtons[0] := MakeButton(FCheckGroup, TextOf('none'), False, CheckClick);
+  FCheckButtons[1] := MakeButton(FCheckGroup, 'CRC32', False, CheckClick);
+  FCheckButtons[2] := MakeButton(FCheckGroup, 'CRC64', False, CheckClick);
+  FCheckButtons[3] := MakeButton(FCheckGroup, 'SHA-256', False, CheckClick);
+  for I := Low(FCheckButtons) to High(FCheckButtons) do
+    FCheckButtons[I].Tag := I;
+  FLevelCombo := TOptionCombo.Create(Self);
+  FLevelCombo.Parent := FSettingsPanel;
+  for I := Ord(Low(TLzma2CompressionLevel)) to Ord(High(TLzma2CompressionLevel)) do
+    FLevelCombo.Items.Add(IntToStr(I));
+  FLevelCombo.ItemIndex := FLevelIndex;
+  FLevelCombo.OnChange := LevelChange;
+  FDictionaryCombo := TOptionCombo.Create(Self);
+  FDictionaryCombo.Parent := FSettingsPanel;
+  for I := Low(DictionaryMbValues) to High(DictionaryMbValues) do
+    FDictionaryCombo.Items.Add(DictionaryCaption(DictionaryMbValues[I]));
+  FDictionaryCombo.Items.Add(TextOf('Custom') + ' (' + TextOf('MB') + ')');
+  FDictionaryCombo.Items.Add(TextOf('Auto'));
+  FDictionaryCombo.ItemIndex := FDictionaryIndex;
+  FDictionaryCombo.OnChange := DictionaryChange;
+  FDictionaryCustomShell := MakeSurface(FSettingsPanel, UiInput, True);
+  FDictionaryCustomShell.Visible := False;
+  FDictionaryCustomEdit := TEdit.Create(Self);
+  FDictionaryCustomEdit.Parent := FDictionaryCustomShell;
+  StyleEdit(FDictionaryCustomEdit, 'MB');
+  FDictionaryCustomEdit.Text := IntToStr(Initial.DictionaryMiB);
+  FDictionaryCustomEdit.OnChange := DictionaryCustomEditChange;
+  FThreadsCombo := TThreadChoiceCombo.Create(Self);
+  FThreadsCombo.Parent := FSettingsPanel;
+  FThreadsCombo.Configure(GuiProcessorCount,TextOf('Auto'),TextOf('Other...'),TextOf('Manual: %d'));
+  FThreadsCombo.RequestedWorkers := Initial.Threads;
+  FThreadsCombo.OnChange := ThreadsChange;
+  FLevelLabel.FocusControl := FLevelCombo;
+  FDictionaryLabel.FocusControl := FDictionaryCombo;
+  FThreadsLabel.FocusControl := FThreadsCombo;
 
-  FStartButton := MakeButton(ActivityPanel, TextOf('Начать сжатие', 'Start compression'), 0, 24, 300, 52, True, StartClick);
-  TRoundedPanel(FStartButton).CaptionOffsetY := 2;
-  FCancelButton := MakeButton(ActivityPanel, TextOf('Отмена', 'Cancel'), 0, 24, 300, 52, False, CancelClick);
-  TRoundedPanel(FCancelButton).CaptionOffsetY := 2;
+  FContainerGroup.TabOrder := 0;
+  FCheckGroup.TabOrder := FContainerGroup.TabOrder + 1;
+  for I := Low(FContainerButtons) to High(FContainerButtons) do
+    FContainerButtons[I].TabOrder := I;
+  for I := Low(FCheckButtons) to High(FCheckButtons) do
+    FCheckButtons[I].TabOrder := I;
+  FLevelCombo.TabOrder := FCheckGroup.TabOrder + 1;
+  FDictionaryCombo.TabOrder := FLevelCombo.TabOrder + 1;
+  FDictionaryCustomShell.TabOrder := FDictionaryCombo.TabOrder + 1;
+  FThreadsCombo.TabOrder := FDictionaryCustomShell.TabOrder + 1;
+
+  FActivityPanel := MakeSurface(FFilesPanel);
+  FStartButton := MakeButton(FActivityPanel, TextOf('Start compression'), True, StartClick);
+  FCancelButton := MakeButton(FActivityPanel, TextOf('Cancel'), False, CancelClick);
   FCancelButton.Visible := False;
   SetPanelButtonEnabled(FCancelButton, False, False);
-
-  FProgressTrack := MakeSurface(ActivityPanel, UiInput);
-  FProgressTrack.Left := 336;
-  FProgressTrack.Top := 28;
-  FProgressTrack.Width := 476;
-  FProgressTrack.Height := 8;
-  FProgressTrack.Anchors := [akLeft, akTop, akRight];
+  FProgressTrack := MakeSurface(FActivityPanel, UiBorder);
   FProgressTrack.OnResize := ProgressTrackResize;
-  FProgressTrack.Visible := True;
-
+  FProgressTrack.Visible := False;
   FProgressFill := MakeSurface(FProgressTrack, UiAccent);
-  FProgressFill.Left := 0;
-  FProgressFill.Top := 0;
-  FProgressFill.Width := 0;
-  FProgressFill.Height := 8;
   FProgressFill.Visible := False;
-
-  FStatusLabel := TLabel.Create(Self);
-  FStatusLabel.Parent := ActivityPanel;
-  FStatusLabel.Left := 336;
-  FStatusLabel.Top := 48;
-  FStatusLabel.Width := 476;
-  FStatusLabel.Height := 64;
-  FStatusLabel.AutoSize := False;
+  FProgressLabel := AddText(FActivityPanel, '', UiBodyText, False, True);
+  FProgressLabel.Alignment := taRightJustify;
+  FProgressLabel.Layout := tlCenter;
+  FProgressLabel.Visible := False;
+  FStatusLabel := AddText(FActivityPanel, '', UiBodyText, False, True);
+  FStatusLabel.ShowHint := True;
   FStatusLabel.WordWrap := True;
-  FStatusLabel.Anchors := [akLeft, akTop, akRight];
-  FStatusLabel.Caption := '';
   FStatusLabel.Visible := False;
-  FStatusLabel.Font.Name := 'Segoe UI';
-  FStatusLabel.Font.Size := 10;
-  FStatusLabel.Font.Color := UiSubtleText;
-
-  FStatsLabel := TLabel.Create(Self);
-  FStatsLabel.Parent := ActivityPanel;
-  FStatsLabel.Left := 336;
-  FStatsLabel.Top := 48;
-  FStatsLabel.Width := 476;
-  FStatsLabel.Height := 64;
-  FStatsLabel.AutoSize := False;
-  FStatsLabel.Anchors := [akLeft, akTop, akRight];
-  FStatsLabel.Caption := '';
-  FStatsLabel.Font.Name := 'Segoe UI';
-  FStatsLabel.Font.Size := 10;
-  FStatsLabel.Font.Color := UiMutedText;
+  FStatsLabel := AddText(FActivityPanel, '', UiBodyText, True);
+  FStatsLabel.WordWrap := True;
+  FStatsLabel.ShowHint := True;
   FStatsLabel.Visible := False;
+  FReadyLabel := AddText(FActivityPanel, '', UiBodyText, True);
+  FReadyLabel.Layout := tlCenter;
+  FReadyLabel.EllipsisPosition := epEndEllipsis;
+  FReadyLabel.ShowHint := True;
 
-  AddText(SettingsPanel, TextOf('Параметры', 'Settings'), 24, 18, 300, False, 14, True);
-
-  AddText(SettingsPanel, TextOf('Режим', 'Mode'), 24, 84, 150, True, 8, True);
-  FCompressModeButton := MakeButton(SettingsPanel, TextOf('Сжатие', 'Compression'), 24, 124, 140, 42, False, ModeClick);
-  FCompressModeButton.Tag := 0;
-  FDecompressModeButton := MakeButton(SettingsPanel, TextOf('Распаковка', 'Extraction'), 176, 124, 160, 42, False, ModeClick);
-  FDecompressModeButton.Tag := 1;
-
-  AddText(SettingsPanel, TextOf('Контейнер', 'Container'), 24, 196, 150, True, 8, True);
-  FContainerButtons[0] := MakeButton(SettingsPanel, 'LZMA', 24, 236, 140, 40, False, ContainerClick);
-  FContainerButtons[0].Tag := 0;
-  FContainerButtons[1] := MakeButton(SettingsPanel, 'LZMA2', 176, 236, 160, 40, False, ContainerClick);
-  FContainerButtons[1].Tag := 1;
-  FContainerButtons[2] := MakeButton(SettingsPanel, 'XZ', 24, 286, 140, 40, False, ContainerClick);
-  FContainerButtons[2].Tag := 2;
-  FContainerButtons[3] := MakeButton(SettingsPanel, '7Z', 176, 286, 160, 40, False, ContainerClick);
-  FContainerButtons[3].Tag := 3;
-
-  AddText(SettingsPanel, TextOf('Уровень сжатия', 'Compression level'), 24, 356, 220, True, 8, True);
-  for I := 0 to 9 do
-  begin
-    FLevelButtons[I] := MakeButton(SettingsPanel, IntToStr(I),
-      24 + (I mod 4) * 70, 400 + (I div 4) * 40, 58, 34, False, LevelClick);
-    FLevelButtons[I].Tag := I;
-  end;
-
-  AddText(SettingsPanel, TextOf('Проверка', 'Check'), 364, 84, 150, True, 8, True);
-  FCheckButtons[0] := MakeButton(SettingsPanel, TextOf('Нет', 'none'), 364, 124, 150, 40, False, CheckClick);
-  FCheckButtons[0].Tag := 0;
-  FCheckButtons[1] := MakeButton(SettingsPanel, 'CRC32', 526, 124, 150, 40, False, CheckClick);
-  FCheckButtons[1].Tag := 1;
-  FCheckButtons[2] := MakeButton(SettingsPanel, 'CRC64', 364, 176, 150, 40, False, CheckClick);
-  FCheckButtons[2].Tag := 2;
-  FCheckButtons[3] := MakeButton(SettingsPanel, 'SHA-256', 526, 176, 150, 40, False, CheckClick);
-  FCheckButtons[3].Tag := 3;
-
-  AddText(SettingsPanel, TextOf('Словарь', 'Dictionary'), 364, 252, 150, True, 8, True);
-  for I := Low(DictionaryMbValues) to High(DictionaryMbValues) do
-  begin
-    FDictionaryButtons[I] := MakeButton(SettingsPanel, DictionaryCaption(DictionaryMbValues[I]),
-      364 + (I mod 3) * 106, 292 + (I div 3) * 46, 96, 36, False, DictionaryClick);
-    FDictionaryButtons[I].Tag := I;
-  end;
-  FDictionaryButtons[High(FDictionaryButtons)] := MakeButton(SettingsPanel, TextOf('Кастом', 'Custom'),
-    364 + (High(FDictionaryButtons) mod 3) * 106, 292 + (High(FDictionaryButtons) div 3) * 46,
-    96, 36, False, DictionaryClick);
-  FDictionaryButtons[High(FDictionaryButtons)].Tag := High(FDictionaryButtons);
-  FDictionaryButtons[High(FDictionaryButtons)].Hint := TextOf('Ввести размер словаря в МБ',
-    'Enter dictionary size in MB');
-  FDictionaryButtons[High(FDictionaryButtons)].ShowHint := True;
-  FDictionaryCustomEdit := TEdit.Create(Self);
-  FDictionaryCustomEdit.Parent := FDictionaryButtons[High(FDictionaryButtons)];
-  FDictionaryCustomEdit.Left := 8;
-  FDictionaryCustomEdit.Top := 3;
-  FDictionaryCustomEdit.Width := 80;
-  FDictionaryCustomEdit.Height := 30;
-  FDictionaryCustomEdit.Alignment := taCenter;
-  FDictionaryCustomEdit.BorderStyle := bsNone;
-  FDictionaryCustomEdit.Ctl3D := False;
-  FDictionaryCustomEdit.Color := UiSurfaceHigh;
-  FDictionaryCustomEdit.Font.Name := 'Segoe UI Semibold';
-  FDictionaryCustomEdit.Font.Size := 11;
-  FDictionaryCustomEdit.Font.Color := UiAccent;
-  FDictionaryCustomEdit.StyleElements := [];
-  FDictionaryCustomEdit.Text := '1024';
-  FDictionaryCustomEdit.TextHint := 'MB';
-  FDictionaryCustomEdit.Visible := False;
-  FDictionaryCustomEdit.OnChange := DictionaryCustomEditChange;
-
-  FDictionaryDetailLabel := AddText(SettingsPanel, '', 364, 412, 280, True, 8, False);
-
-  AddText(SettingsPanel, TextOf('Потоки', 'Threads'), 364, 436, 150, True, 8, True);
-  FThreadsDecButton := MakeButton(SettingsPanel, '-', 364, 474, 96, 40, False, ThreadsStepClick);
-  FThreadsDecButton.Tag := -1;
-  ThreadShell := MakeSurface(SettingsPanel, UiInput);
-  ThreadShell.Left := 470;
-  ThreadShell.Top := 474;
-  ThreadShell.Width := 96;
-  ThreadShell.Height := 40;
-  TRoundedPanel(ThreadShell).CornerRadius := 6;
-  TRoundedPanel(ThreadShell).BorderColor := UiBorder;
-  FThreadsIncButton := MakeButton(SettingsPanel, '+', 576, 474, 96, 40, False, ThreadsStepClick);
-  FThreadsIncButton.Tag := 1;
-  FThreadsEdit := TEdit.Create(Self);
-  FThreadsEdit.Parent := ThreadShell;
-  FThreadsEdit.Left := 8;
-  FThreadsEdit.Top := 2;
-  FThreadsEdit.Width := 80;
-  FThreadsEdit.Height := 32;
-  FThreadsEdit.Anchors := [akLeft, akTop, akRight];
-  FThreadsEdit.Alignment := taCenter;
-  FThreadsEdit.Text := '1';
-  StyleEdit(FThreadsEdit, '1');
-  FThreadsEdit.Alignment := taCenter;
-
-  UpdateModeButtons;
-  UpdateOptionButtons;
-  SetProgressVisual(0, False);
+  BuildBenchmarkControls;
+  ApplyLanguage(FPreferredLanguage);
   LayoutMainPanels;
+  SetProgressVisual(0, False);
   UpdateStartState;
   ActiveControl := FInputEdit;
-  FThreadsEdit.SelLength := 0;
-
   FPollTimer := TTimer.Create(Self);
   FPollTimer.Enabled := False;
   FPollTimer.Interval := 100;
@@ -3045,7 +3714,7 @@ end;
 
 function TMainForm.BuildOptions: TLzma2Options;
 var
-  DictionaryMb: Int64;
+  Budget: UInt64;
   Threads: Integer;
 begin
   Result := TLzma2.DefaultOptions;
@@ -3057,18 +3726,16 @@ begin
     Result.Container := lcLzma;
   end;
   Result.Level := TLzma2CompressionLevel(FLevelIndex);
-  if FDictionaryIndex = High(FDictionaryButtons) then
+  Budget:=GuiMemoryBudget;
+  Result.DictionarySize:=ResolvedDictionary(Budget);
+  Threads := FThreadsCombo.RequestedWorkers;
+  if Threads < 0 then Threads := 0;
+  if Threads = 0 then
   begin
-    if (FDictionaryCustomEdit = nil) or
-      (not TryStrToInt64(Trim(FDictionaryCustomEdit.Text), DictionaryMb)) or
-      (DictionaryMb < 1) then
-      raise EArgumentException.Create(TextOf('Укажите размер словаря в MB: 1 или больше.', 'Enter a dictionary size in MB: 1 or higher.'));
-    Result.DictionarySize := UInt64(DictionaryMb) * UInt64(1024 * 1024);
-  end
-  else
-    Result.DictionarySize := UInt64(DictionaryMbValues[FDictionaryIndex]) * UInt64(1024 * 1024);
-  if not TryStrToInt(Trim(FThreadsEdit.Text), Threads) or (Threads < 1) then
-    raise EArgumentException.Create(TextOf('Укажите количество потоков: 1 или больше.', 'Enter a thread count of 1 or higher.'));
+    Result.MemoryLimit := Budget;
+    Threads := AutoThreadCount(Result, Result.MemoryLimit, GuiProcessorCount);
+  end;
+  if FDictionaryIndex=Length(DictionaryMbValues)+1 then Result.MemoryLimit:=Budget;
   Result.ThreadCount := Threads;
   case FCheckIndex of
     0: Result.Check := lzCheckNone;
@@ -3097,8 +3764,7 @@ begin
   except
     on E: Exception do
     begin
-      SetInlineStatus(E.Message, True);
-      ShowErrorDialog(E.Message);
+      ReportException(E);
     end;
   end;
 end;
@@ -3112,7 +3778,7 @@ var
 begin
   Dialog := TFileSaveDialog.Create(Self);
   try
-    Dialog.Title := TextOf('Куда сохранить результат', 'Choose output file');
+    Dialog.Title := TextOf('Choose output file');
     Dialog.Options := [fdoPathMustExist, fdoOverwritePrompt];
     UpdateDefaultOutputPath(False);
     SuggestedPath := Trim(FOutputEdit.Text);
@@ -3132,10 +3798,10 @@ begin
       end;
       Dialog.DefaultExtension := Extension;
       FileType := Dialog.FileTypes.Add;
-      FileType.DisplayName := UpperCase(Extension) + TextOf(' архив', ' archive');
+      FileType.DisplayName := UpperCase(Extension) + TextOf(' archive');
       FileType.FileMask := '*.' + Extension;
       FileType := Dialog.FileTypes.Add;
-      FileType.DisplayName := TextOf('Все файлы', 'All files');
+      FileType.DisplayName := TextOf('All files');
       FileType.FileMask := '*.*';
     end;
     if Dialog.Execute then
@@ -3148,8 +3814,7 @@ begin
   except
     on E: Exception do
     begin
-      SetInlineStatus(E.Message, True);
-      ShowErrorDialog(E.Message);
+      ReportException(E);
     end;
   end;
   Dialog.Free;
@@ -3161,34 +3826,39 @@ var
   I: Integer;
 begin
   CanStart := (not Busy) and (Trim(FInputEdit.Text) <> '') and
-    (Trim(FOutputEdit.Text) <> '');
-  FInputEdit.Enabled := not Busy;
-  FOutputEdit.Enabled := not Busy;
+    (Trim(FOutputEdit.Text) <> '') and
+    ((FModeIndex<>0) or FThreadsCombo.InputValid);
+  FLanguageButton.Enabled := not Busy;
+  FAboutButton.Enabled := not Busy;
+  if Busy then
+    FLanguageButton.Font.Color := UiSubtleText
+  else
+    FLanguageButton.Font.Color := UiText;
+  FInputEdit.ReadOnly := Busy;
+  FOutputEdit.ReadOnly := Busy;
+  if Busy then
+    FReadyLabel.Visible := False;
   FInputBrowseButton.Enabled := not Busy;
   FOutputBrowseButton.Enabled := not Busy;
   FCompressModeButton.Enabled := not Busy;
   FDecompressModeButton.Enabled := not Busy;
+  FBenchmarkModeButton.Enabled := not Busy;
   for I := Low(FContainerButtons) to High(FContainerButtons) do
     FContainerButtons[I].Enabled := not Busy;
-  for I := Low(FLevelButtons) to High(FLevelButtons) do
-    FLevelButtons[I].Enabled := not Busy;
+  FLevelCombo.Enabled := not Busy;
   for I := Low(FCheckButtons) to High(FCheckButtons) do
     FCheckButtons[I].Enabled := not Busy;
-  for I := Low(FDictionaryButtons) to High(FDictionaryButtons) do
-    FDictionaryButtons[I].Enabled := not Busy;
-  FThreadsEdit.Enabled := not Busy;
+  FDictionaryCombo.Enabled := not Busy;
+  FThreadsCombo.Enabled := not Busy;
   if FDictionaryCustomEdit <> nil then
-    FDictionaryCustomEdit.Enabled := not Busy and FDictionaryCustomEdit.Visible;
-  FThreadsDecButton.Enabled := not Busy;
-  FThreadsIncButton.Enabled := not Busy;
+    FDictionaryCustomEdit.Enabled := not Busy and FDictionaryCustomShell.Visible;
   SetPanelButtonEnabled(FInputBrowseButton, not Busy, False);
   SetPanelButtonEnabled(FOutputBrowseButton, not Busy, False);
   FStartButton.Visible := not Busy;
   FCancelButton.Visible := Busy;
+  FCancelButton.Caption := TextOf('Cancel');
   SetPanelButtonEnabled(FStartButton, CanStart, True);
   SetPanelButtonEnabled(FCancelButton, Busy, False);
-  SetPanelButtonEnabled(FThreadsDecButton, not Busy, False);
-  SetPanelButtonEnabled(FThreadsIncButton, not Busy, False);
   UpdateModeButtons;
   UpdateOptionButtons;
 end;
@@ -3249,11 +3919,12 @@ var
   SourcePaths: TArray<string>;
   TotalInputBytes: UInt64;
 begin
+  if (FModeIndex=0) and not FThreadsCombo.CommitInput then Exit;
   InputPath := Trim(FInputEdit.Text);
   if InputPath = '' then
   begin
-    SetInlineStatus(TextOf('Укажите исходный путь.', 'Choose a source path.'), True);
-    ShowErrorDialog(TextOf('Укажите исходный путь.', 'Choose a source path.'));
+    SetInlineStatus(TextOf('Choose a source path.'), True);
+    ShowErrorDialog(TextOf('Choose a source path.'));
     Exit;
   end;
   if Trim(FOutputEdit.Text) = '' then
@@ -3261,8 +3932,8 @@ begin
     UpdateDefaultOutputPath(True);
     if Trim(FOutputEdit.Text) = '' then
     begin
-      SetInlineStatus(TextOf('Укажите файл назначения.', 'Choose an output file.'), True);
-      ShowErrorDialog(TextOf('Укажите файл назначения.', 'Choose an output file.'));
+      SetInlineStatus(TextOf('Choose an output file.'), True);
+      ShowErrorDialog(TextOf('Choose an output file.'));
       Exit;
     end;
   end;
@@ -3276,16 +3947,15 @@ begin
   ResetActivityState;
   if not TFile.Exists(InputPath) and not TDirectory.Exists(InputPath) then
   begin
-    SetInlineStatus(TextOf('Исходный путь не найден.', 'Source path was not found.'), True);
-    ShowErrorDialog(TextOf('Исходный путь не найден.', 'Source path was not found.'));
+    SetInlineStatus(TextOf('Source path was not found.'), True);
+    ShowErrorDialog(TextOf('Source path was not found.'));
     Exit;
   end;
 
   try
     InputIsDirectory := TDirectory.Exists(InputPath);
     if InputIsDirectory and (FModeIndex <> 0) then
-      raise EArgumentException.Create(TextOf('Папку можно только сжать в архив 7Z.',
-        'Folders can only be compressed into a 7Z archive.'));
+      raise EArgumentException.Create(TextOf('Folders can only be compressed into a 7Z archive.'));
     if InputIsDirectory and (FContainerIndex <> 3) then
     begin
       FContainerIndex := 3;
@@ -3332,8 +4002,7 @@ begin
   except
     on E: Exception do
     begin
-      SetInlineStatus(E.Message, True);
-      ShowErrorDialog(E.Message);
+      ReportException(E);
       Exit;
     end;
   end;
@@ -3345,14 +4014,8 @@ begin
   TInterlocked.Exchange(FLastIn, UInt64(0));
   TInterlocked.Exchange(FLastOut, UInt64(0));
   TInterlocked.Exchange(FCancelRequested, 0);
-  SetProgressVisual(0, False);
-  FProgressTrack.Visible := True;
-  FStatusLabel.Visible := False;
-  FStatsLabel.Visible := True;
-  FStatusLabel.Caption := '';
-  FStatsLabel.Caption := '';
   FWatch := TStopwatch.StartNew;
-  SetBusy(True);
+  UpdateProgressUi(0, 0);
 
   if InputIsDirectory then
   begin
@@ -3406,6 +4069,7 @@ begin
         Cancel := TInterlocked.CompareExchange(FCancelRequested, 0, 0) <> 0;
       end);
 
+  SetBusy(True);
   SetProgressVisual(0, False);
   FPollTimer.Enabled := True;
 end;
@@ -3413,12 +4077,14 @@ end;
 procedure TMainForm.CancelClick(Sender: TObject);
 begin
   TInterlocked.Exchange(FCancelRequested, 1);
-  FStatusLabel.Caption := TextOf('Отмена...', 'Cancelling...');
+  FCancelButton.Caption := TextOf('Cancelling...');
+  SetPanelButtonEnabled(FCancelButton, False, False);
 end;
 
 procedure TMainForm.UpdateProgressUi(const InBytes, OutBytes: UInt64);
 var
   DisplayIn: UInt64;
+  NeedsLayout: Boolean;
   ElapsedMs: Int64;
   Percent: Integer;
   Speed: Double;
@@ -3430,67 +4096,90 @@ begin
     Percent := 100
   else
     Percent := Integer(Min(UInt64(100), (InBytes * UInt64(100)) div FInputSize));
+  NeedsLayout := not (FStatusLabel.Visible and FStatsLabel.Visible);
   SetProgressVisual(Percent, False);
   FProgressTrack.Visible := True;
-  FStatusLabel.Visible := False;
+  FReadyLabel.Visible := False;
+  if FModeIndex = 0 then
+    FStatusLabel.Caption := TextOf('Compression')
+  else
+    FStatusLabel.Caption := TextOf('Extraction');
+  FStatusLabel.Hint := FStatusLabel.Caption;
+  FStatusLabel.Font.Color := UiText;
+  FStatusLabel.Visible := True;
   FStatsLabel.Visible := True;
   DisplayIn := InBytes;
   if (FInputSize > 0) and (DisplayIn > FInputSize) then
     DisplayIn := FInputSize;
-  SpeedText := TextOf('скорость: —', 'speed: —');
+  SpeedText := TextOf('speed: –');
   if FWatch.IsRunning then
   begin
     ElapsedMs := FWatch.ElapsedMilliseconds;
     if ElapsedMs > 0 then
     begin
       Speed := InBytes / (ElapsedMs / 1000.0);
-      SpeedText := TextOf('скорость: ', 'speed: ') + GuiFormatRate(Speed, FLanguage);
+      SpeedText := TextOf('speed: ') + GuiFormatRate(Speed, FLanguage);
     end;
   end;
-  FStatsLabel.Caption := Format(TextOf('Обработано: %s из %s | записано: %s | %s',
-    'Processed: %s of %s | written: %s | %s'),
+  FStatsLabel.Caption := Format(TextOf('Processed: %s of %s | written: %s | %s'),
     [GuiFormatBytes(DisplayIn, FLanguage), GuiFormatBytes(FInputSize, FLanguage),
      GuiFormatBytes(OutBytes, FLanguage), SpeedText]);
+  FStatsLabel.Hint := FStatsLabel.Caption;
+  if NeedsLayout then
+    LayoutMainPanels;
 end;
 
-procedure TMainForm.FinishTask(const ErrorText: string);
+procedure TMainForm.FinishTask(const ErrorText: string; const Cancelled: Boolean;const DiagnosticDetails:string);
 var
   ElapsedMs: Int64;
   OutSize: UInt64;
   Ratio: Double;
   Throughput: Double;
   StatusText: string;
+  DetailsText: string;
+  DiagnosticsText: string;
+  UsedThreads: Integer;
 begin
+  DetailsText := '';
+  DiagnosticsText := '';
   FPollTimer.Enabled := False;
   FWatch.Stop;
   ElapsedMs := FWatch.ElapsedMilliseconds;
   OutSize := 0;
   if FOutputStream <> nil then
     OutSize := FOutputStream.Size;
-  if ErrorText = '' then
+  if Cancelled then
+  begin
+    StatusText := TextOf('Cancelled');
+    SetProgressVisual(0, False);
+  end
+  else if ErrorText = '' then
   begin
     UpdateProgressUi(FInputSize, OutSize);
-    StatusText := Format(TextOf('Готово: %s -> %s', 'Done: %s -> %s'),
+    StatusText := Format(TextOf('Done: %s -> %s'),
       [GuiFormatBytes(FInputSize, FLanguage), GuiFormatBytes(OutSize, FLanguage)]);
-    if (FInputSize <> 0) and (OutSize <> 0) then
-    begin
-      Ratio := FInputSize / FOutputStream.Size;
-      StatusText := StatusText + Format(TextOf(' | Коэффициент (вход/выход): %.3f',
-        ' | Ratio (input/output): %.3f'), [Ratio]);
-    end;
+    DetailsText := Format(TextOf(' | %d ms'), [ElapsedMs]).Trim([' ', '|']);
     if ElapsedMs > 0 then
     begin
       Throughput := FInputSize / (ElapsedMs / 1000.0);
-      StatusText := StatusText + TextOf(' | ', ' | ') + GuiFormatRate(Throughput, FLanguage);
+      DetailsText := GuiFormatRate(Throughput, FLanguage) + ' | ' + DetailsText;
     end;
+    if (FInputSize <> 0) and (OutSize <> 0) then
+    begin
+      Ratio := FInputSize / OutSize;
+      DetailsText := DetailsText + Format(TextOf(' | Ratio (input/output): %.3f'), [Ratio]);
+    end;
+    if FModeIndex = 0 then
+      UsedThreads := FEncodeDiagnostics.ActualThreadCount
+    else
+      UsedThreads := FDecodeDiagnostics.ActualThreadCount;
+    if UsedThreads > 0 then
+      DetailsText := DetailsText + Format(TextOf(' | Threads: %d'), [UsedThreads]);
     if FModeIndex <> 0 then
-      StatusText := StatusText + Format(TextOf(
-        ' | Потоки распаковки: запрошено %d | фактически %d | MT: %s | fallback: %s',
-        ' | Decode requested threads: %d | Decode actual threads: %d | Decode used MT: %s | Decode fallback: %s'),
+      DiagnosticsText := Format(TextOf(' | Decode requested threads: %d | Decode actual threads: %d | Decode used MT: %s | Decode fallback: %s'),
         [FDecodeDiagnostics.RequestedThreadCount, FDecodeDiagnostics.ActualThreadCount,
          BoolToStr(FDecodeDiagnostics.UsedMultiThread, True),
          DecodeFallbackReasonName(FDecodeDiagnostics.FallbackReason)]);
-    StatusText := StatusText + Format(TextOf(' | %d мс', ' | %d ms'), [ElapsedMs]);
     SetProgressVisual(100, False);
   end
   else
@@ -3499,48 +4188,102 @@ begin
     SetProgressVisual(FProgressPercent, True);
   end;
   CloseStreams;
-  if ErrorText = '' then
+  if (ErrorText = '') and not Cancelled then
     FinalizeOutputFile
   else
   begin
     CleanupOutputFile;
-    if not SameText(ErrorText, TextOf('Отменено', 'Cancelled')) then
-      ShowErrorDialog(ErrorText);
+    if not Cancelled then
+      ShowErrorDialog(ErrorText,DiagnosticDetails);
   end;
   FTask := nil;
-  if ErrorText = '' then
-    ClearTaskbarProgress
-  else
-    SetTaskbarProgress(FProgressPercent, True);
+  // The error dialog above has returned: acknowledgement clears the shell
+  // indicator while the inline error remains available for inspection.
+  ClearTaskbarProgress;
   TInterlocked.Exchange(FCancelRequested, 0);
-  SetInlineStatus(StatusText, ErrorText <> '');
+  SetInlineStatus(StatusText, (ErrorText <> '') and not Cancelled, DetailsText);
+  if DiagnosticsText <> '' then
+    FStatsLabel.Hint := DetailsText + DiagnosticsText;
   SetBusy(False);
+end;
+
+function IsCancellationException(const Error: Exception): Boolean;
+var
+  I: Integer;
+  Aggregate: EAggregateException;
+begin
+  if Error is ELzmaCancelled then
+    Exit(True);
+  if not (Error is EAggregateException) then
+    Exit(False);
+  Aggregate := EAggregateException(Error);
+  if Aggregate.Count = 0 then
+    Exit(False);
+  for I := 0 to Aggregate.Count - 1 do
+    if not IsCancellationException(Aggregate.InnerExceptions[I]) then
+      Exit(False);
+  Result := True;
 end;
 
 procedure TMainForm.PollTimerTimer(Sender: TObject);
 var
   ErrorText: string;
+  Failure:TGuiFailure;
+  Cancelled: Boolean;
 begin
   if FTask = nil then
     Exit;
   UpdateProgressUi(TInterlocked.Read(FLastIn), TInterlocked.Read(FLastOut));
   case FTask.Status of
     TTaskStatus.Completed:
-      FinishTask('');
+      FinishTask('', TInterlocked.CompareExchange(FCancelRequested, 0, 0) <> 0);
     TTaskStatus.Canceled:
-      FinishTask(TextOf('Отменено', 'Cancelled'));
+      FinishTask('', True);
     TTaskStatus.Exception:
       begin
-        ErrorText := TextOf('Ошибка задачи', 'Task failed');
+        ErrorText := TextOf('Task failed');
+        Failure.Details:='';
+        Cancelled := False;
         try
           FTask.Wait;
         except
           on E: Exception do
-            ErrorText := E.ClassName + ': ' + E.Message;
+            if IsCancellationException(E) then
+            begin
+              Cancelled := True;
+              ErrorText := '';
+            end
+            else
+            begin
+              Failure:=DescribeGuiFailure(E,Ord(FLanguage));
+              ErrorText:=Failure.Summary;
+            end;
         end;
-        FinishTask(ErrorText);
+        FinishTask(ErrorText, Cancelled,Failure.Details);
       end;
   end;
 end;
 
+{$I Lzma2BenchmarkMethods.inc}
+{$I Lzma2GuiLayoutQA.inc}
+
+initialization
+  DictionaryMbValues:=GuiChoices('dictionaryMiB');
+  var SupportedDictionaries:=TList<Integer>.Create;
+  try
+    for var MiB in GuiChoices('benchmarkDictionaryMiB') do
+      if (MiB>0) and ((UInt64(MiB) shl 20)<=TLzmaBenchmark.MaximumDictionarySize) then
+        SupportedDictionaries.Add(MiB);
+    BenchmarkDictionaryMb:=SupportedDictionaries.ToArray;
+  finally SupportedDictionaries.Free;end;
+  if Length(BenchmarkDictionaryMb)=0 then
+    raise EConvertError.Create('No supported benchmark dictionaries in GUI catalog');
+  BenchmarkPassCounts:=GuiChoices('benchmarkPasses');
+  if GuiLanguageCount<>Ord(High(TGuiLanguage))+1 then
+    raise EConvertError.Create('GUI language metadata does not match the supported language set');
+  for var Language:=Low(TGuiLanguage) to High(TGuiLanguage) do
+  begin
+    GuiLanguageCodes[Language]:=GuiLanguageCode(Ord(Language));
+    GuiLanguageNames[Language]:=GuiLanguageName(Ord(Language));
+  end;
 end.

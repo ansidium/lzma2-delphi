@@ -1,4 +1,4 @@
-program Lzma2_GUI;
+﻿program Lzma2_GUI;
 
 uses
   System.SysUtils,
@@ -46,7 +46,7 @@ begin
 end;
 
 begin
-  Application.Title := 'LZMA2 GUI';
+  Application.Title := GuiProductName;
   Application.Initialize;
   Application.MainFormOnTaskbar := True;
   ApplyPreferredStyle;

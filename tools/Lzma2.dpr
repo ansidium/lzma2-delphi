@@ -1,4 +1,4 @@
-program Lzma2;
+﻿program Lzma2;
 
 {$APPTYPE CONSOLE}
 
@@ -31,8 +31,8 @@ uses
   Lzma.CliPaths in '..\src\Lzma.CliPaths.pas';
 
 const
-  CLI_VERSION = '26.01';
-  CLI_SDK_BASELINE = '7-Zip/LZMA SDK 26.01';
+  CLI_VERSION = '26.06';
+  CLI_SDK_BASELINE = '7-Zip/LZMA SDK 26.06';
   CLI_CANCEL_EXIT_CODE = 3;
 
 type
@@ -139,6 +139,7 @@ begin
   Writeln('  -ms=SIZE | -msSIZE    XZ block size for independent blocks');
   Writeln('  -o{dir}               Output directory for x/e commands');
   Writeln('  -spod|-spoc|-spor     Output-path mode for -o');
+  Writeln('  --memory-limit=SIZE   Codec-owned memory limit; bytes or B/K/M/G, 0 unlimited');
   Writeln('  --progress            Print progress lines during the operation');
   Writeln;
   Writeln('Benchmark switches:');
@@ -162,6 +163,19 @@ procedure PrintVersion;
 begin
   Writeln('Lzma2 native Delphi CLI ', CLI_VERSION);
   Writeln('SDK baseline: ', CLI_SDK_BASELINE);
+  Writeln('Compiler version: ', FormatFloat('0.00', CompilerVersion, TFormatSettings.Invariant));
+  Writeln('RTL version: ', FormatFloat('0.00', RTLVersion, TFormatSettings.Invariant));
+  Writeln('RTL identity: $', IntToHex(System.GetRTLVersion, 4));
+{$IF Defined(WIN64)}
+  Writeln('Build target: Win64');
+{$ELSEIF Defined(WIN32)}
+  Writeln('Build target: Win32');
+{$ENDIF}
+{$IFOPT O+}
+  Writeln('Build optimization: enabled');
+{$ELSE}
+  Writeln('Build optimization: disabled');
+{$ENDIF}
   Writeln('Supported containers: raw LZMA2 (.lzma2), standalone LZMA (.lzma), XZ (.xz), 7z (.7z)');
   Writeln('Runtime: native Delphi only; no external DLL/OBJ/LIB/process compressor calls.');
 end;
@@ -382,7 +396,10 @@ begin
   Text := Trim(Text);
   if Text = '' then
     FailUsage('size value is empty');
-  Result := StrToUInt64(Text) * Multiplier;
+  Result := StrToUInt64(Text);
+  if Result > High(UInt64) div Multiplier then
+    FailUsage('size value exceeds UInt64');
+  Result := Result * Multiplier;
 end;
 
 function ParseThreads(const S: string): Integer;
@@ -553,6 +570,12 @@ begin
   if LowerBody = '' then
     FailUsage('empty switch');
 
+  if SameText(Body, 'memory-limit') or StartsText('memory-limit=', Body) then
+  begin
+    Cli.Options.MemoryLimit := ParseSize(ValueAfterEqualsOrPrefix(Body, 'memory-limit'));
+    Exit;
+  end;
+
   if StartsText('t', Body) and (Length(Body) > 1) then
   begin
     Cli.Options.Container := ParseContainer(Copy(Body, 2, MaxInt));
@@ -670,7 +693,7 @@ begin
 
   Input := TFileStream.Create(Cli.InputPath, fmOpenRead or fmShareDenyWrite);
   try
-    StoredName := TLzma7z.ReadSingleFileName(Input);
+    StoredName := TLzma7z.ReadSingleFileName(Input, Cli.Options);
   finally
     Input.Free;
   end;
@@ -1066,7 +1089,7 @@ begin
 
   Input := TFileStream.Create(Cli.InputPath, fmOpenRead or fmShareDenyWrite);
   try
-    Entries := TLzma7z.List(Input);
+    Entries := TLzma7z.List(Input, Cli.Options);
   finally
     Input.Free;
   end;

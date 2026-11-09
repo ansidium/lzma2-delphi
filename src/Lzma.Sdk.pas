@@ -1,47 +1,36 @@
 unit Lzma.Sdk;
 
+{$B-} // Nil-guarded interface and callback checks require short-circuit evaluation.
+
 interface
 
 uses
   System.Classes,
   System.SysUtils,
   Lzma.MatchFinder,
-  Lzma.Types;
+  Lzma.Sdk.Properties,
+  Lzma.Types,Lzma.Sdk.Contracts,Lzma.Sdk.Decoder26,Lzma2.Sdk.Decoder26,Lzma2.SdkParser,
+  Lzma.Sdk.EncoderFacade;
 
 type
-  TLzmaFinishMode = (
-    lfmAny,
-    lfmEnd
-  );
-
-  TLzmaStatus = (
-    lsNotSpecified,
-    lsFinishedWithMark,
-    lsNotFinished,
-    lsNeedsMoreInput,
-    lsMaybeFinishedWithoutMark
-  );
-
-  ILzmaSeqInStream = interface
-    ['{ACB685A7-1664-45C5-B9E6-C6261CE7E6E7}']
-    function Read(var Buffer; const Count: SizeT; out ProcessedSize: SizeT): SRes;
-  end;
-
-  ILzmaSeqOutStream = interface
-    ['{3B42F50C-74E5-47AC-A2B4-7C2D058D15D2}']
-    function Write(const Buffer; const Count: SizeT; out ProcessedSize: SizeT): SRes;
-  end;
-
-  ILzmaCompressProgress = interface
-    ['{2358CD94-AE6E-44C9-BBC8-25B66B9BA078}']
-    function Progress(const InSize, OutSize: UInt64): SRes;
-  end;
-
-  ILzmaAllocator = interface
-    ['{D95BF641-A965-4B54-B140-6A6F1051D259}']
-    function Alloc(const Size: SizeT): Pointer;
-    procedure FreeMem(const Address: Pointer);
-  end;
+  TLzmaSdkLzmaEncProps26 = Lzma.Sdk.Properties.TLzmaSdkLzmaEncProps26;
+  TLzmaSdkLzma2EncProps26 = Lzma.Sdk.Properties.TLzmaSdkLzma2EncProps26;
+  TLzmaSdkLzmaEnc = Lzma.Sdk.EncoderFacade.TLzmaSdkLzmaEnc;
+  TLzmaFinishMode = Lzma.Sdk.Contracts.TLzmaFinishMode;
+  TLzmaStatus = Lzma.Sdk.Contracts.TLzmaStatus;
+  ILzmaSeqInStream = Lzma.Sdk.Contracts.ILzmaSeqInStream;
+  ILzmaSeqOutStream = Lzma.Sdk.Contracts.ILzmaSeqOutStream;
+  ILzmaCompressProgress = Lzma.Sdk.Contracts.ILzmaCompressProgress;
+  ILzmaAllocator = Lzma.Sdk.Contracts.ILzmaAllocator;
+const
+  lfmAny = Lzma.Sdk.Contracts.lfmAny;
+  lfmEnd = Lzma.Sdk.Contracts.lfmEnd;
+  lsNotSpecified = Lzma.Sdk.Contracts.lsNotSpecified;
+  lsFinishedWithMark = Lzma.Sdk.Contracts.lsFinishedWithMark;
+  lsNotFinished = Lzma.Sdk.Contracts.lsNotFinished;
+  lsNeedsMoreInput = Lzma.Sdk.Contracts.lsNeedsMoreInput;
+  lsMaybeFinishedWithoutMark = Lzma.Sdk.Contracts.lsMaybeFinishedWithoutMark;
+type
 
   TLzmaSdkSeqInStream = class(TInterfacedObject, ILzmaSeqInStream)
   private
@@ -97,10 +86,19 @@ type
   TLzmaSdkLzmaEncoder = class
   private
     FProps: TLzmaSdkLzmaEncProps;
+    FNative: TLzmaSdkLzmaEnc;
+    FProps26Active: Boolean;
+    FExpectedDataSize: UInt64;
+    FExpectedDataSizeSet: Boolean;
   public
     constructor Create;
-    function SetProps(const Props: TLzmaSdkLzmaEncProps): SRes;
-    function WriteProperties(out PropsBytes: TBytes): SRes;
+    destructor Destroy; override;
+    function SetProps(const Props: TLzmaSdkLzmaEncProps): SRes; overload;
+    function SetProps(const Props: TLzmaSdkLzmaEncProps26): SRes; overload;
+    function WriteProperties(out PropsBytes: TBytes): SRes; overload;
+    function WriteProperties(Properties: PByte; var Size: SizeT): SRes; overload;
+    function IsWriteEndMark: UInt32;
+    procedure SetDataSize(const ExpectedDataSize: UInt64);
     function Encode(const Source: ILzmaSeqInStream; const Destination: ILzmaSeqOutStream;
       const Progress: ILzmaCompressProgress = nil): SRes;
   end;
@@ -113,37 +111,27 @@ type
 
   TLzmaSdkLzmaDec = class
   private
-    FAllocated: Boolean;
-    FDecoded: TBytes;
-    FDecodedPos: SizeT;
-    FDecodedReady: Boolean;
-    FDic: TBytes;
-    FDicPos: SizeT;
-    FHasUnpackSize: Boolean;
-    FInputBuffer: TBytes;
-    FKnownSizeDecodedBytes: UInt64;
-    FKnownSizeFinished: Boolean;
-    FProps: TLzmaProps;
-    FPropsBytes: TBytes;
-    FUnpackSize: UInt64;
-    function CopyPendingToBuf(var Dest; const Capacity: SizeT): SizeT;
-    function CopyPendingToDic(const DicLimit: SizeT; out Copied: SizeT): SRes;
-    procedure CompactPendingDecoded;
-    function EnsureDecoded(const Src; var SrcLen: SizeT; const FinishMode: TLzmaFinishMode): SRes;
-    function PendingDecodedSize: SizeT;
-    function ProduceKnownSizeDecoded(const Src; var SrcLen: SizeT; const RequestedOutput: SizeT;
-      const FinishMode: TLzmaFinishMode; out NeedsMoreInput: Boolean): SRes;
-    procedure SetDecodeStatus(const StatusForFinished: TLzmaStatus; out Status: TLzmaStatus);
+    FNative:TLzmaDec26;
+    FAllocator:ILzmaAllocator;
+    FAllocated,FHasUnpackSize:Boolean;
+    FUnpackSize,FProduced:UInt64;
+    function GetDicPos:SizeT;
+    procedure SetDicPos(const Value:SizeT);
+    procedure LimitOutput(var Capacity:SizeT;var FinishMode:TLzmaFinishMode);
+    function AccountOutput(const Produced:SizeT;const Res:SRes;var Status:TLzmaStatus):SRes;
   public
-    function Allocate(const Props: TBytes): SRes;
+    constructor Create;overload;
+    constructor Create(const Allocator:ILzmaAllocator);overload;
+    destructor Destroy;override;
+    function Allocate(const Props:TBytes):SRes;
     procedure Init;
-    procedure SetUnpackSize(const UnpackSize: UInt64);
-    function DecodeToBuf(var Dest; var DestLen: SizeT; const Src; var SrcLen: SizeT;
-      const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-    function DecodeToDic(const DicLimit: SizeT; const Src; var SrcLen: SizeT;
-      const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-    function DicData: TBytes;
-    property DicPos: SizeT read FDicPos;
+    procedure SetUnpackSize(const UnpackSize:UInt64);
+    function DecodeToBuf(var Dest;var DestLen:SizeT;const Src;var SrcLen:SizeT;
+      const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+    function DecodeToDic(const DicLimit:SizeT;const Src;var SrcLen:SizeT;
+      const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+    function DicData:TBytes;
+    property DicPos:SizeT read GetDicPos write SetDicPos;
   end;
 
   TLzmaSdkLzma2Encoder = class
@@ -165,28 +153,25 @@ type
 
   TLzmaSdkLzma2Dec = class
   private
-    FAllocated: Boolean;
-    FDecoded: TBytes;
-    FDecodedPos: SizeT;
-    FDecodedReady: Boolean;
-    FDic: TBytes;
-    FDicPos: SizeT;
-    FDictionarySize: UInt64;
-    FInputBuffer: TBytes;
-    FProp: Byte;
-    function EnsureDecoded(const Src; var SrcLen: SizeT; const FinishMode: TLzmaFinishMode): SRes;
-    procedure SetDecodeStatus(out Status: TLzmaStatus);
+    FNative:TLzma2Dec26;
+    FAllocator:ILzmaAllocator;
+    FParser:TLzma2SdkParser;
+    FAllocated:Boolean;
+    function GetDicPos:SizeT;
+    procedure SetDicPos(const Value:SizeT);
   public
-    function Allocate(const Prop: Byte): SRes;
+    constructor Create;overload;
+    constructor Create(const Allocator:ILzmaAllocator);overload;
+    destructor Destroy;override;
+    function Allocate(const Prop:Byte):SRes;
     procedure Init;
-    function DecodeToBuf(var Dest; var DestLen: SizeT; const Src; var SrcLen: SizeT;
-      const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-    function DecodeToDic(const DicLimit: SizeT; const Src; var SrcLen: SizeT;
-      const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-    function Parse(const Src; var SrcLen: SizeT; const FinishMode: TLzmaFinishMode;
-      out Status: TLzmaStatus): SRes;
-    function DicData: TBytes;
-    property DicPos: SizeT read FDicPos;
+    function DecodeToBuf(var Dest;var DestLen:SizeT;const Src;var SrcLen:SizeT;
+      const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+    function DecodeToDic(const DicLimit:SizeT;const Src;var SrcLen:SizeT;
+      const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+    function Parse(const Src;var SrcLen:SizeT;const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+    function DicData:TBytes;
+    property DicPos:SizeT read GetDicPos write SetDicPos;
   end;
 
 implementation
@@ -222,9 +207,10 @@ type
     FDestination: ILzmaSeqOutStream;
     FPosition: Int64;
     FResultCode: SRes;
+    FStrictSdkWrite: Boolean;
     function WriteCore(const Buffer; const Count: NativeInt): NativeInt;
   public
-    constructor Create(const Destination: ILzmaSeqOutStream);
+    constructor Create(const Destination: ILzmaSeqOutStream; const StrictSdkWrite: Boolean = False);
     function Read(var Buffer; Count: Longint): Longint; override;
     function Write(const Buffer; Count: Longint): Longint; override;
 {$IF SizeOf(LongInt) <> SizeOf(NativeInt)}
@@ -289,233 +275,17 @@ begin
   Result := Bridge.AsEvent();
 end;
 
-function AppendDecodeInput(var InputBuffer: TBytes; const Src; const SrcLen: SizeT;
-  out OldLen: SizeT): SRes;
-begin
-  if SrcLen > SizeT(High(NativeInt)) then
-    Exit(SZ_ERROR_MEM);
-  OldLen := SizeT(Length(InputBuffer));
-  if SrcLen > SizeT(High(NativeInt)) - OldLen then
-    Exit(SZ_ERROR_MEM);
-  if SrcLen <> 0 then
-  begin
-    SetLength(InputBuffer, NativeInt(OldLen + SrcLen));
-    Move(Src, InputBuffer[NativeInt(OldLen)], NativeInt(SrcLen));
-  end;
-  Result := SZ_OK;
-end;
-
-function ConsumedFromCurrentCall(const ConsumedTotal, OldLen, SourceLen: SizeT): SizeT;
-begin
-  if ConsumedTotal <= OldLen then
-    Exit(0);
-  Result := ConsumedTotal - OldLen;
-  if Result > SourceLen then
-    Result := SourceLen;
-end;
-
-function ValidateLzma2ChunkProp(const Prop: Byte): SRes;
-var
-  D: Byte;
-  Lc: Byte;
-  Lp: Byte;
-begin
-  if Prop >= 9 * 5 * 5 then
-    Exit(SZ_ERROR_UNSUPPORTED);
-  D := Prop;
-  Lc := D mod 9;
-  D := D div 9;
-  Lp := D mod 5;
-  if Lc + Lp > 4 then
-    Exit(SZ_ERROR_UNSUPPORTED);
-  Result := SZ_OK;
-end;
-
-function ParseRawLzma2Embedded(const Data: TBytes; out ConsumedBytes: UInt64): SRes;
-var
-  Control: Byte;
-  NeedInitLevel: Byte;
-  PackSize: NativeUInt;
-  Pos: NativeUInt;
-begin
-  ConsumedBytes := 0;
-  NeedInitLevel := $E0;
-  Pos := 0;
-
-  while Pos < NativeUInt(Length(Data)) do
-  begin
-    Control := Data[Pos];
-    Inc(Pos);
-
-    if Control = LZMA2_CONTROL_EOF then
-    begin
-      ConsumedBytes := Pos;
-      Exit(SZ_OK);
-    end;
-
-    if (Control = LZMA2_CONTROL_COPY_RESET_DIC) or (Control = LZMA2_CONTROL_COPY_NO_RESET) then
-    begin
-      if Control = LZMA2_CONTROL_COPY_RESET_DIC then
-        NeedInitLevel := $C0
-      else if NeedInitLevel = $E0 then
-        Exit(SZ_ERROR_DATA);
-
-      if NativeUInt(Length(Data)) - Pos < 2 then
-        Exit(SZ_ERROR_INPUT_EOF);
-      PackSize := (NativeUInt(Data[Pos]) shl 8) or NativeUInt(Data[Pos + 1]);
-      Inc(PackSize);
-      Inc(Pos, 2);
-      if NativeUInt(Length(Data)) - Pos < PackSize then
-        Exit(SZ_ERROR_INPUT_EOF);
-      Inc(Pos, PackSize);
-      Continue;
-    end;
-
-    if Control < $80 then
-      Exit(SZ_ERROR_DATA);
-    if Control < NeedInitLevel then
-      Exit(SZ_ERROR_DATA);
-
-    if NativeUInt(Length(Data)) - Pos < 4 then
-      Exit(SZ_ERROR_INPUT_EOF);
-    PackSize := (NativeUInt(Data[Pos + 2]) shl 8) or NativeUInt(Data[Pos + 3]);
-    Inc(PackSize);
-    Inc(Pos, 4);
-
-    if (Control and $40) <> 0 then
-    begin
-      if Pos >= NativeUInt(Length(Data)) then
-        Exit(SZ_ERROR_INPUT_EOF);
-      Result := ValidateLzma2ChunkProp(Data[Pos]);
-      if Result <> SZ_OK then
-        Exit;
-      Inc(Pos);
-    end;
-
-    if NativeUInt(Length(Data)) - Pos < PackSize then
-      Exit(SZ_ERROR_INPUT_EOF);
-    Inc(Pos, PackSize);
-    NeedInitLevel := 0;
-  end;
-
-  Result := SZ_ERROR_INPUT_EOF;
-end;
-
-function CopyStreamBytes(const Source: TMemoryStream; out Data: TBytes): SRes;
-begin
-  if Source.Size > High(NativeInt) then
-    Exit(SZ_ERROR_MEM);
-  SetLength(Data, NativeInt(Source.Size));
-  Source.Position := 0;
-  if Length(Data) <> 0 then
-    Source.ReadBuffer(Data[0], Length(Data));
-  Result := SZ_OK;
-end;
-
-function DecodeKnownSizeLzmaPrefix(const InputBuffer: TBytes; const Props: TLzmaProps;
-  const UnpackSize: UInt64; out Decoded: TBytes; out ConsumedTotal: SizeT): SRes;
-var
-  FirstError: SRes;
-  PrefixLen: NativeInt;
-
-  function TryDecodePrefix(const Count: NativeInt; out PrefixDecoded: TBytes): SRes;
-  var
-    Output: TMemoryStream;
-    State: TLzmaDecoderState;
-  begin
-    SetLength(PrefixDecoded, 0);
-    try
-      Output := TMemoryStream.Create;
-      try
-        State := TLzmaDecoderState.Create(Props.DictionarySize);
-        try
-          State.SetProperties(Props);
-          State.ResetDictionary;
-          State.ResetState;
-          State.DecodeChunk(InputBuffer, 0, NativeUInt(Count), UnpackSize, Output);
-          Result := CopyStreamBytes(Output, PrefixDecoded);
-        finally
-          State.Free;
-        end;
-      finally
-        Output.Free;
-      end;
-    except
-      on E: Exception do
-        Result := ExceptionToSRes(E);
-    end;
-  end;
-
-begin
-  ConsumedTotal := 0;
-  Result := TryDecodePrefix(Length(InputBuffer), Decoded);
-  if Result = SZ_OK then
-  begin
-    ConsumedTotal := SizeT(Length(InputBuffer));
-    Exit;
-  end;
-  if Result = SZ_ERROR_INPUT_EOF then
-    Exit;
-  if Result <> SZ_ERROR_DATA then
-    Exit;
-
-  FirstError := Result;
-  for PrefixLen := Length(InputBuffer) - 1 downto 0 do
-  begin
-    Result := TryDecodePrefix(PrefixLen, Decoded);
-    if Result = SZ_OK then
-    begin
-      ConsumedTotal := SizeT(PrefixLen);
-      Exit;
-    end;
-  end;
-
-  Result := FirstError;
-end;
-
-function DecodeKnownSizeLzmaAvailable(const InputBuffer: TBytes; const Props: TLzmaProps;
-  const UnpackSize: UInt64; out Decoded: TBytes; out ConsumedTotal: SizeT;
-  out Finished, NeedsMoreInput: Boolean): SRes;
-var
-  Consumed: NativeUInt;
-  Output: TMemoryStream;
-  State: TLzmaDecoderState;
-begin
-  SetLength(Decoded, 0);
-  ConsumedTotal := 0;
-  Finished := False;
-  NeedsMoreInput := False;
-  try
-    Output := TMemoryStream.Create;
-    try
-      State := TLzmaDecoderState.Create(Props.DictionarySize);
-      try
-        State.SetProperties(Props);
-        State.ResetDictionary;
-        State.ResetState;
-        State.DecodeKnownSizePartial(InputBuffer, 0, NativeUInt(Length(InputBuffer)), UnpackSize,
-          UnpackSize, Output, Consumed, Finished, NeedsMoreInput);
-        ConsumedTotal := SizeT(Consumed);
-        Result := CopyStreamBytes(Output, Decoded);
-        if Result <> SZ_OK then
-          Exit;
-        Result := SZ_OK;
-      finally
-        State.Free;
-      end;
-    finally
-      Output.Free;
-    end;
-  except
-    on E: Exception do
-      Result := ExceptionToSRes(E);
-  end;
-end;
-
 function MatchFinderKindFromProps(const Props: TLzmaSdkLzmaEncProps): TLzmaMatchFinderKind;
 begin
   if Props.BtMode <> 0 then
-    Result := mfBinaryTree4
+  begin
+    case Props.NumHashBytes of
+      2: Result := mfBinaryTree2;
+      3: Result := mfBinaryTree3;
+      5: Result := mfBinaryTree5;
+    else Result := mfBinaryTree4;
+    end;
+  end
   else if Props.NumHashBytes >= 5 then
     Result := mfHashChain5
   else
@@ -585,12 +355,14 @@ begin
   raise EStreamError.Create('SDK input stream adapter is not seekable');
 end;
 
-constructor TLzmaSdkSeqOutStreamAdapter.Create(const Destination: ILzmaSeqOutStream);
+constructor TLzmaSdkSeqOutStreamAdapter.Create(const Destination: ILzmaSeqOutStream;
+  const StrictSdkWrite: Boolean);
 begin
   inherited Create;
   FDestination := Destination;
   FPosition := 0;
   FResultCode := SZ_OK;
+  FStrictSdkWrite := StrictSdkWrite;
 end;
 
 function TLzmaSdkSeqOutStreamAdapter.Read(var Buffer; Count: Longint): Longint;
@@ -621,13 +393,18 @@ begin
     Res := FDestination.Write(Start[Offset], Remaining, Processed);
     if Res <> SZ_OK then
     begin
-      FResultCode := Res;
-      RaiseLzmaError(Res, 'SDK output stream write failed');
+      if FStrictSdkWrite then FResultCode := SZ_ERROR_WRITE else FResultCode := Res;
+      RaiseLzmaError(FResultCode, 'SDK output stream write failed');
     end;
     if (Processed = 0) or (Processed > Remaining) then
     begin
       FResultCode := SZ_ERROR_WRITE;
       RaiseLzmaError(SZ_ERROR_WRITE, 'SDK output stream made no forward progress');
+    end;
+    if FStrictSdkWrite and (Processed <> Remaining) then
+    begin
+      FResultCode := SZ_ERROR_WRITE;
+      RaiseLzmaError(SZ_ERROR_WRITE, 'SDK output stream returned a short write');
     end;
     Inc(Offset, NativeInt(Processed));
   end;
@@ -779,26 +556,10 @@ begin
   end;
 end;
 
-function TLzmaSdkSystemAllocator.Alloc(const Size: SizeT): Pointer;
-begin
-  Result := nil;
-  if Size = 0 then
-    Exit;
-  if Size > SizeT(High(NativeInt)) then
-    Exit;
-  try
-    Result := System.AllocMem(NativeInt(Size));
-  except
-    on E: EOutOfMemory do
-      Result := nil;
-  end;
-end;
-
-procedure TLzmaSdkSystemAllocator.FreeMem(const Address: Pointer);
-begin
-  if Address <> nil then
-    System.FreeMem(Address);
-end;
+function TLzmaSdkSystemAllocator.Alloc(const Size:SizeT):Pointer;
+begin Result:=LzmaDefaultAllocate(Size);end;
+procedure TLzmaSdkSystemAllocator.FreeMem(const Address:Pointer);
+begin LzmaDefaultFree(Address);end;
 
 class function TLzmaSdkLzmaEncProps.Init: TLzmaSdkLzmaEncProps;
 begin
@@ -991,6 +752,13 @@ constructor TLzmaSdkLzmaEncoder.Create;
 begin
   inherited Create;
   FProps := TLzmaSdkLzmaEncProps.Init;
+  FExpectedDataSize := High(UInt64);
+end;
+
+destructor TLzmaSdkLzmaEncoder.Destroy;
+begin
+  FNative.Free;
+  inherited;
 end;
 
 function TLzmaSdkLzmaEncoder.SetProps(const Props: TLzmaSdkLzmaEncProps): SRes;
@@ -1000,12 +768,50 @@ begin
   Normalized := Props;
   Result := Normalized.Normalize;
   if Result = SZ_OK then
+  begin
     FProps := Normalized;
+    FProps26Active := False;
+  end;
+end;
+
+function TLzmaSdkLzmaEncoder.SetProps(const Props: TLzmaSdkLzmaEncProps26): SRes;
+begin
+  try
+    if FNative = nil then FNative := TLzmaSdkLzmaEnc.Create;
+    Result := FNative.SetProps(Props);
+    if Result = SZ_OK then FProps26Active := True;
+  except
+    on E: Exception do Result := ExceptionToSRes(E);
+  end;
 end;
 
 function TLzmaSdkLzmaEncoder.WriteProperties(out PropsBytes: TBytes): SRes;
 begin
-  Result := FProps.WriteProperties(PropsBytes);
+  if FProps26Active then Result := FNative.WriteProperties(PropsBytes)
+  else Result := FProps.WriteProperties(PropsBytes);
+end;
+
+function TLzmaSdkLzmaEncoder.WriteProperties(Properties: PByte; var Size: SizeT): SRes;
+var Bytes: TBytes;
+begin
+  if (Size < LZMA_PROPS_SIZE) or (Properties = nil) then Exit(SZ_ERROR_PARAM);
+  if FProps26Active then Exit(FNative.WriteProperties(Properties, Size));
+  Result := FProps.WriteProperties(Bytes);
+  if Result = SZ_OK then
+  begin Size := LZMA_PROPS_SIZE; Move(Bytes[0], Properties^, LZMA_PROPS_SIZE); end;
+end;
+
+function TLzmaSdkLzmaEncoder.IsWriteEndMark: UInt32;
+begin
+  if FProps26Active then Result := FNative.IsWriteEndMark
+  else Move(FProps.WriteEndMark, Result, SizeOf(Result));
+end;
+
+procedure TLzmaSdkLzmaEncoder.SetDataSize(const ExpectedDataSize: UInt64);
+begin
+  FExpectedDataSize := ExpectedDataSize;
+  FExpectedDataSizeSet := True;
+  if FNative <> nil then FNative.SetDataSize(ExpectedDataSize);
 end;
 
 function TLzmaSdkLzmaEncoder.Encode(const Source: ILzmaSeqInStream;
@@ -1020,11 +826,23 @@ var
   ProgressAdapter: TLzma2ProgressEvent;
   ProgressBridge: TLzmaSdkProgressBridge;
   Props: TLzmaProps;
+  DecisionCount: UInt64;
+  ActualThreadCount: Integer;
+  RequestedThreads: Integer;
+  RequestedHashOutBits: UInt32;
+  WriteEndMark: Boolean;
 begin
   try
     if (Source = nil) or (Destination = nil) then
       Exit(SZ_ERROR_PARAM);
 
+    if FProps26Active then
+    begin
+      if FExpectedDataSizeSet then FNative.SetDataSize(FExpectedDataSize);
+      Exit(FNative.Encode(Source, Destination, Progress));
+    end;
+
+    RequestedHashOutBits := 0;
     Normalized := FProps;
     Result := Normalized.Normalize;
     if Result <> SZ_OK then
@@ -1037,8 +855,11 @@ begin
       TLzma2CompressionLevel(EnsureRange(Normalized.Level, Low(TLzma2CompressionLevel),
       High(TLzma2CompressionLevel))), Normalized.DictSize);
     Profile.DictionarySize := Props.DictionarySize;
+    Profile.Algorithm := Normalized.Algo;
     Profile.FastBytes := Normalized.Fb;
     Profile.CutValue := UInt32(Normalized.Mc);
+    RequestedThreads := Normalized.NumThreads;
+    WriteEndMark := Normalized.WriteEndMark <> 0;
     Profile.MatchFinderKind := MatchFinderKind;
     case MatchFinderKind of
       mfHashChain5:
@@ -1047,31 +868,42 @@ begin
           Profile.NumHashBytes := 5;
           Profile.MatchFinder := 'hc5-sdk-facade';
         end;
-      mfBinaryTree4:
+      mfBinaryTree2, mfBinaryTree3, mfBinaryTree4, mfBinaryTree5:
         begin
           Profile.MatchFinderProfile := lmfpBinaryTree4;
           Profile.NumHashBytes := 4;
-          Profile.MatchFinder := 'bt4-sdk-facade';
+          case MatchFinderKind of
+            mfBinaryTree2: Profile.NumHashBytes := 2;
+            mfBinaryTree3: Profile.NumHashBytes := 3;
+            mfBinaryTree5: Profile.NumHashBytes := 5;
+          end;
+          Profile.MatchFinder := 'bt' + IntToStr(Profile.NumHashBytes) + '-sdk-facade';
         end;
     else
       Profile.MatchFinderProfile := lmfpHashChain4;
       Profile.NumHashBytes := 4;
       Profile.MatchFinder := 'hc4-sdk-facade';
     end;
-    if Normalized.Algo <> 0 then
+    if Profile.Algorithm <> 0 then
       Profile.ParserMode := lpmSdkProfile
     else
       Profile.ParserMode := lpmHighSpeed;
 
     Input := TLzmaSdkSeqInStreamAdapter.Create(Source);
-    OutputAdapter := TLzmaSdkSeqOutStreamAdapter.Create(Destination);
+    OutputAdapter := TLzmaSdkSeqOutStreamAdapter.Create(Destination, False);
     Output := OutputAdapter;
     ProgressAdapter := MakeProgressAdapter(Progress, ProgressBridge);
     try
       try
         try
-          TLzmaRawEncoder.Encode(Input, Output, Profile, Props,
-            Normalized.WriteEndMark <> 0, ProgressAdapter);
+          if FExpectedDataSizeSet then
+            TLzmaRawEncoder.EncodeWithSdkSettings(Input, Output, Profile, Props,
+              WriteEndMark, 0, 0, RequestedThreads, RequestedHashOutBits, FExpectedDataSize,
+              DecisionCount, ActualThreadCount, ProgressAdapter)
+          else
+            TLzmaRawEncoder.EncodeWithThreads(Input, Output, Profile, Props,
+              WriteEndMark, 0, 0, RequestedThreads,
+              DecisionCount, ActualThreadCount, ProgressAdapter);
         except
           on E: Exception do
           begin
@@ -1150,463 +982,72 @@ begin
   end;
 end;
 
-function TLzmaSdkLzmaDec.PendingDecodedSize: SizeT;
+constructor TLzmaSdkLzmaDec.Create;
+begin inherited Create;FAllocator:=LzmaDefaultAllocator;end;
+constructor TLzmaSdkLzmaDec.Create(const Allocator:ILzmaAllocator);
+begin inherited Create;if Allocator=nil then FAllocator:=LzmaDefaultAllocator else FAllocator:=Allocator;end;
+destructor TLzmaSdkLzmaDec.Destroy;
+begin if (FNative.Probs<>nil) or (FNative.Dic<>nil) then LzmaDec_Free(FNative,FAllocator);inherited;end;
+function TLzmaSdkLzmaDec.Allocate(const Props:TBytes):SRes;
 begin
-  if FDecodedPos >= SizeT(Length(FDecoded)) then
-    Exit(0);
-  Result := SizeT(Length(FDecoded)) - FDecodedPos;
+  if Length(Props)<>LZMA_PROPS_SIZE then Exit(SZ_ERROR_UNSUPPORTED);
+  Result:=LzmaDec_Allocate(FNative,@Props[0],LZMA_PROPS_SIZE,FAllocator);
+  FAllocated:=FNative.Probs<>nil;
+  if Result=SZ_OK then begin FHasUnpackSize:=False;FUnpackSize:=0;Init;end;
 end;
-
-procedure TLzmaSdkLzmaDec.CompactPendingDecoded;
-var
-  Remaining: SizeT;
-begin
-  if FDecodedPos = 0 then
-    Exit;
-
-  Remaining := PendingDecodedSize;
-  if Remaining <> 0 then
-    Move(FDecoded[NativeInt(FDecodedPos)], FDecoded[0], NativeInt(Remaining));
-  SetLength(FDecoded, NativeInt(Remaining));
-  FDecodedPos := 0;
-end;
-
-function TLzmaSdkLzmaDec.CopyPendingToBuf(var Dest; const Capacity: SizeT): SizeT;
-var
-  Available: SizeT;
-begin
-  Available := PendingDecodedSize;
-  Result := Capacity;
-  if Result > Available then
-    Result := Available;
-  if Result <> 0 then
-  begin
-    Move(FDecoded[NativeInt(FDecodedPos)], Dest, NativeInt(Result));
-    Inc(FDecodedPos, Result);
-  end;
-end;
-
-function TLzmaSdkLzmaDec.CopyPendingToDic(const DicLimit: SizeT; out Copied: SizeT): SRes;
-var
-  Available: SizeT;
-  Capacity: SizeT;
-begin
-  Copied := 0;
-  if FDicPos >= DicLimit then
-    Exit(SZ_OK);
-
-  Capacity := DicLimit - FDicPos;
-  Available := PendingDecodedSize;
-  Copied := Capacity;
-  if Copied > Available then
-    Copied := Available;
-  if Copied <> 0 then
-  begin
-    if FDicPos + Copied > SizeT(High(NativeInt)) then
-      Exit(SZ_ERROR_MEM);
-    if SizeT(Length(FDic)) < FDicPos + Copied then
-      SetLength(FDic, NativeInt(FDicPos + Copied));
-    Move(FDecoded[NativeInt(FDecodedPos)], FDic[NativeInt(FDicPos)], NativeInt(Copied));
-    Inc(FDicPos, Copied);
-    Inc(FDecodedPos, Copied);
-  end;
-  Result := SZ_OK;
-end;
-
-function TLzmaSdkLzmaDec.ProduceKnownSizeDecoded(const Src; var SrcLen: SizeT;
-  const RequestedOutput: SizeT; const FinishMode: TLzmaFinishMode;
-  out NeedsMoreInput: Boolean): SRes;
-var
-  AddLen: SizeT;
-  ConsumedBytes: NativeUInt;
-  Finished: Boolean;
-  OldLen: SizeT;
-  OldInputLen: SizeT;
-  Output: TMemoryStream;
-  OutputBytes: UInt64;
-  SourceLen: SizeT;
-  State: TLzmaDecoderState;
-  SuffixOffset: UInt64;
-  TargetOutput: UInt64;
-begin
-  NeedsMoreInput := False;
-  SourceLen := SrcLen;
-  SrcLen := 0;
-
-  if FKnownSizeFinished then
-    Exit(SZ_OK);
-  if not FAllocated then
-    Exit(SZ_ERROR_PARAM);
-
-  Result := AppendDecodeInput(FInputBuffer, Src, SourceLen, OldInputLen);
-  if Result <> SZ_OK then
-    Exit;
-
-  try
-    Output := TMemoryStream.Create;
-    try
-      TargetOutput := FKnownSizeDecodedBytes + UInt64(RequestedOutput);
-      if TargetOutput > FUnpackSize then
-        TargetOutput := FUnpackSize;
-
-      State := TLzmaDecoderState.Create(FProps.DictionarySize);
-      try
-        State.SetProperties(FProps);
-        State.ResetDictionary;
-        State.ResetState;
-        State.DecodeKnownSizePartial(FInputBuffer, 0, NativeUInt(Length(FInputBuffer)),
-          FUnpackSize, TargetOutput, Output, ConsumedBytes, Finished, NeedsMoreInput);
-      finally
-        State.Free;
-      end;
-
-      if Finished then
-      begin
-        SrcLen := ConsumedFromCurrentCall(SizeT(ConsumedBytes), OldInputLen, SourceLen);
-        if ConsumedBytes < NativeUInt(Length(FInputBuffer)) then
-          SetLength(FInputBuffer, NativeInt(ConsumedBytes));
-      end
-      else
-        SrcLen := SourceLen;
-      FKnownSizeFinished := Finished;
-
-      OutputBytes := UInt64(Output.Size);
-      if OutputBytes < FKnownSizeDecodedBytes then
-        Exit(SZ_ERROR_DATA);
-      if OutputBytes > FKnownSizeDecodedBytes then
-      begin
-        SuffixOffset := FKnownSizeDecodedBytes;
-        if SuffixOffset > UInt64(High(NativeInt)) then
-          Exit(SZ_ERROR_MEM);
-        AddLen := SizeT(OutputBytes - SuffixOffset);
-        CompactPendingDecoded;
-        OldLen := SizeT(Length(FDecoded));
-        if AddLen > SizeT(High(NativeInt)) - OldLen then
-          Exit(SZ_ERROR_MEM);
-        SetLength(FDecoded, NativeInt(OldLen + AddLen));
-        Output.Position := Int64(SuffixOffset);
-        Output.ReadBuffer(FDecoded[NativeInt(OldLen)], NativeInt(AddLen));
-        FKnownSizeDecodedBytes := OutputBytes;
-      end;
-
-      Result := SZ_OK;
-    finally
-      Output.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      Result := ExceptionToSRes(E);
-      if Result = SZ_ERROR_INPUT_EOF then
-      begin
-        NeedsMoreInput := True;
-        Result := SZ_OK;
-      end;
-    end;
-  end;
-end;
-
-function TLzmaSdkLzmaDec.Allocate(const Props: TBytes): SRes;
-var
-  DecodedProps: TLzmaProps;
-begin
-  try
-    if Length(Props) <> LZMA_PROPS_SIZE then
-      Exit(SZ_ERROR_UNSUPPORTED);
-    if not TLzmaRawDecoder.DecodeProperties(Props, DecodedProps) then
-      Exit(SZ_ERROR_UNSUPPORTED);
-    FProps := DecodedProps;
-    SetLength(FPropsBytes, Length(Props));
-    if Length(Props) <> 0 then
-      Move(Props[0], FPropsBytes[0], Length(Props));
-    FAllocated := True;
-    FHasUnpackSize := False;
-    FUnpackSize := 0;
-    Init;
-    Result := SZ_OK;
-  except
-    on E: Exception do
-      Result := ExceptionToSRes(E);
-  end;
-end;
-
 procedure TLzmaSdkLzmaDec.Init;
+begin LzmaDec_Init(FNative);FProduced:=0;end;
+procedure TLzmaSdkLzmaDec.SetUnpackSize(const UnpackSize:UInt64);
+begin FHasUnpackSize:=True;FUnpackSize:=UnpackSize;Init;end;
+function TLzmaSdkLzmaDec.GetDicPos:SizeT;
+begin Result:=FNative.DicPos;end;
+procedure TLzmaSdkLzmaDec.SetDicPos(const Value:SizeT);
 begin
-  SetLength(FDecoded, 0);
-  FDecodedPos := 0;
-  FDecodedReady := False;
-  FKnownSizeDecodedBytes := 0;
-  FKnownSizeFinished := False;
-  SetLength(FDic, 0);
-  FDicPos := 0;
-  SetLength(FInputBuffer, 0);
+  if Value>FNative.DicBufSize then RaiseLzmaError(SZ_ERROR_PARAM,'Dictionary position exceeds allocated storage');
+  FNative.DicPos:=Value;
 end;
-
-procedure TLzmaSdkLzmaDec.SetUnpackSize(const UnpackSize: UInt64);
+procedure TLzmaSdkLzmaDec.LimitOutput(var Capacity:SizeT;var FinishMode:TLzmaFinishMode);
+var Remaining:UInt64;
 begin
-  FUnpackSize := UnpackSize;
-  FHasUnpackSize := True;
-  SetLength(FDecoded, 0);
-  FDecodedPos := 0;
-  FDecodedReady := False;
-  FKnownSizeDecodedBytes := 0;
-  FKnownSizeFinished := False;
-  SetLength(FInputBuffer, 0);
+  if not FHasUnpackSize then Exit;
+  Remaining:=FUnpackSize-FProduced;
+  if Capacity>Remaining then Capacity:=SizeT(Remaining);
+  if Capacity<Remaining then FinishMode:=lfmAny;
 end;
-
-function TLzmaSdkLzmaDec.EnsureDecoded(const Src; var SrcLen: SizeT;
-  const FinishMode: TLzmaFinishMode): SRes;
-var
-  ConsumedBytes: SizeT;
-  OldInputLen: SizeT;
-  Output: TMemoryStream;
-  SourceLen: SizeT;
-  UsedBytes: NativeUInt;
-  State: TLzmaDecoderState;
+function TLzmaSdkLzmaDec.AccountOutput(const Produced:SizeT;const Res:SRes;var Status:TLzmaStatus):SRes;
 begin
-  SourceLen := SrcLen;
-  SrcLen := 0;
-
-  if FDecodedReady then
-    Exit(SZ_OK);
-  if not FAllocated then
-    Exit(SZ_ERROR_PARAM);
-
-  Result := AppendDecodeInput(FInputBuffer, Src, SourceLen, OldInputLen);
-  if Result <> SZ_OK then
-    Exit;
-
-  try
-    Output := TMemoryStream.Create;
-    try
-      if FHasUnpackSize then
-      begin
-        Result := DecodeKnownSizeLzmaPrefix(FInputBuffer, FProps, FUnpackSize, FDecoded, ConsumedBytes);
-        if Result <> SZ_OK then
-        begin
-          if Result = SZ_ERROR_INPUT_EOF then
-            SrcLen := SourceLen;
-          Exit;
-        end;
-        SrcLen := ConsumedFromCurrentCall(ConsumedBytes, OldInputLen, SourceLen);
-        if ConsumedBytes < SizeT(Length(FInputBuffer)) then
-          SetLength(FInputBuffer, NativeInt(ConsumedBytes));
-        FDecodedPos := 0;
-        FDecodedReady := True;
-        Exit(SZ_OK);
-      end
-      else
-      begin
-        State := TLzmaDecoderState.Create(FProps.DictionarySize);
-        try
-          State.SetProperties(FProps);
-          State.ResetDictionary;
-          State.ResetState;
-          UsedBytes := State.DecodeUntilEndMarker(FInputBuffer, 0, NativeUInt(Length(FInputBuffer)), Output);
-          SrcLen := ConsumedFromCurrentCall(SizeT(UsedBytes), OldInputLen, SourceLen);
-          if UsedBytes < NativeUInt(Length(FInputBuffer)) then
-            SetLength(FInputBuffer, NativeInt(UsedBytes));
-        finally
-          State.Free;
-        end;
-      end;
-
-      Result := CopyStreamBytes(Output, FDecoded);
-      if Result <> SZ_OK then
-        Exit;
-      FDecodedPos := 0;
-      FDecodedReady := True;
-      Result := SZ_OK;
-    finally
-      Output.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      if ExceptionToSRes(E) = SZ_ERROR_INPUT_EOF then
-        SrcLen := SourceLen;
-      Result := ExceptionToSRes(E);
-    end;
+  Inc(FProduced,Produced);Result:=Res;
+  if FHasUnpackSize and (Result=SZ_OK) and (FProduced<FUnpackSize) then
+  begin
+    if Status=lsFinishedWithMark then begin Result:=SZ_ERROR_DATA;Status:=lsNotFinished;end
+    else if Status=lsMaybeFinishedWithoutMark then Status:=lsNotFinished;
   end;
 end;
-
-procedure TLzmaSdkLzmaDec.SetDecodeStatus(const StatusForFinished: TLzmaStatus;
-  out Status: TLzmaStatus);
+function TLzmaSdkLzmaDec.DecodeToBuf(var Dest;var DestLen:SizeT;const Src;var SrcLen:SizeT;
+  const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+var Mode:TLzmaFinishMode;
 begin
-  if not FDecodedReady then
-    Status := lsNeedsMoreInput
-  else if FDecodedPos >= SizeT(Length(FDecoded)) then
-    Status := StatusForFinished
-  else
-    Status := lsNotFinished;
+  Status:=lsNotSpecified;
+  if not FAllocated then begin DestLen:=0;SrcLen:=0;Exit(SZ_ERROR_PARAM);end;
+  Mode:=FinishMode;LimitOutput(DestLen,Mode);
+  Result:=LzmaDec_DecodeToBuf(FNative,@Dest,DestLen,@Src,SrcLen,Mode,Status);
+  Result:=AccountOutput(DestLen,Result,Status);
 end;
-
-function TLzmaSdkLzmaDec.DecodeToBuf(var Dest; var DestLen: SizeT; const Src;
-  var SrcLen: SizeT; const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-var
-  Available: SizeT;
-  Copied: SizeT;
-  NeedsMoreInput: Boolean;
-  Requested: SizeT;
-  SourceLen: SizeT;
-  ToCopy: SizeT;
+function TLzmaSdkLzmaDec.DecodeToDic(const DicLimit:SizeT;const Src;var SrcLen:SizeT;
+  const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+var Mode:TLzmaFinishMode;Capacity,Before:SizeT;
 begin
-  Status := lsNotSpecified;
-  if FHasUnpackSize then
-  begin
-    Requested := DestLen;
-    SourceLen := SrcLen;
-    DestLen := 0;
-    SrcLen := 0;
-    NeedsMoreInput := False;
-
-    Copied := CopyPendingToBuf(Dest, Requested);
-    Inc(DestLen, Copied);
-    if (DestLen < Requested) and not FKnownSizeFinished then
-    begin
-      SrcLen := SourceLen;
-      Result := ProduceKnownSizeDecoded(Src, SrcLen, Requested - DestLen, FinishMode, NeedsMoreInput);
-      if Result <> SZ_OK then
-      begin
-        Status := lsNotFinished;
-        Exit;
-      end;
-      Copied := CopyPendingToBuf(PByte(@Dest)[NativeInt(DestLen)], Requested - DestLen);
-      Inc(DestLen, Copied);
-    end;
-
-    if FKnownSizeFinished and (PendingDecodedSize = 0) then
-      Status := lsMaybeFinishedWithoutMark
-    else if NeedsMoreInput and (DestLen < Requested) then
-      Status := lsNeedsMoreInput
-    else
-      Status := lsNotFinished;
-    Exit(SZ_OK);
-  end;
-
-  Result := EnsureDecoded(Src, SrcLen, FinishMode);
-  if Result <> SZ_OK then
-  begin
-    if Result = SZ_ERROR_INPUT_EOF then
-    begin
-      Status := lsNeedsMoreInput;
-      Result := SZ_OK;
-      DestLen := 0;
-    end
-    else
-      Status := lsNotFinished;
-    Exit;
-  end;
-
-  Available := SizeT(Length(FDecoded)) - FDecodedPos;
-  ToCopy := DestLen;
-  if ToCopy > Available then
-    ToCopy := Available;
-  if ToCopy <> 0 then
-    Move(FDecoded[NativeInt(FDecodedPos)], Dest, NativeInt(ToCopy));
-  Inc(FDecodedPos, ToCopy);
-  DestLen := ToCopy;
-  if FHasUnpackSize then
-    SetDecodeStatus(lsMaybeFinishedWithoutMark, Status)
-  else
-    SetDecodeStatus(lsFinishedWithMark, Status);
+  Status:=lsNotSpecified;
+  if not FAllocated or (DicLimit<FNative.DicPos) or (DicLimit>FNative.DicBufSize) then
+  begin SrcLen:=0;Exit(SZ_ERROR_PARAM);end;
+  Before:=FNative.DicPos;Capacity:=DicLimit-Before;Mode:=FinishMode;LimitOutput(Capacity,Mode);
+  Result:=LzmaDec_DecodeToDic(FNative,Before+Capacity,@Src,SrcLen,Mode,Status);
+  Result:=AccountOutput(FNative.DicPos-Before,Result,Status);
 end;
-
-function TLzmaSdkLzmaDec.DecodeToDic(const DicLimit: SizeT; const Src; var SrcLen: SizeT;
-  const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-var
-  Available: SizeT;
-  Capacity: SizeT;
-  Copied: SizeT;
-  NeedsMoreInput: Boolean;
-  SourceLen: SizeT;
-  ToCopy: SizeT;
+function TLzmaSdkLzmaDec.DicData:TBytes;
 begin
-  Status := lsNotSpecified;
-  if FHasUnpackSize then
-  begin
-    SourceLen := SrcLen;
-    SrcLen := 0;
-    NeedsMoreInput := False;
-
-    Result := CopyPendingToDic(DicLimit, Copied);
-    if Result <> SZ_OK then
-    begin
-      Status := lsNotFinished;
-      Exit;
-    end;
-
-    if (FDicPos < DicLimit) and not FKnownSizeFinished then
-    begin
-      SrcLen := SourceLen;
-      Result := ProduceKnownSizeDecoded(Src, SrcLen, DicLimit - FDicPos, FinishMode, NeedsMoreInput);
-      if Result <> SZ_OK then
-      begin
-        Status := lsNotFinished;
-        Exit;
-      end;
-      Result := CopyPendingToDic(DicLimit, Copied);
-      if Result <> SZ_OK then
-      begin
-        Status := lsNotFinished;
-        Exit;
-      end;
-    end;
-
-    if FKnownSizeFinished and (PendingDecodedSize = 0) then
-      Status := lsMaybeFinishedWithoutMark
-    else if NeedsMoreInput and (FDicPos < DicLimit) then
-      Status := lsNeedsMoreInput
-    else
-      Status := lsNotFinished;
-    Exit(SZ_OK);
-  end;
-
-  Result := EnsureDecoded(Src, SrcLen, FinishMode);
-  if Result <> SZ_OK then
-  begin
-    if Result = SZ_ERROR_INPUT_EOF then
-    begin
-      Status := lsNeedsMoreInput;
-      Result := SZ_OK;
-    end
-    else
-      Status := lsNotFinished;
-    Exit;
-  end;
-
-  if FDicPos >= DicLimit then
-    ToCopy := 0
-  else
-  begin
-    Capacity := DicLimit - FDicPos;
-    Available := SizeT(Length(FDecoded)) - FDecodedPos;
-    ToCopy := Capacity;
-    if ToCopy > Available then
-      ToCopy := Available;
-  end;
-
-  if ToCopy <> 0 then
-  begin
-    if FDicPos + ToCopy > SizeT(High(NativeInt)) then
-      Exit(SZ_ERROR_MEM);
-    if SizeT(Length(FDic)) < FDicPos + ToCopy then
-      SetLength(FDic, NativeInt(FDicPos + ToCopy));
-    Move(FDecoded[NativeInt(FDecodedPos)], FDic[NativeInt(FDicPos)], NativeInt(ToCopy));
-    Inc(FDicPos, ToCopy);
-    Inc(FDecodedPos, ToCopy);
-  end;
-  if FHasUnpackSize then
-    SetDecodeStatus(lsMaybeFinishedWithoutMark, Status)
-  else
-    SetDecodeStatus(lsFinishedWithMark, Status);
-end;
-
-function TLzmaSdkLzmaDec.DicData: TBytes;
-begin
-  SetLength(Result, NativeInt(FDicPos));
-  if FDicPos <> 0 then
-    Move(FDic[0], Result[0], NativeInt(FDicPos));
+  SetLength(Result,NativeInt(FNative.DicPos));
+  if FNative.DicPos<>0 then Move(FNative.Dic^,Result[0],FNative.DicPos);
 end;
 
 constructor TLzmaSdkLzma2Encoder.Create;
@@ -1634,6 +1075,7 @@ function TLzmaSdkLzma2Encoder.Encode(const Source: ILzmaSeqInStream;
   const Destination: ILzmaSeqOutStream; const Progress: ILzmaCompressProgress): SRes;
 var
   Input: TStream;
+  Normalized: TLzmaSdkLzma2EncProps;
   Options: TLzma2Options;
   Output: TStream;
   OutputAdapter: TLzmaSdkSeqOutStreamAdapter;
@@ -1644,7 +1086,11 @@ begin
     if (Source = nil) or (Destination = nil) then
       Exit(SZ_ERROR_PARAM);
 
-    Options := BuildOptionsFromLzma2Props(FProps);
+    Normalized := FProps;
+    Result := Normalized.Normalize;
+    if Result <> SZ_OK then
+      Exit;
+    Options := BuildOptionsFromLzma2Props(Normalized);
     Input := TLzmaSdkSeqInStreamAdapter.Create(Source);
     OutputAdapter := TLzmaSdkSeqOutStreamAdapter.Create(Destination);
     Output := OutputAdapter;
@@ -1652,7 +1098,8 @@ begin
       ProgressAdapter := MakeProgressAdapter(Progress, ProgressBridge);
       try
         try
-          TLzma2Encoder.EncodeRaw(Input, Output, Options, ProgressAdapter);
+          TLzma2Encoder.EncodeRawWithAlgorithm(Input, Output, Options,
+            Normalized.LzmaProps.Algo, ProgressAdapter);
         except
           on E: Exception do
           begin
@@ -1731,329 +1178,63 @@ begin
   end;
 end;
 
-function TLzmaSdkLzma2Dec.Allocate(const Prop: Byte): SRes;
+constructor TLzmaSdkLzma2Dec.Create;
+begin inherited Create;FAllocator:=LzmaDefaultAllocator;end;
+constructor TLzmaSdkLzma2Dec.Create(const Allocator:ILzmaAllocator);
+begin inherited Create;if Allocator=nil then FAllocator:=LzmaDefaultAllocator else FAllocator:=Allocator;end;
+destructor TLzmaSdkLzma2Dec.Destroy;
+begin if (FNative.Decoder.Probs<>nil) or (FNative.Decoder.Dic<>nil) then Lzma2Dec_Free(FNative,FAllocator);inherited;end;
+function TLzmaSdkLzma2Dec.Allocate(const Prop:Byte):SRes;
 begin
-  try
-    if Prop > LZMA2_DIC_PROP_MAX then
-      Exit(SZ_ERROR_UNSUPPORTED);
-    FProp := Prop;
-    FDictionarySize := Lzma2DictionaryFromProperty(Prop);
-    FAllocated := True;
-    Init;
-    Result := SZ_OK;
-  except
-    on E: Exception do
-      Result := ExceptionToSRes(E);
-  end;
+  Result:=Lzma2Dec_Allocate(FNative,Prop,FAllocator);
+  FAllocated:=FNative.Decoder.Probs<>nil;
+  if Result=SZ_OK then Init;
 end;
-
 procedure TLzmaSdkLzma2Dec.Init;
 begin
-  SetLength(FDecoded, 0);
-  FDecodedPos := 0;
-  FDecodedReady := False;
-  SetLength(FDic, 0);
-  FDicPos := 0;
-  SetLength(FInputBuffer, 0);
+  Lzma2Dec_Init(FNative);FParser:=TLzma2SdkParser.Create;
 end;
-
-function TLzmaSdkLzma2Dec.EnsureDecoded(const Src; var SrcLen: SizeT;
-  const FinishMode: TLzmaFinishMode): SRes;
-var
-  ConsumedBytes: UInt64;
-  Input: TBytesStream;
-  OldInputLen: SizeT;
-  Options: TLzma2Options;
-  Output: TMemoryStream;
-  PrefixDecoded: TBytes;
-  PrefixFinished: Boolean;
-  PrefixConsumedBytes: UInt64;
-  SourceLen: SizeT;
-  ProducedBytes: UInt64;
-
-  function StoreDecodedOutput(const Source: TMemoryStream): SRes;
-  var
-    NewDecoded: TBytes;
-  begin
-    Result := CopyStreamBytes(Source, NewDecoded);
-    if Result <> SZ_OK then
-      Exit;
-    FDecoded := NewDecoded;
-    if FDecodedPos > SizeT(Length(FDecoded)) then
-      FDecodedPos := SizeT(Length(FDecoded));
-    Result := SZ_OK;
-  end;
-
-  function TryDecodeCopyOnlyPrefix(out Decoded: TBytes; out ParsedBytes: UInt64;
-    out Finished: Boolean): Boolean;
-  var
-    Available: NativeInt;
-    Control: Byte;
-    CopyCount: NativeInt;
-    OutputOffset: NativeInt;
-    Pos: NativeInt;
-    ToCopy: NativeInt;
-  begin
-    Result := True;
-    SetLength(Decoded, 0);
-    ParsedBytes := UInt64(Length(FInputBuffer));
-    Finished := False;
-    Pos := 0;
-    while Pos < Length(FInputBuffer) do
-    begin
-      Control := FInputBuffer[Pos];
-      Inc(Pos);
-      if Control = LZMA2_CONTROL_EOF then
-      begin
-        ParsedBytes := UInt64(Pos);
-        Finished := True;
-        Exit(True);
-      end;
-      if (Control <> LZMA2_CONTROL_COPY_RESET_DIC) and (Control <> LZMA2_CONTROL_COPY_NO_RESET) then
-        Exit(False);
-      if Pos + 2 > Length(FInputBuffer) then
-      begin
-        ParsedBytes := UInt64(Length(FInputBuffer));
-        Exit(True);
-      end;
-
-      CopyCount := ((Integer(FInputBuffer[Pos]) shl 8) or Integer(FInputBuffer[Pos + 1])) + 1;
-      Inc(Pos, 2);
-      Available := Length(FInputBuffer) - Pos;
-      ToCopy := CopyCount;
-      if ToCopy > Available then
-        ToCopy := Available;
-      if ToCopy > 0 then
-      begin
-        OutputOffset := Length(Decoded);
-        SetLength(Decoded, OutputOffset + ToCopy);
-        Move(FInputBuffer[Pos], Decoded[OutputOffset], ToCopy);
-        Inc(Pos, ToCopy);
-      end;
-      if ToCopy < CopyCount then
-      begin
-        ParsedBytes := UInt64(Length(FInputBuffer));
-        Exit(True);
-      end;
-    end;
-  end;
+function TLzmaSdkLzma2Dec.GetDicPos:SizeT;
+begin Result:=FNative.Decoder.DicPos;end;
+procedure TLzmaSdkLzma2Dec.SetDicPos(const Value:SizeT);
 begin
-  SourceLen := SrcLen;
-  SrcLen := 0;
-
-  if FDecodedReady then
-    Exit(SZ_OK);
-  if not FAllocated then
-    Exit(SZ_ERROR_PARAM);
-
-  Result := AppendDecodeInput(FInputBuffer, Src, SourceLen, OldInputLen);
-  if Result <> SZ_OK then
-    Exit;
-
-  try
-    if TryDecodeCopyOnlyPrefix(PrefixDecoded, PrefixConsumedBytes, PrefixFinished) then
-    begin
-      if PrefixConsumedBytes > UInt64(High(NativeInt)) then
-        Exit(SZ_ERROR_MEM);
-      SrcLen := ConsumedFromCurrentCall(SizeT(PrefixConsumedBytes), OldInputLen, SourceLen);
-      if SizeT(PrefixConsumedBytes) < SizeT(Length(FInputBuffer)) then
-        SetLength(FInputBuffer, NativeInt(PrefixConsumedBytes));
-      FDecoded := PrefixDecoded;
-      if FDecodedPos > SizeT(Length(FDecoded)) then
-        FDecodedPos := SizeT(Length(FDecoded));
-      FDecodedReady := PrefixFinished;
-      Exit(SZ_OK);
-    end;
-
-    Input := TBytesStream.Create(FInputBuffer);
-    Output := TMemoryStream.Create;
-    try
-      Options := TLzma2.DefaultOptions;
-      Options.Container := lcRawLzma2;
-      Options.DictionarySize := FDictionarySize;
-      Options.ThreadCount := 1;
-      try
-        TLzma2Decoder.DecodeRawEmbedded(Input, Output, Options, ConsumedBytes, ProducedBytes);
-      except
-        on E: Exception do
-        begin
-          Result := ExceptionToSRes(E);
-          if Result <> SZ_ERROR_INPUT_EOF then
-            raise;
-          SrcLen := SourceLen;
-          Result := StoreDecodedOutput(Output);
-          if Result <> SZ_OK then
-            Exit;
-          FDecodedReady := False;
-          Exit(SZ_OK);
-        end;
-      end;
-      if ConsumedBytes > UInt64(High(NativeInt)) then
-        Exit(SZ_ERROR_MEM);
-      SrcLen := ConsumedFromCurrentCall(SizeT(ConsumedBytes), OldInputLen, SourceLen);
-      if SizeT(ConsumedBytes) < SizeT(Length(FInputBuffer)) then
-        SetLength(FInputBuffer, NativeInt(ConsumedBytes));
-
-      Result := StoreDecodedOutput(Output);
-      if Result <> SZ_OK then
-        Exit;
-      FDecodedReady := True;
-      Result := SZ_OK;
-    finally
-      Output.Free;
-      Input.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      if ExceptionToSRes(E) = SZ_ERROR_INPUT_EOF then
-        SrcLen := SourceLen;
-      Result := ExceptionToSRes(E);
-    end;
-  end;
+  if Value>FNative.Decoder.DicBufSize then RaiseLzmaError(SZ_ERROR_PARAM,'Dictionary position exceeds allocated storage');
+  FNative.Decoder.DicPos:=Value;
 end;
-
-procedure TLzmaSdkLzma2Dec.SetDecodeStatus(out Status: TLzmaStatus);
+function TLzmaSdkLzma2Dec.DecodeToBuf(var Dest;var DestLen:SizeT;const Src;var SrcLen:SizeT;
+  const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
 begin
-  if (not FDecodedReady) and (FDecodedPos < SizeT(Length(FDecoded))) then
-    Status := lsNotFinished
-  else if not FDecodedReady then
-    Status := lsNeedsMoreInput
-  else if FDecodedPos >= SizeT(Length(FDecoded)) then
-    Status := lsFinishedWithMark
-  else
-    Status := lsNotFinished;
+  if not FAllocated then begin DestLen:=0;SrcLen:=0;Status:=lsNotSpecified;Exit(SZ_ERROR_PARAM);end;
+  Result:=Lzma2Dec_DecodeToBuf(FNative,@Dest,DestLen,@Src,SrcLen,FinishMode,Status);
 end;
-
-function TLzmaSdkLzma2Dec.DecodeToBuf(var Dest; var DestLen: SizeT; const Src;
-  var SrcLen: SizeT; const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-var
-  Available: SizeT;
-  ToCopy: SizeT;
+function TLzmaSdkLzma2Dec.DecodeToDic(const DicLimit:SizeT;const Src;var SrcLen:SizeT;
+  const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
 begin
-  Status := lsNotSpecified;
-  Result := EnsureDecoded(Src, SrcLen, FinishMode);
-  if Result <> SZ_OK then
-  begin
-    if Result = SZ_ERROR_INPUT_EOF then
-    begin
-      Status := lsNeedsMoreInput;
-      Result := SZ_OK;
-      DestLen := 0;
-    end
-    else
-      Status := lsNotFinished;
-    Exit;
-  end;
-
-  Available := SizeT(Length(FDecoded)) - FDecodedPos;
-  ToCopy := DestLen;
-  if ToCopy > Available then
-    ToCopy := Available;
-  if ToCopy <> 0 then
-    Move(FDecoded[NativeInt(FDecodedPos)], Dest, NativeInt(ToCopy));
-  Inc(FDecodedPos, ToCopy);
-  DestLen := ToCopy;
-  SetDecodeStatus(Status);
+  if not FAllocated then begin SrcLen:=0;Status:=lsNotSpecified;Exit(SZ_ERROR_PARAM);end;
+  Result:=Lzma2Dec_DecodeToDic(FNative,DicLimit,@Src,SrcLen,FinishMode,Status);
 end;
-
-function TLzmaSdkLzma2Dec.DecodeToDic(const DicLimit: SizeT; const Src; var SrcLen: SizeT;
-  const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-var
-  Available: SizeT;
-  Capacity: SizeT;
-  ToCopy: SizeT;
+function TLzmaSdkLzma2Dec.Parse(const Src;var SrcLen:SizeT;
+  const FinishMode:TLzmaFinishMode;out Status:TLzmaStatus):SRes;
+var InputSize,Used:SizeT;Cursor:PByte;Parsed:TLzma2ParseStatus;
 begin
-  Status := lsNotSpecified;
-  Result := EnsureDecoded(Src, SrcLen, FinishMode);
-  if Result <> SZ_OK then
-  begin
-    if Result = SZ_ERROR_INPUT_EOF then
-    begin
-      Status := lsNeedsMoreInput;
-      Result := SZ_OK;
-    end
-    else
-      Status := lsNotFinished;
-    Exit;
-  end;
-
-  if FDicPos >= DicLimit then
-    ToCopy := 0
-  else
-  begin
-    Capacity := DicLimit - FDicPos;
-    Available := SizeT(Length(FDecoded)) - FDecodedPos;
-    ToCopy := Capacity;
-    if ToCopy > Available then
-      ToCopy := Available;
-  end;
-
-  if ToCopy <> 0 then
-  begin
-    if FDicPos + ToCopy > SizeT(High(NativeInt)) then
-      Exit(SZ_ERROR_MEM);
-    if SizeT(Length(FDic)) < FDicPos + ToCopy then
-      SetLength(FDic, NativeInt(FDicPos + ToCopy));
-    Move(FDecoded[NativeInt(FDecodedPos)], FDic[NativeInt(FDicPos)], NativeInt(ToCopy));
-    Inc(FDicPos, ToCopy);
-    Inc(FDecodedPos, ToCopy);
-  end;
-  SetDecodeStatus(Status);
+  InputSize:=SrcLen;SrcLen:=0;Status:=lsNotSpecified;Result:=SZ_OK;
+  if not FAllocated then Exit(SZ_ERROR_PARAM);
+  Cursor:=@Src;
+  repeat
+    Used:=InputSize-SrcLen;
+    Parsed:=FParser.Parse(High(SizeT),Cursor,Used,FinishMode=lfmEnd);
+    Inc(Cursor,Used);Inc(SrcLen,Used);
+  until (Parsed<>lpsNewBlock) and (Parsed<>lpsNewChunk);
+  case Parsed of
+    lpsFinishedWithMark:Status:=lsFinishedWithMark;
+    lpsNotFinished:Status:=lsNotFinished;
+    lpsNeedsMoreInput:Status:=lsNeedsMoreInput;
+  else Result:=SZ_ERROR_DATA;Status:=lsNotFinished;end;
 end;
-
-function TLzmaSdkLzma2Dec.Parse(const Src; var SrcLen: SizeT;
-  const FinishMode: TLzmaFinishMode; out Status: TLzmaStatus): SRes;
-var
-  ConsumedBytes: UInt64;
-  OldInputLen: SizeT;
-  SourceLen: SizeT;
+function TLzmaSdkLzma2Dec.DicData:TBytes;
 begin
-  Status := lsNotSpecified;
-  SourceLen := SrcLen;
-  SrcLen := 0;
-
-  if not FAllocated then
-    Exit(SZ_ERROR_PARAM);
-
-  Result := AppendDecodeInput(FInputBuffer, Src, SourceLen, OldInputLen);
-  if Result <> SZ_OK then
-    Exit;
-
-  try
-    Result := ParseRawLzma2Embedded(FInputBuffer, ConsumedBytes);
-    if Result <> SZ_OK then
-      Exit;
-    if ConsumedBytes > UInt64(High(NativeInt)) then
-      Exit(SZ_ERROR_MEM);
-    SrcLen := ConsumedFromCurrentCall(SizeT(ConsumedBytes), OldInputLen, SourceLen);
-    SetLength(FInputBuffer, 0);
-    SetLength(FDecoded, 0);
-    FDecodedPos := 0;
-    FDecodedReady := False;
-    Status := lsFinishedWithMark;
-  except
-    on E: Exception do
-    begin
-      Result := ExceptionToSRes(E);
-    end
-  end;
-
-  if Result = SZ_ERROR_INPUT_EOF then
-  begin
-    SrcLen := SourceLen;
-    Status := lsNeedsMoreInput;
-    Result := SZ_OK;
-  end
-  else if Result <> SZ_OK then
-    Status := lsNotFinished;
-end;
-
-function TLzmaSdkLzma2Dec.DicData: TBytes;
-begin
-  SetLength(Result, NativeInt(FDicPos));
-  if FDicPos <> 0 then
-    Move(FDic[0], Result[0], NativeInt(FDicPos));
+  SetLength(Result,NativeInt(FNative.Decoder.DicPos));
+  if FNative.Decoder.DicPos<>0 then Move(FNative.Decoder.Dic^,Result[0],FNative.Decoder.DicPos);
 end;
 
 end.

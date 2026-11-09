@@ -1,2 +1,29 @@
 MAINICON ICON "Lzma2_GUI.ico"
+GUI_CATALOG RCDATA "..\assets\gui.json"
 1 24 "Lzma2_GUI.exe.manifest"
+
+1 VERSIONINFO
+FILEVERSION 26,6,0,0
+PRODUCTVERSION 26,6,0,0
+FILEOS 0x00040004L
+FILETYPE 0x00000001L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "ansidium\0"
+      VALUE "FileDescription", "LZMA2 archiver and benchmark\0"
+      VALUE "FileVersion", "26.06.0.0\0"
+      VALUE "InternalName", "Lzma2_GUI\0"
+      VALUE "LegalCopyright", "Copyright (c) 2026 ansidium\0"
+      VALUE "OriginalFilename", "Lzma2_GUI.exe\0"
+      VALUE "ProductName", "LZMA2 Delphi\0"
+      VALUE "ProductVersion", "26.06\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

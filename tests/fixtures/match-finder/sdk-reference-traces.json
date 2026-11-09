@@ -1,6 +1,16 @@
 {
   "schemaVersion": 1,
   "sdk": "LZMA SDK 26.01 C/LzFind.c reference trace",
+  "sourceProvenance": {
+    "originalSdkVersion": "26.01",
+    "originalSourceCommit": "8c63d71ff886bda90c86db28466287f977374237",
+    "sourcePath": "C/LzFind.c",
+    "sourceGitBlobSha1": "330bc17293153e3d4f99bdd21c4833bd8fc01cde",
+    "sourceSha256": "546a2732ef38443ff308f52fb48f9d910886de2a5331622657894617f17efd35",
+    "verifiedSourceCommit": "d3296e39e1f1f92c7b41c0c3848e65640428d42d",
+    "verifiedCompatibleSdkVersions": [ "26.01", "26.05", "26.06" ],
+    "verification": "C/LzFind.c has the identical Git blob in the original and verified SDK tags; the original trace label and expected values are retained."
+  },
   "traces": [
     {
       "id": "hc4-basic-two-heads",

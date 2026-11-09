@@ -80,19 +80,35 @@ function Assert-ScriptContracts {
   $generateFixtures = Get-Content -LiteralPath (Join-Path $root 'tests\generate-fixtures.ps1') -Raw
   $qaTools = Get-Content -LiteralPath (Join-Path $root 'tests\qa-tools.ps1') -Raw
   $qaToolsConfig = Get-Content -LiteralPath (Join-Path $root 'tests\qa-tools.json') -Raw
+  $qaToolPins = $qaToolsConfig | ConvertFrom-Json
 
   Assert-TextContains 'runtime executable audit' $validator '7zr'
-  Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"version": "26.01"'
+  foreach ($referenceName in @('lzmaSdk', 'xzUtils')) {
+    $reference = $qaToolPins.references.PSObject.Properties[$referenceName].Value
+    if ([string]$reference.version -notmatch '^\d+(?:\.\d+)+$' -or
+        [string]$reference.archiveSha256 -notmatch '^[a-fA-F0-9]{64}$') {
+      throw "Pinned QA reference $referenceName must include a version and archive SHA-256."
+    }
+    $archiveUri = [Uri]([string]$reference.archiveUrl)
+    if (-not $archiveUri.IsAbsoluteUri -or $archiveUri.Scheme -ne 'https' -or
+        [string]::IsNullOrWhiteSpace([string]$reference.archiveFile) -or
+        [IO.Path]::GetFileName($archiveUri.AbsolutePath) -ne [string]$reference.archiveFile) {
+      throw "Pinned QA reference $referenceName must name its HTTPS archive consistently."
+    }
+  }
+  foreach ($toolId in @('sevenZip', 'lzma', 'xz')) {
+    $toolPin = $qaToolPins.tools.PSObject.Properties[$toolId].Value
+    $reference = $qaToolPins.references.PSObject.Properties[[string]$toolPin.sourceRef].Value
+    if (-not $reference -or [string]$toolPin.pinMode -ne 'archive-sha256' -or
+        [string]$toolPin.expectedVersionRef -ne [string]$toolPin.sourceRef -or
+        ([string]$toolPin.versionPattern).IndexOf([Regex]::Escape([string]$reference.version), [StringComparison]::Ordinal) -lt 0) {
+      throw "Pinned QA tool $toolId must derive its version and archive pin from its source reference."
+    }
+  }
   Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"displayName": "XZ Utils'
   Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"source": "XZ Utils official Windows binaries"'
-  Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"archiveSha256": "b860f17f9df3c0524dd2ef2c639ab5e43ad0006b77b8f7bb6d191bf528536885"'
-  Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"archiveSha256": "8d0048ee51177b11ef1613959c2a268c951f4e7f6fb3706e681e00e34bb6d5e3"'
-  Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"pinMode": "archive-sha256"'
   Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"defaultRelativePathTemplate": "xz-utils-{version}\\bin_x86-64\\xz.exe"'
   Assert-TextContains 'pinned QA tool config' $qaToolsConfig '"pathPatternTemplate": "(?i)\\\\xz-utils-{version}\\\\bin_x86-64\\\\xz\\.exe$"'
-  Assert-TextContains 'pinned QA tool bootstrap' $qaToolsConfig 'https://www.7-zip.org/a/lzma2601.7z'
-  Assert-TextContains 'pinned QA tool bootstrap' $qaToolsConfig '"archiveUrl": "https://github.com/tukaani-project/xz/releases/download/'
-  Assert-TextContains 'pinned QA tool bootstrap' $qaToolsConfig '"archiveFile": "xz-'
   Assert-TextContains 'pinned QA tool bootstrap' $qaTools 'Pinned LZMA SDK archive hash mismatch'
   Assert-TextContains 'pinned QA tool bootstrap' $qaTools 'Pinned XZ Utils Windows archive hash mismatch'
   Assert-TextContains 'pinned QA tool bootstrap' $qaTools 'Install-LzmaSdkQATools'
@@ -136,9 +152,15 @@ function Assert-ScriptContracts {
   Assert-TextContains 'fixed SSD work root validation' $validator '[string]$physicalDisk.MediaType -ne ''SSD'''
   Assert-TextContains 'quick performance validation contract' $validator '$ShouldValidatePerformanceArtifacts'
   Assert-TextContains 'quick performance validation contract' $validator 'unexpected performance artifact outside data-only allowlist'
-  Assert-TextContains 'performance optimization plan location' $runPerformance 'artifacts/ci/optimization-plan.md'
-  Assert-TextDoesNotContain 'performance optimization plan location' $runPerformance 'artifacts/perf/optimization-plan.md'
-  Assert-TextDoesNotContain 'performance optimization plan allowlist' $validator 'artifacts/perf/optimization-plan.md'
+  foreach ($artifactName in @('lzma2-benchmark.csv', 'lzma2-benchmark.json',
+      'lzma2-benchmark.samples.csv', 'lzma2-benchmark.summary.json')) {
+    Assert-TextContains 'benchmark data artifact writer' $runPerformance $artifactName
+    Assert-TextContains 'benchmark data artifact validation' $validator $artifactName
+  }
+  foreach ($fieldName in @('elapsedSamplesMs', 'throughputSamplesMiBs', 'numHashBytes')) {
+    Assert-TextContains 'benchmark sample diagnostics writer' $runPerformance $fieldName
+    Assert-TextContains 'benchmark sample diagnostics validation' $validator $fieldName
+  }
   Assert-TextContains 'non-release image artifact validation' $validator 'artifacts/perf/*.png'
   Assert-TextContains 'non-release image artifact validation' $validator 'artifacts/perf/*.svg'
   Assert-TextContains 'positive docs validation' $validator 'Assert-PositiveDocumentationContracts'
@@ -252,7 +274,7 @@ function Restore-BackupFile([string]$BackupPath, [string]$TargetPath) {
   Move-Item -LiteralPath $BackupPath -Destination $TargetPath -Force
 }
 
-function Invoke-NegativeCase([string]$Name, [scriptblock]$MutateRows, [string]$ExpectedPattern) {
+function Invoke-PerformanceRowsCase([string]$Name, [scriptblock]$MutateRows, [string]$ExpectedPattern, [switch]$ExpectSuccess) {
   if (-not $script:HasPerformanceArtifacts) {
     return
   }
@@ -275,16 +297,26 @@ function Invoke-NegativeCase([string]$Name, [scriptblock]$MutateRows, [string]$E
     }
 
     $result = Invoke-Validator
-    if ($result.ExitCode -eq 0) {
-      throw "Artifact validator unexpectedly accepted negative case: $Name"
+    if ($ExpectSuccess) {
+      if ($result.ExitCode -ne 0) {
+        throw "Artifact validator unexpectedly rejected positive case: $Name`n$($result.Output)"
+      }
+    } else {
+      if ($result.ExitCode -eq 0) {
+        throw "Artifact validator unexpectedly accepted negative case: $Name"
+      }
+      Assert-ValidatorFailureMessage $Name $result.Output $ExpectedPattern
     }
-    Assert-ValidatorFailureMessage $Name $result.Output $ExpectedPattern
   }
   finally {
     Restore-BackupFile $backupPath $perfJsonPath
     Restore-BackupFile $perfSummaryBackupPath $perfSummaryPath
     Restore-BackupFile $ciManifestBackupPath $ciManifestPath
   }
+}
+
+function Invoke-NegativeCase([string]$Name, [scriptblock]$MutateRows, [string]$ExpectedPattern) {
+  Invoke-PerformanceRowsCase -Name $Name -MutateRows $MutateRows -ExpectedPattern $ExpectedPattern
 }
 
 function Invoke-MissingArtifactNegativeCase([string]$Name, [string]$ArtifactPath, [string]$ArtifactBackupPath, [string]$ExpectedPattern) {
@@ -755,6 +787,40 @@ function Invoke-TrackedTreeNegativeCase([string]$Name, [string]$RelativePath, [s
   }
 }
 
+# Exercise the existing validator with retained data artifacts; no codec is invoked.
+# Keep the displayed ratio equal deliberately: rounded ratio text cannot decide byte parity.
+if ($RequireExternalTools -and $script:HasPerformanceArtifacts) {
+  foreach ($byteDelta in @(-1, 0, 1)) {
+    Invoke-PerformanceRowsCase -Name "SDK smoke archive byte boundary $byteDelta" -MutateRows {
+      param($Rows)
+      $nativeRows = @($Rows | Where-Object {
+        $_.tool -eq 'delphi-native' -and $_.operation -eq 'encode' -and
+        $_.mode -eq 'xz-level1' -and [int]$_.threads -eq 1 -and
+        $_.check -eq 'crc32' -and $_.baselineTool -like '7zr-sdk*encode*'
+      })
+      if ($nativeRows.Count -ne 1) { throw 'Expected one SDK-comparable smoke encode candidate.' }
+      $native = $nativeRows[0]
+      $sdkRows = @($Rows | Where-Object {
+        $_.tool -eq '7zr-sdk' -and $_.operation -eq 'encode' -and
+        $_.mode -eq 'xz-lzma2-level1' -and [int]$_.threads -eq 1 -and
+        $_.inputName -eq $native.inputName -and $_.inputSha256 -eq $native.inputSha256 -and
+        [int64]$_.inputBytes -eq [int64]$native.inputBytes -and
+        [int]$_.level -eq [int]$native.level -and
+        [int64]$_.dictionary -eq [int64]$native.dictionary -and
+        $_.container -eq $native.container -and $_.codec -eq $native.codec -and
+        $_.check -eq $native.check -and [int]$_.lc -eq [int]$native.lc -and
+        [int]$_.lp -eq [int]$native.lp -and [int]$_.pb -eq [int]$native.pb
+      })
+      if ($sdkRows.Count -ne 1 -or [int64]$sdkRows[0].outputBytes -lt 2) {
+        throw 'Expected one aligned SDK smoke reference with at least two archive bytes.'
+      }
+      $native.outputBytes = [int64]$sdkRows[0].outputBytes + $byteDelta
+      $native.compressionRatio = $sdkRows[0].compressionRatio
+      return $Rows
+    } -ExpectedPattern 'Aligned SDK smoke encode outputBytes exceeds SDK baseline outputBytes' -ExpectSuccess:($byteDelta -le 0)
+  }
+}
+
 Invoke-JUnitNegativeCase 'missing raw LZMA end-marker JUnit evidence' `
   'RawLzmaEndMarkerRoundTripsUnknownSize' 'missing required test case'
 
@@ -1048,9 +1114,6 @@ Invoke-JUnitNegativeCase 'missing periodic phase-reset subchunk fast-path JUnit 
 
 Invoke-JUnitNegativeCase 'missing fast-lzma2 benchmark CLI contract JUnit evidence' `
   'FastLzma2StyleBenchmarkContractIsDocumented' 'missing required test case'
-
-Invoke-JUnitNegativeCase 'missing data-only benchmark writer contract JUnit evidence' `
-  'PerformanceRunnerWritesDataOnlyBenchmarkArtifacts' 'missing required test case'
 
 Invoke-JUnitNegativeCase 'missing data-only artifact validator contract JUnit evidence' `
   'PerformanceValidatorEnforcesDataOnlyArtifacts' 'missing required test case'
@@ -1704,7 +1767,7 @@ if (-not $RequireReleaseCorpus) {
     $Manifest.configuration.mode = 'quick'
     $Manifest.commands.runPerformance = 'quick mode skips tests/run-performance.ps1'
     $Manifest.configuration | Add-Member -NotePropertyName dunitxCategoryArgs `
-      -NotePropertyValue @('--exclude:perf-release,soak,fuzz') -Force
+      -NotePropertyValue @('--exclude:perf_release,soak,fuzz') -Force
     return $Manifest
   } 'quick DUnitX category arguments'
 
@@ -1713,7 +1776,7 @@ if (-not $RequireReleaseCorpus) {
     $Manifest.configuration.mode = 'quick'
     $Manifest.commands.runPerformance = 'quick mode skips tests/run-performance.ps1'
     $Manifest.configuration | Add-Member -NotePropertyName dunitxCategoryArgs `
-      -NotePropertyValue @('--include:unit,container,compat,perf-smoke') -Force
+      -NotePropertyValue @('--include:unit,container,compat,perf_smoke') -Force
     return $Manifest
   } 'quick DUnitX category arguments'
 }

@@ -1,4 +1,4 @@
-unit Lzma.SevenZip;
+﻿unit Lzma.SevenZip;
 
 interface
 
@@ -55,15 +55,18 @@ type
       const Progress: TLzma2ProgressEvent = nil); static;
     class procedure Decode(Source: TStream; Destination: TStream; const Options: TLzma2Options;
       const Progress: TLzma2ProgressEvent = nil); static;
-    class function List(Source: TStream): TArray<TLzma7zEntry>; static;
+    class function List(Source: TStream): TArray<TLzma7zEntry>; overload; static;
+    class function List(Source: TStream; const Options: TLzma2Options): TArray<TLzma7zEntry>; overload; static;
     class procedure ExtractAll(Source: TStream; const OpenEntry: TLzma7zOpenEntryStream;
       const Options: TLzma2Options; const Progress: TLzma2ProgressEvent = nil); static;
-    class function ReadSingleFileName(Source: TStream): string; static;
+    class function ReadSingleFileName(Source: TStream): string; overload; static;
+    class function ReadSingleFileName(Source: TStream; const Options: TLzma2Options): string; overload; static;
   end;
 
 implementation
 
 uses
+  Lzma.Alloc,
   Lzma.Decoder,
   Lzma.Errors,
   Lzma.Lzma,
@@ -106,6 +109,14 @@ const
     ($37, $7A, $BC, $AF, $27, $1C);
 
 type
+  TSevenZipMemoryBudget = record
+    Limit: UInt64;
+    Used: UInt64;
+    procedure Reserve(const Bytes: UInt64);
+    procedure Release(const Bytes: UInt64);
+    function PrepareResize(const OldBytes, NewBytes: UInt64): UInt64;
+  end;
+
   TSevenZipCoderMethod = (szcmNone, szcmLzma, szcmLzma2);
 
   TSevenZipDigestVector = record
@@ -188,9 +199,13 @@ type
     FBase: TStream;
     FCrc: UInt32;
     FBytesWritten: UInt64;
+    FBounded: Boolean;
+    FSizeExceeded: Boolean;
+    FWriteLimit: UInt64;
     function GetDigest: UInt32;
   public
-    constructor Create(const Base: TStream);
+    constructor Create(const Base: TStream; const Bounded: Boolean = False;
+      const WriteLimit: UInt64 = 0);
     function Read(var Buffer; Count: Longint): Longint; override;
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
@@ -198,6 +213,7 @@ type
     function Read(var Buffer; Count: NativeInt): NativeInt; overload; override;
     function Write(const Buffer; Count: NativeInt): NativeInt; overload; override;
 {$ENDIF}
+    property SizeExceeded: Boolean read FSizeExceeded;
     property BytesWritten: UInt64 read FBytesWritten;
     property Digest: UInt32 read GetDigest;
   end;
@@ -221,6 +237,44 @@ type
     property BytesRead: UInt64 read FBytesRead;
     property Digest: UInt32 read GetDigest;
   end;
+
+procedure TSevenZipMemoryBudget.Reserve(const Bytes: UInt64);
+var
+  Required: UInt64;
+begin
+  if Limit = 0 then Exit;
+  Required := CheckedMemoryAdd(Used, Bytes);
+  ValidateMemoryLimit(Required, Limit);
+  Used := Required;
+end;
+
+procedure TSevenZipMemoryBudget.Release(const Bytes: UInt64);
+begin
+  if Limit = 0 then Exit;
+  if Bytes > Used then
+    RaiseLzmaError(SZ_ERROR_MEM, '7z memory ownership accounting underflow');
+  Dec(Used, Bytes);
+end;
+
+function TSevenZipMemoryBudget.PrepareResize(const OldBytes, NewBytes: UInt64): UInt64;
+begin
+  if (Limit = 0) or (OldBytes = NewBytes) then Exit(0);
+  Reserve(NewBytes);
+  Result := OldBytes;
+end;
+
+function SevenZipNameMemory(const Name: string): UInt64;
+begin
+  if Length(Name) = 0 then Exit(0);
+  Result := CheckedMemoryMultiply(CheckedMemoryAdd(UInt64(Length(Name)), 1), SizeOf(Char));
+end;
+
+function SevenZipDigestMemory(const Digest: TSevenZipDigestVector): UInt64;
+begin
+  Result := CheckedMemoryAdd(
+    CheckedMemoryMultiply(UInt64(Length(Digest.Defined)), SizeOf(Boolean)),
+    CheckedMemoryMultiply(UInt64(Length(Digest.Values)), SizeOf(UInt32)));
+end;
 
 procedure AppendByte(var Target: TBytes; const Value: Byte);
 var
@@ -356,12 +410,13 @@ begin
   Inc(Offset, NativeUInt(Count));
 end;
 
-function ReadHeaderBytes(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64): TBytes;
+function ReadHeaderBytes(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64; var Budget: TSevenZipMemoryBudget): TBytes;
 begin
   if Count > UInt64(High(Integer)) then
     RaiseLzmaError(SZ_ERROR_MEM, '7z property is too large');
   if Count > UInt64(Length(Data)) - UInt64(Offset) then
     RaiseLzmaError(SZ_ERROR_INPUT_EOF, 'Unexpected end of 7z property');
+  Budget.Reserve(Count);
   SetLength(Result, Integer(Count));
   if Count <> 0 then
     Move(Data[Offset], Result[0], Integer(Count));
@@ -387,12 +442,12 @@ begin
   Result := (Bits[Integer(ByteIndex)] and ($80 shr BitIndex)) <> 0;
 end;
 
-function ReadPlainBitVector(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64): TBytes;
+function ReadPlainBitVector(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64; var Budget: TSevenZipMemoryBudget): TBytes;
 begin
-  Result := ReadHeaderBytes(Data, Offset, SevenZipBitVectorByteCount(Count));
+  Result := ReadHeaderBytes(Data, Offset, SevenZipBitVectorByteCount(Count), Budget);
 end;
 
-function ReadDefinedBitVector(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64): TBytes;
+function ReadDefinedBitVector(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64; var Budget: TSevenZipMemoryBudget): TBytes;
 var
   AllDefined: Byte;
   ByteCount: UInt64;
@@ -404,8 +459,9 @@ begin
   if ByteCount > UInt64(High(Integer)) then
     RaiseLzmaError(SZ_ERROR_MEM, '7z bit vector is too large');
   if AllDefined = 0 then
-    Exit(ReadHeaderBytes(Data, Offset, ByteCount));
+    Exit(ReadHeaderBytes(Data, Offset, ByteCount, Budget));
 
+  Budget.Reserve(ByteCount);
   SetLength(Result, Integer(ByteCount));
   for I := 0 to High(Result) do
     Result[I] := $FF;
@@ -427,7 +483,7 @@ begin
 end;
 
 procedure ReadDigestVector(const Data: TBytes; var Offset: NativeUInt; const Count: UInt64;
-  out Digest: TSevenZipDigestVector);
+  out Digest: TSevenZipDigestVector; var Budget: TSevenZipMemoryBudget);
 var
   AllDefined: Byte;
   Bits: Byte;
@@ -436,6 +492,7 @@ begin
   Bits := 0;
   if Count > UInt64(High(Integer)) then
     RaiseLzmaError(SZ_ERROR_MEM, '7z digest vector is too large');
+  Budget.Reserve(CheckedMemoryMultiply(Count, SizeOf(Boolean) + SizeOf(UInt32)));
   SetLength(Digest.Defined, Integer(Count));
   SetLength(Digest.Values, Integer(Count));
   if Count = 0 then
@@ -497,15 +554,17 @@ begin
 end;
 
 function DecodeSevenZipNames(const Data: TBytes; var Offset: NativeUInt; const Size: UInt64;
-  const Count: UInt64): TArray<string>;
+  const Count: UInt64; var Budget: TSevenZipMemoryBudget): TArray<string>;
 var
   EndOffset: NativeUInt;
   FileIndex: Integer;
   Code: UInt16;
+  StartOffset, CharacterCount: NativeUInt;
   FoundTerminator: Boolean;
 begin
   if Count > UInt64(High(Integer)) then
     RaiseLzmaError(SZ_ERROR_MEM, '7z file count is too large');
+  Budget.Reserve(CheckedMemoryMultiply(Count, SizeOf(string)));
   SetLength(Result, Integer(Count));
   if Size = 0 then
     RaiseLzmaError(SZ_ERROR_DATA, '7z name property is empty');
@@ -519,7 +578,7 @@ begin
 
   for FileIndex := 0 to High(Result) do
   begin
-    Result[FileIndex] := '';
+    StartOffset := Offset;
     FoundTerminator := False;
     while Offset + 1 < EndOffset do
     begin
@@ -530,10 +589,20 @@ begin
         FoundTerminator := True;
         Break;
       end;
-      Result[FileIndex] := Result[FileIndex] + Char(Code);
+
     end;
     if not FoundTerminator then
       RaiseLzmaError(SZ_ERROR_DATA, '7z name property is missing a null terminator');
+    CharacterCount := (Offset - StartOffset) div SizeOf(Char) - 1;
+    if CharacterCount > NativeUInt(High(Integer)) then
+      RaiseLzmaError(SZ_ERROR_MEM, '7z file name exceeds string capacity');
+    if CharacterCount <> 0 then
+    begin
+      Budget.Reserve(CheckedMemoryMultiply(CheckedMemoryAdd(UInt64(CharacterCount), 1), SizeOf(Char)));
+      SetLength(Result[FileIndex], Integer(CharacterCount));
+      Move(Data[StartOffset], PChar(Result[FileIndex])^,
+        NativeInt(CharacterCount * SizeOf(Char)));
+    end;
   end;
   if Offset <> EndOffset then
     RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes in 7z name property');
@@ -888,7 +957,7 @@ begin
   AppendByte(Result, SEVENZ_NID_END);
 end;
 
-function ParseFolder(const Data: TBytes; var Offset: NativeUInt): TSevenZipFolderInfo;
+function ParseFolder(const Data: TBytes; var Offset: NativeUInt; var Budget: TSevenZipMemoryBudget): TSevenZipFolderInfo;
 var
   NumCoders: UInt64;
   Flags: Byte;
@@ -900,164 +969,194 @@ var
   PropsSize: UInt64;
   Props: TLzmaProps;
 begin
-  Result := Default(TSevenZipFolderInfo);
-  Result.PackStreamIndex := -1;
-  Result.DictionaryProperty := High(Byte);
-  Result.SubStreamCount := 1;
-  NumCoders := ReadSevenZipNumber(Data, Offset);
-  if NumCoders <> 1 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only single-coder 7z folders are supported');
+  try
+    Result := Default(TSevenZipFolderInfo);
+    Result.PackStreamIndex := -1;
+    Result.DictionaryProperty := High(Byte);
+    Result.SubStreamCount := 1;
+    NumCoders := ReadSevenZipNumber(Data, Offset);
+    if NumCoders <> 1 then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only single-coder 7z folders are supported');
 
-  Flags := ReadHeaderByte(Data, Offset);
-  if (Flags and $80) <> 0 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Alternative 7z methods are not supported');
-  if (Flags and $40) <> 0 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Reserved 7z coder flags are not supported');
+    Flags := ReadHeaderByte(Data, Offset);
+    if (Flags and $80) <> 0 then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Alternative 7z methods are not supported');
+    if (Flags and $40) <> 0 then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Reserved 7z coder flags are not supported');
 
-  IdSize := Flags and $0F;
-  if IdSize <= 0 then
-    RaiseLzmaError(SZ_ERROR_DATA, '7z coder method id is empty');
-  SetLength(MethodId, IdSize);
-  for I := 0 to IdSize - 1 do
-    MethodId[I] := ReadHeaderByte(Data, Offset);
-  if (Length(MethodId) = 1) and (MethodId[0] = SEVENZ_METHOD_LZMA2) then
-    Result.CoderMethod := szcmLzma2
-  else if IsSevenZipLzmaMethod(MethodId) then
-    Result.CoderMethod := szcmLzma
-  else
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only LZMA/LZMA2-coded 7z folders are supported');
+    IdSize := Flags and $0F;
+    if IdSize <= 0 then
+      RaiseLzmaError(SZ_ERROR_DATA, '7z coder method id is empty');
+    Budget.Reserve(UInt64(IdSize));
+    SetLength(MethodId, IdSize);
+    for I := 0 to IdSize - 1 do
+      MethodId[I] := ReadHeaderByte(Data, Offset);
+    if (Length(MethodId) = 1) and (MethodId[0] = SEVENZ_METHOD_LZMA2) then
+      Result.CoderMethod := szcmLzma2
+    else if IsSevenZipLzmaMethod(MethodId) then
+      Result.CoderMethod := szcmLzma
+    else
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only LZMA/LZMA2-coded 7z folders are supported');
 
-  if (Flags and $10) <> 0 then
-  begin
-    NumInStreams := ReadSevenZipNumber(Data, Offset);
-    NumOutStreams := ReadSevenZipNumber(Data, Offset);
-    if (NumInStreams <> 1) or (NumOutStreams <> 1) then
-      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only single-stream 7z coders are supported');
-  end;
+    if (Flags and $10) <> 0 then
+    begin
+      NumInStreams := ReadSevenZipNumber(Data, Offset);
+      NumOutStreams := ReadSevenZipNumber(Data, Offset);
+      if (NumInStreams <> 1) or (NumOutStreams <> 1) then
+        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only single-stream 7z coders are supported');
+    end;
 
-  if (Flags and $20) = 0 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z LZMA/LZMA2 coder properties are required');
-  PropsSize := ReadSevenZipNumber(Data, Offset);
-  Result.CoderProperties := ReadHeaderBytes(Data, Offset, PropsSize);
-  case Result.CoderMethod of
-    szcmLzma2:
-      begin
-        if Length(Result.CoderProperties) <> 1 then
-          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only one-byte LZMA2 7z properties are supported');
-        Result.DictionaryProperty := Result.CoderProperties[0];
-        if Result.DictionaryProperty > LZMA2_DIC_PROP_MAX then
-          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z LZMA2 dictionary property');
-      end;
-    szcmLzma:
-      begin
-        if Length(Result.CoderProperties) <> 5 then
-          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only five-byte LZMA 7z properties are supported');
-        if not LzmaPropsDecode(Result.CoderProperties, Props) then
-          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z LZMA properties');
-      end;
-  else
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z folder coder is missing');
+    if (Flags and $20) = 0 then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z LZMA/LZMA2 coder properties are required');
+    PropsSize := ReadSevenZipNumber(Data, Offset);
+    Result.CoderProperties := ReadHeaderBytes(Data, Offset, PropsSize, Budget);
+    case Result.CoderMethod of
+      szcmLzma2:
+        begin
+          if Length(Result.CoderProperties) <> 1 then
+            RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only one-byte LZMA2 7z properties are supported');
+          Result.DictionaryProperty := Result.CoderProperties[0];
+          if Result.DictionaryProperty > LZMA2_DIC_PROP_MAX then
+            RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z LZMA2 dictionary property');
+        end;
+      szcmLzma:
+        begin
+          if Length(Result.CoderProperties) <> 5 then
+            RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Only five-byte LZMA 7z properties are supported');
+          if not LzmaPropsDecode(Result.CoderProperties, Props) then
+            RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z LZMA properties');
+        end;
+    else
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z folder coder is missing');
+    end;
+  finally
+    Budget.Release(UInt64(Length(MethodId)));
   end;
 end;
 
-procedure ParsePackInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo);
+procedure ParsePackInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo; var Budget: TSevenZipMemoryBudget);
 var
   NumStreams: UInt64;
   Nid: Byte;
   Digest: TSevenZipDigestVector;
   I: Integer;
   RunningOffset: UInt64;
+  OldMemory: UInt64;
 begin
-  Info.PackPos := ReadSevenZipNumber(Data, Offset);
-  NumStreams := ReadSevenZipNumber(Data, Offset);
-  if NumStreams > UInt64(High(Integer)) then
-    RaiseLzmaError(SZ_ERROR_MEM, '7z pack stream count is too large');
-  SetLength(Info.PackStreams, Integer(NumStreams));
+  try
+    Info.PackPos := ReadSevenZipNumber(Data, Offset);
+    NumStreams := ReadSevenZipNumber(Data, Offset);
+    if NumStreams > UInt64(High(Integer)) then
+      RaiseLzmaError(SZ_ERROR_MEM, '7z pack stream count is too large');
+    OldMemory := Budget.PrepareResize(
+      CheckedMemoryMultiply(UInt64(Length(Info.PackStreams)), SizeOf(TSevenZipPackStreamInfo)),
+      CheckedMemoryMultiply(NumStreams, SizeOf(TSevenZipPackStreamInfo)));
+    SetLength(Info.PackStreams, Integer(NumStreams));
+    Budget.Release(OldMemory);
 
-  while True do
-  begin
-    Nid := ReadHeaderByte(Data, Offset);
-    case Nid of
-      SEVENZ_NID_END:
-        begin
-          RunningOffset := 0;
-          for I := 0 to High(Info.PackStreams) do
+    while True do
+    begin
+      Nid := ReadHeaderByte(Data, Offset);
+      case Nid of
+        SEVENZ_NID_END:
           begin
-            Info.PackStreams[I].Offset := Info.PackPos + RunningOffset;
-            if Info.PackStreams[I].Offset < Info.PackPos then
-              RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z pack stream offset overflow');
-            Inc(RunningOffset, Info.PackStreams[I].Size);
-            if RunningOffset < Info.PackStreams[I].Size then
-              RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z pack stream size overflow');
+            RunningOffset := 0;
+            for I := 0 to High(Info.PackStreams) do
+            begin
+              Info.PackStreams[I].Offset := Info.PackPos + RunningOffset;
+              if Info.PackStreams[I].Offset < Info.PackPos then
+                RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z pack stream offset overflow');
+              Inc(RunningOffset, Info.PackStreams[I].Size);
+              if RunningOffset < Info.PackStreams[I].Size then
+                RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z pack stream size overflow');
+            end;
+            Exit;
           end;
-          Exit;
-        end;
-      SEVENZ_NID_SIZE:
-        for I := 0 to High(Info.PackStreams) do
-          Info.PackStreams[I].Size := ReadSevenZipNumber(Data, Offset);
-      SEVENZ_NID_CRC:
-        begin
-          ReadDigestVector(Data, Offset, NumStreams, Digest);
+        SEVENZ_NID_SIZE:
           for I := 0 to High(Info.PackStreams) do
+            Info.PackStreams[I].Size := ReadSevenZipNumber(Data, Offset);
+        SEVENZ_NID_CRC:
           begin
-            Info.PackStreams[I].HasCrc := Digest.Defined[I];
-            Info.PackStreams[I].Crc := Digest.Values[I];
+            Budget.Release(SevenZipDigestMemory(Digest));
+            ReadDigestVector(Data, Offset, NumStreams, Digest, Budget);
+            for I := 0 to High(Info.PackStreams) do
+            begin
+              Info.PackStreams[I].HasCrc := Digest.Defined[I];
+              Info.PackStreams[I].Crc := Digest.Values[I];
+            end;
           end;
-        end;
-    else
-      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z PackInfo property');
+      else
+        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z PackInfo property');
+      end;
     end;
+  finally
+    Budget.Release(SevenZipDigestMemory(Digest));
   end;
 end;
 
-procedure ParseUnpackInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo);
+procedure ParseUnpackInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo; var Budget: TSevenZipMemoryBudget);
 var
   Nid: Byte;
   NumFolders: UInt64;
   FolderStorage: Byte;
   Digest: TSevenZipDigestVector;
   I: Integer;
+  OldMemory, DroppedMemory, OldProperties: UInt64;
 begin
-  while True do
-  begin
-    Nid := ReadHeaderByte(Data, Offset);
-    case Nid of
-      SEVENZ_NID_END:
-        Exit;
-      SEVENZ_NID_FOLDER:
-        begin
-          NumFolders := ReadSevenZipNumber(Data, Offset);
-          if NumFolders > UInt64(High(Integer)) then
-            RaiseLzmaError(SZ_ERROR_MEM, '7z folder count is too large');
-          FolderStorage := ReadHeaderByte(Data, Offset);
-          if FolderStorage <> 0 then
-            RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Out-of-line 7z folders are not supported');
-          SetLength(Info.Folders, Integer(NumFolders));
-          for I := 0 to High(Info.Folders) do
+  try
+    while True do
+    begin
+      Nid := ReadHeaderByte(Data, Offset);
+      case Nid of
+        SEVENZ_NID_END:
+          Exit;
+        SEVENZ_NID_FOLDER:
           begin
-            Info.Folders[I] := ParseFolder(Data, Offset);
-            Info.Folders[I].PackStreamIndex := I;
+            NumFolders := ReadSevenZipNumber(Data, Offset);
+            if NumFolders > UInt64(High(Integer)) then
+              RaiseLzmaError(SZ_ERROR_MEM, '7z folder count is too large');
+            FolderStorage := ReadHeaderByte(Data, Offset);
+            if FolderStorage <> 0 then
+              RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Out-of-line 7z folders are not supported');
+            DroppedMemory := 0;
+            for I := Integer(NumFolders) to High(Info.Folders) do
+              DroppedMemory := CheckedMemoryAdd(DroppedMemory, UInt64(Length(Info.Folders[I].CoderProperties)));
+            OldMemory := Budget.PrepareResize(
+              CheckedMemoryMultiply(UInt64(Length(Info.Folders)), SizeOf(TSevenZipFolderInfo)),
+              CheckedMemoryMultiply(NumFolders, SizeOf(TSevenZipFolderInfo)));
+            SetLength(Info.Folders, Integer(NumFolders));
+            Budget.Release(CheckedMemoryAdd(OldMemory, DroppedMemory));
+            for I := 0 to High(Info.Folders) do
+            begin
+              OldProperties := UInt64(Length(Info.Folders[I].CoderProperties));
+              Info.Folders[I] := ParseFolder(Data, Offset, Budget);
+              Budget.Release(OldProperties);
+              Info.Folders[I].PackStreamIndex := I;
+            end;
           end;
-        end;
-      SEVENZ_NID_CODERS_UNPACK_SIZE:
-        begin
-          if Length(Info.Folders) = 0 then
-            RaiseLzmaError(SZ_ERROR_DATA, '7z coder unpack sizes appear before folders');
-          for I := 0 to High(Info.Folders) do
-            Info.Folders[I].UnpackSize := ReadSevenZipNumber(Data, Offset);
-        end;
-      SEVENZ_NID_CRC:
-        begin
-          ReadDigestVector(Data, Offset, Length(Info.Folders), Digest);
-          for I := 0 to High(Info.Folders) do
+        SEVENZ_NID_CODERS_UNPACK_SIZE:
           begin
-            Info.Folders[I].HasCrc := Digest.Defined[I];
-            Info.Folders[I].Crc := Digest.Values[I];
+            if Length(Info.Folders) = 0 then
+              RaiseLzmaError(SZ_ERROR_DATA, '7z coder unpack sizes appear before folders');
+            for I := 0 to High(Info.Folders) do
+              Info.Folders[I].UnpackSize := ReadSevenZipNumber(Data, Offset);
           end;
-        end;
-    else
-      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z UnPackInfo property');
+        SEVENZ_NID_CRC:
+          begin
+            Budget.Release(SevenZipDigestMemory(Digest));
+            ReadDigestVector(Data, Offset, Length(Info.Folders), Digest, Budget);
+            for I := 0 to High(Info.Folders) do
+            begin
+              Info.Folders[I].HasCrc := Digest.Defined[I];
+              Info.Folders[I].Crc := Digest.Values[I];
+            end;
+          end;
+      else
+        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z UnPackInfo property');
+      end;
     end;
+  finally
+    Budget.Release(SevenZipDigestMemory(Digest));
   end;
 end;
 
@@ -1082,7 +1181,7 @@ begin
 end;
 
 procedure BuildSevenZipSubStreams(var Info: TSevenZipArchiveInfo; const Counts: TArray<Integer>;
-  const ExplicitSizes: TArray<UInt64>; const Digests: TSevenZipDigestVector);
+  const ExplicitSizes: TArray<UInt64>; const Digests: TSevenZipDigestVector; var Budget: TSevenZipMemoryBudget);
 var
   Total: UInt64;
   I: Integer;
@@ -1093,13 +1192,18 @@ var
   Remaining: UInt64;
   SubSize: UInt64;
   OffsetInFolder: UInt64;
+  OldMemory: UInt64;
 begin
   Total := 0;
   for I := 0 to High(Counts) do
     Inc(Total, UInt64(Counts[I]));
   if Total > UInt64(High(Integer)) then
     RaiseLzmaError(SZ_ERROR_MEM, '7z substream count is too large');
+  OldMemory := Budget.PrepareResize(
+    CheckedMemoryMultiply(UInt64(Length(Info.SubStreams)), SizeOf(TSevenZipSubStreamInfo)),
+    CheckedMemoryMultiply(Total, SizeOf(TSevenZipSubStreamInfo)));
   SetLength(Info.SubStreams, Integer(Total));
+  Budget.Release(OldMemory);
 
   SubIndex := 0;
   SizeIndex := 0;
@@ -1154,7 +1258,7 @@ begin
     RaiseLzmaError(SZ_ERROR_DATA, '7z substream CRC vector has trailing values');
 end;
 
-procedure ParseSubStreamsInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo);
+procedure ParseSubStreamsInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo; var Budget: TSevenZipMemoryBudget);
 var
   Nid: Byte;
   Counts: TArray<Integer>;
@@ -1164,85 +1268,103 @@ var
   Count: UInt64;
   SizeCount: UInt64;
   DigestCount: UInt64;
+  OldMemory: UInt64;
 begin
-  SetLength(Counts, Length(Info.Folders));
-  for I := 0 to High(Counts) do
-    Counts[I] := 1;
+  try
+    Budget.Reserve(CheckedMemoryMultiply(UInt64(Length(Info.Folders)), SizeOf(Integer)));
+    SetLength(Counts, Length(Info.Folders));
+    for I := 0 to High(Counts) do
+      Counts[I] := 1;
 
-  while True do
-  begin
-    Nid := ReadHeaderByte(Data, Offset);
-    case Nid of
-      SEVENZ_NID_END:
-        begin
-          if (SevenZipExplicitSubStreamSizeCount(Counts) <> 0) and (Length(ExplicitSizes) = 0) then
-            RaiseLzmaError(SZ_ERROR_DATA, '7z solid substream sizes are missing');
-          BuildSevenZipSubStreams(Info, Counts, ExplicitSizes, Digests);
-          Exit;
-        end;
-      SEVENZ_NID_NUM_UNPACK_STREAM:
-        for I := 0 to High(Counts) do
-        begin
-          Count := ReadSevenZipNumber(Data, Offset);
-          if Count > UInt64(High(Integer)) then
-            RaiseLzmaError(SZ_ERROR_MEM, '7z folder substream count is too large');
-          Counts[I] := Integer(Count);
-        end;
-      SEVENZ_NID_SIZE:
-        begin
-          SizeCount := SevenZipExplicitSubStreamSizeCount(Counts);
-          if SizeCount > UInt64(High(Integer)) then
-            RaiseLzmaError(SZ_ERROR_MEM, '7z substream size count is too large');
-          SetLength(ExplicitSizes, Integer(SizeCount));
-          for I := 0 to High(ExplicitSizes) do
-            ExplicitSizes[I] := ReadSevenZipNumber(Data, Offset);
-        end;
-      SEVENZ_NID_CRC:
-        begin
-          DigestCount := SevenZipSubStreamDigestCount(Info, Counts);
-          ReadDigestVector(Data, Offset, DigestCount, Digests);
-        end;
-    else
-      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z SubStreamsInfo property');
+    while True do
+    begin
+      Nid := ReadHeaderByte(Data, Offset);
+      case Nid of
+        SEVENZ_NID_END:
+          begin
+            if (SevenZipExplicitSubStreamSizeCount(Counts) <> 0) and (Length(ExplicitSizes) = 0) then
+              RaiseLzmaError(SZ_ERROR_DATA, '7z solid substream sizes are missing');
+            BuildSevenZipSubStreams(Info, Counts, ExplicitSizes, Digests, Budget);
+            Exit;
+          end;
+        SEVENZ_NID_NUM_UNPACK_STREAM:
+          for I := 0 to High(Counts) do
+          begin
+            Count := ReadSevenZipNumber(Data, Offset);
+            if Count > UInt64(High(Integer)) then
+              RaiseLzmaError(SZ_ERROR_MEM, '7z folder substream count is too large');
+            Counts[I] := Integer(Count);
+          end;
+        SEVENZ_NID_SIZE:
+          begin
+            SizeCount := SevenZipExplicitSubStreamSizeCount(Counts);
+            if SizeCount > UInt64(High(Integer)) then
+              RaiseLzmaError(SZ_ERROR_MEM, '7z substream size count is too large');
+            OldMemory := Budget.PrepareResize(
+              CheckedMemoryMultiply(UInt64(Length(ExplicitSizes)), SizeOf(UInt64)),
+              CheckedMemoryMultiply(SizeCount, SizeOf(UInt64)));
+            SetLength(ExplicitSizes, Integer(SizeCount));
+            Budget.Release(OldMemory);
+            for I := 0 to High(ExplicitSizes) do
+              ExplicitSizes[I] := ReadSevenZipNumber(Data, Offset);
+          end;
+        SEVENZ_NID_CRC:
+          begin
+            DigestCount := SevenZipSubStreamDigestCount(Info, Counts);
+            Budget.Release(SevenZipDigestMemory(Digests));
+            ReadDigestVector(Data, Offset, DigestCount, Digests, Budget);
+          end;
+      else
+        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z SubStreamsInfo property');
+      end;
     end;
+  finally
+    Budget.Release(CheckedMemoryMultiply(UInt64(Length(Counts)), SizeOf(Integer)));
+    Budget.Release(CheckedMemoryMultiply(UInt64(Length(ExplicitSizes)), SizeOf(UInt64)));
+    Budget.Release(SevenZipDigestMemory(Digests));
   end;
 end;
 
-procedure ParseStreamsInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo);
+procedure ParseStreamsInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo; var Budget: TSevenZipMemoryBudget);
 var
   Nid: Byte;
   HadSubStreamsInfo: Boolean;
   Counts: TArray<Integer>;
   I: Integer;
 begin
-  HadSubStreamsInfo := False;
-  while True do
-  begin
-    Nid := ReadHeaderByte(Data, Offset);
-    case Nid of
-      SEVENZ_NID_END:
-        begin
-          if (not HadSubStreamsInfo) and (Length(Info.Folders) <> 0) then
+  try
+    HadSubStreamsInfo := False;
+    while True do
+    begin
+      Nid := ReadHeaderByte(Data, Offset);
+      case Nid of
+        SEVENZ_NID_END:
           begin
-            SetLength(Counts, Length(Info.Folders));
-            for I := 0 to High(Counts) do
-              Counts[I] := 1;
-            BuildSevenZipSubStreams(Info, Counts, nil, Default(TSevenZipDigestVector));
+            if (not HadSubStreamsInfo) and (Length(Info.Folders) <> 0) then
+            begin
+              Budget.Reserve(CheckedMemoryMultiply(UInt64(Length(Info.Folders)), SizeOf(Integer)));
+              SetLength(Counts, Length(Info.Folders));
+              for I := 0 to High(Counts) do
+                Counts[I] := 1;
+              BuildSevenZipSubStreams(Info, Counts, nil, Default(TSevenZipDigestVector), Budget);
+            end;
+            Exit;
           end;
-          Exit;
-        end;
-      SEVENZ_NID_PACK_INFO:
-        ParsePackInfo(Data, Offset, Info);
-      SEVENZ_NID_UNPACK_INFO:
-        ParseUnpackInfo(Data, Offset, Info);
-      SEVENZ_NID_SUB_STREAMS_INFO:
-        begin
-          HadSubStreamsInfo := True;
-          ParseSubStreamsInfo(Data, Offset, Info);
-        end;
-    else
-      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z StreamsInfo property');
+        SEVENZ_NID_PACK_INFO:
+          ParsePackInfo(Data, Offset, Info, Budget);
+        SEVENZ_NID_UNPACK_INFO:
+          ParseUnpackInfo(Data, Offset, Info, Budget);
+        SEVENZ_NID_SUB_STREAMS_INFO:
+          begin
+            HadSubStreamsInfo := True;
+            ParseSubStreamsInfo(Data, Offset, Info, Budget);
+          end;
+      else
+        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z StreamsInfo property');
+      end;
     end;
+  finally
+    Budget.Release(CheckedMemoryMultiply(UInt64(Length(Counts)), SizeOf(Integer)));
   end;
 end;
 
@@ -1280,7 +1402,7 @@ begin
     RaiseLzmaError(SZ_ERROR_DATA, '7z substream count does not match file stream count');
 end;
 
-procedure ApplySevenZipTimes(var Info: TSevenZipArchiveInfo; const PropertyData: TBytes; const Nid: Byte);
+procedure ApplySevenZipTimes(var Info: TSevenZipArchiveInfo; const PropertyData: TBytes; const Nid: Byte; var Budget: TSevenZipMemoryBudget);
 var
   Offset: NativeUInt;
   Defined: TBytes;
@@ -1288,62 +1410,70 @@ var
   I: Integer;
   Value: UInt64;
 begin
-  Offset := 0;
-  Defined := ReadDefinedBitVector(PropertyData, Offset, Length(Info.Files));
-  StorageFlag := ReadHeaderByte(PropertyData, Offset);
-  if StorageFlag <> 0 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Out-of-line 7z timestamps are not supported');
-  for I := 0 to High(Info.Files) do
-    if SevenZipBitVectorIsSet(Defined, I) then
-    begin
-      Value := ReadHeaderUi64LE(PropertyData, Offset);
-      case Nid of
-        SEVENZ_NID_CREATION_TIME:
-          begin
-            Info.Files[I].Entry.HasCreationTime := True;
-            Info.Files[I].Entry.CreationTime := Value;
-          end;
-        SEVENZ_NID_ACCESS_TIME:
-          begin
-            Info.Files[I].Entry.HasAccessTime := True;
-            Info.Files[I].Entry.AccessTime := Value;
-          end;
-        SEVENZ_NID_MODIFICATION_TIME:
-          begin
-            Info.Files[I].Entry.HasModifiedTime := True;
-            Info.Files[I].Entry.ModifiedTime := Value;
-          end;
-      else
-        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z timestamp property');
+  try
+    Offset := 0;
+    Defined := ReadDefinedBitVector(PropertyData, Offset, Length(Info.Files), Budget);
+    StorageFlag := ReadHeaderByte(PropertyData, Offset);
+    if StorageFlag <> 0 then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Out-of-line 7z timestamps are not supported');
+    for I := 0 to High(Info.Files) do
+      if SevenZipBitVectorIsSet(Defined, I) then
+      begin
+        Value := ReadHeaderUi64LE(PropertyData, Offset);
+        case Nid of
+          SEVENZ_NID_CREATION_TIME:
+            begin
+              Info.Files[I].Entry.HasCreationTime := True;
+              Info.Files[I].Entry.CreationTime := Value;
+            end;
+          SEVENZ_NID_ACCESS_TIME:
+            begin
+              Info.Files[I].Entry.HasAccessTime := True;
+              Info.Files[I].Entry.AccessTime := Value;
+            end;
+          SEVENZ_NID_MODIFICATION_TIME:
+            begin
+              Info.Files[I].Entry.HasModifiedTime := True;
+              Info.Files[I].Entry.ModifiedTime := Value;
+            end;
+        else
+          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Unsupported 7z timestamp property');
+        end;
       end;
-    end;
-  if Offset <> NativeUInt(Length(PropertyData)) then
-    RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes in 7z timestamp property');
+    if Offset <> NativeUInt(Length(PropertyData)) then
+      RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes in 7z timestamp property');
+  finally
+    Budget.Release(UInt64(Length(Defined)));
+  end;
 end;
 
-procedure ApplySevenZipAttributes(var Info: TSevenZipArchiveInfo; const PropertyData: TBytes);
+procedure ApplySevenZipAttributes(var Info: TSevenZipArchiveInfo; const PropertyData: TBytes; var Budget: TSevenZipMemoryBudget);
 var
   Offset: NativeUInt;
   Defined: TBytes;
   StorageFlag: Byte;
   I: Integer;
 begin
-  Offset := 0;
-  Defined := ReadDefinedBitVector(PropertyData, Offset, Length(Info.Files));
-  StorageFlag := ReadHeaderByte(PropertyData, Offset);
-  if StorageFlag <> 0 then
-    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Out-of-line 7z file attributes are not supported');
-  for I := 0 to High(Info.Files) do
-    if SevenZipBitVectorIsSet(Defined, I) then
-    begin
-      Info.Files[I].Entry.HasAttributes := True;
-      Info.Files[I].Entry.Attributes := ReadHeaderUi32LE(PropertyData, Offset);
-    end;
-  if Offset <> NativeUInt(Length(PropertyData)) then
-    RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes in 7z attribute property');
+  try
+    Offset := 0;
+    Defined := ReadDefinedBitVector(PropertyData, Offset, Length(Info.Files), Budget);
+    StorageFlag := ReadHeaderByte(PropertyData, Offset);
+    if StorageFlag <> 0 then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Out-of-line 7z file attributes are not supported');
+    for I := 0 to High(Info.Files) do
+      if SevenZipBitVectorIsSet(Defined, I) then
+      begin
+        Info.Files[I].Entry.HasAttributes := True;
+        Info.Files[I].Entry.Attributes := ReadHeaderUi32LE(PropertyData, Offset);
+      end;
+    if Offset <> NativeUInt(Length(PropertyData)) then
+      RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes in 7z attribute property');
+  finally
+    Budget.Release(UInt64(Length(Defined)));
+  end;
 end;
 
-procedure ParseFilesInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo);
+procedure ParseFilesInfo(const Data: TBytes; var Offset: NativeUInt; var Info: TSevenZipArchiveInfo; var Budget: TSevenZipMemoryBudget);
 var
   NumFiles: UInt64;
   Nid: Byte;
@@ -1354,59 +1484,91 @@ var
   I: Integer;
   PropertyData: TBytes;
   HadNames: Boolean;
+  OldMemory, DroppedMemory: UInt64;
 begin
-  NumFiles := ReadSevenZipNumber(Data, Offset);
-  if NumFiles > UInt64(High(Integer)) then
-    RaiseLzmaError(SZ_ERROR_MEM, '7z file count is too large');
-  SetLength(Info.Files, Integer(NumFiles));
-  HadNames := NumFiles = 0;
+  try
+    NumFiles := ReadSevenZipNumber(Data, Offset);
+    if NumFiles > UInt64(High(Integer)) then
+      RaiseLzmaError(SZ_ERROR_MEM, '7z file count is too large');
+    DroppedMemory := 0;
+    for I := Integer(NumFiles) to High(Info.Files) do
+      DroppedMemory := CheckedMemoryAdd(DroppedMemory, SevenZipNameMemory(Info.Files[I].Entry.FileName));
+    OldMemory := Budget.PrepareResize(
+      CheckedMemoryMultiply(UInt64(Length(Info.Files)), SizeOf(TSevenZipFileInfo)),
+      CheckedMemoryMultiply(NumFiles, SizeOf(TSevenZipFileInfo)));
+    SetLength(Info.Files, Integer(NumFiles));
+    Budget.Release(CheckedMemoryAdd(OldMemory, DroppedMemory));
+    HadNames := NumFiles = 0;
 
-  while True do
-  begin
-    Nid := ReadHeaderByte(Data, Offset);
-    if Nid = SEVENZ_NID_END then
+    while True do
     begin
-      if not HadNames then
-        RaiseLzmaError(SZ_ERROR_DATA, '7z file names are missing');
-      FinalizeSevenZipFiles(Info, EmptyStreamBits, EmptyFileBits);
-      Exit;
+      Nid := ReadHeaderByte(Data, Offset);
+      if Nid = SEVENZ_NID_END then
+      begin
+        if not HadNames then
+          RaiseLzmaError(SZ_ERROR_DATA, '7z file names are missing');
+        FinalizeSevenZipFiles(Info, EmptyStreamBits, EmptyFileBits);
+        Exit;
+      end;
+      Size := ReadSevenZipNumber(Data, Offset);
+      case Nid of
+        SEVENZ_NID_NAME:
+          begin
+            if HadNames then
+              RaiseLzmaError(SZ_ERROR_DATA, 'Duplicate 7z name property');
+            Names := DecodeSevenZipNames(Data, Offset, Size, NumFiles, Budget);
+            for I := 0 to High(Info.Files) do
+            begin
+              OldMemory := SevenZipNameMemory(Info.Files[I].Entry.FileName);
+              Info.Files[I].Entry.FileName := Names[I];
+              Budget.Release(OldMemory);
+            end;
+            HadNames := True;
+          end;
+        SEVENZ_NID_EMPTY_STREAM:
+          begin
+            OldMemory := UInt64(Length(EmptyStreamBits));
+            EmptyStreamBits := ReadHeaderBytes(Data, Offset, Size, Budget);
+            Budget.Release(OldMemory);
+          end;
+        SEVENZ_NID_EMPTY_FILE:
+          begin
+            OldMemory := UInt64(Length(EmptyFileBits));
+            EmptyFileBits := ReadHeaderBytes(Data, Offset, Size, Budget);
+            Budget.Release(OldMemory);
+          end;
+        SEVENZ_NID_CREATION_TIME,
+        SEVENZ_NID_ACCESS_TIME,
+        SEVENZ_NID_MODIFICATION_TIME:
+          begin
+            OldMemory := UInt64(Length(PropertyData));
+            PropertyData := ReadHeaderBytes(Data, Offset, Size, Budget);
+            Budget.Release(OldMemory);
+            ApplySevenZipTimes(Info, PropertyData, Nid, Budget);
+          end;
+        SEVENZ_NID_WIN_ATTRIBUTES:
+          begin
+            OldMemory := UInt64(Length(PropertyData));
+            PropertyData := ReadHeaderBytes(Data, Offset, Size, Budget);
+            Budget.Release(OldMemory);
+            ApplySevenZipAttributes(Info, PropertyData, Budget);
+          end;
+        SEVENZ_NID_ANTI:
+          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z anti-file markers are not supported');
+      else
+        SkipHeaderBytes(Data, Offset, Size);
+      end;
     end;
-    Size := ReadSevenZipNumber(Data, Offset);
-    case Nid of
-      SEVENZ_NID_NAME:
-        begin
-          if HadNames then
-            RaiseLzmaError(SZ_ERROR_DATA, 'Duplicate 7z name property');
-          Names := DecodeSevenZipNames(Data, Offset, Size, NumFiles);
-          for I := 0 to High(Info.Files) do
-            Info.Files[I].Entry.FileName := Names[I];
-          HadNames := True;
-        end;
-      SEVENZ_NID_EMPTY_STREAM:
-        EmptyStreamBits := ReadHeaderBytes(Data, Offset, Size);
-      SEVENZ_NID_EMPTY_FILE:
-        EmptyFileBits := ReadHeaderBytes(Data, Offset, Size);
-      SEVENZ_NID_CREATION_TIME,
-      SEVENZ_NID_ACCESS_TIME,
-      SEVENZ_NID_MODIFICATION_TIME:
-        begin
-          PropertyData := ReadHeaderBytes(Data, Offset, Size);
-          ApplySevenZipTimes(Info, PropertyData, Nid);
-        end;
-      SEVENZ_NID_WIN_ATTRIBUTES:
-        begin
-          PropertyData := ReadHeaderBytes(Data, Offset, Size);
-          ApplySevenZipAttributes(Info, PropertyData);
-        end;
-      SEVENZ_NID_ANTI:
-        RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z anti-file markers are not supported');
-    else
-      SkipHeaderBytes(Data, Offset, Size);
-    end;
+  finally
+    Budget.Release(UInt64(Length(EmptyStreamBits)));
+    Budget.Release(UInt64(Length(EmptyFileBits)));
+    Budget.Release(UInt64(Length(PropertyData)));
+    // The file records retain the shared string payloads; only this vector dies.
+    Budget.Release(CheckedMemoryMultiply(UInt64(Length(Names)), SizeOf(string)));
   end;
 end;
 
-function ParseSevenZipHeader(const Header: TBytes): TSevenZipArchiveInfo;
+function ParseSevenZipHeader(const Header: TBytes; var Budget: TSevenZipMemoryBudget): TSevenZipArchiveInfo;
 var
   Offset: NativeUInt;
   Nid: Byte;
@@ -1455,9 +1617,9 @@ begin
       SEVENZ_NID_END:
         Break;
       SEVENZ_NID_MAIN_STREAMS_INFO:
-        ParseStreamsInfo(Header, Offset, Result);
+        ParseStreamsInfo(Header, Offset, Result, Budget);
       SEVENZ_NID_FILES_INFO:
-        ParseFilesInfo(Header, Offset, Result);
+        ParseFilesInfo(Header, Offset, Result, Budget);
       SEVENZ_NID_ENCODED_HEADER:
         RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Nested encoded 7z headers are not supported');
     else
@@ -1470,7 +1632,7 @@ begin
   ValidatePayloadInfo;
 end;
 
-function ParseSevenZipEncodedHeaderInfo(const Header: TBytes): TSevenZipArchiveInfo;
+function ParseSevenZipEncodedHeaderInfo(const Header: TBytes; var Budget: TSevenZipMemoryBudget): TSevenZipArchiveInfo;
 var
   Offset: NativeUInt;
 begin
@@ -1478,7 +1640,7 @@ begin
   Offset := 0;
   if ReadHeaderByte(Header, Offset) <> SEVENZ_NID_ENCODED_HEADER then
     RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Encoded 7z header descriptor is missing');
-  ParseStreamsInfo(Header, Offset, Result);
+  ParseStreamsInfo(Header, Offset, Result, Budget);
   if Offset <> NativeUInt(Length(Header)) then
     RaiseLzmaError(SZ_ERROR_DATA, 'Trailing bytes in encoded 7z header descriptor');
   if Length(Result.PackStreams) <> 1 then
@@ -1539,10 +1701,14 @@ begin
 end;
 {$ENDIF}
 
-constructor TSevenZipCrcWriteStream.Create(const Base: TStream);
+constructor TSevenZipCrcWriteStream.Create(const Base: TStream;
+  const Bounded: Boolean; const WriteLimit: UInt64);
 begin
   inherited Create;
   FBase := Base;
+  FBounded := Bounded;
+  FSizeExceeded := False;
+  FWriteLimit := WriteLimit;
   FCrc := CRC_INIT_VAL;
 end;
 
@@ -1559,6 +1725,13 @@ end;
 
 function TSevenZipCrcWriteStream.Write(const Buffer; Count: Longint): Longint;
 begin
+  if FBounded and (Count > 0) then
+    if (FBytesWritten > FWriteLimit) or
+      (UInt64(Count) > FWriteLimit - FBytesWritten) then
+    begin
+      FSizeExceeded := True;
+      RaiseLzmaError(SZ_ERROR_DATA, '7z output exceeds declared folder size');
+    end;
   Result := FBase.Write(Buffer, Count);
   if Result > 0 then
   begin
@@ -1641,14 +1814,133 @@ begin
 end;
 {$ENDIF}
 
+function SevenZipDecodeAllowance(const MemoryLimit, OwnedMemory: UInt64): UInt64;
+begin
+  if MemoryLimit = 0 then Exit(0);
+  // Zero is the unrestricted sentinel, never a finite exhausted allowance.
+  if OwnedMemory >= MemoryLimit then
+    RaiseLzmaError(SZ_ERROR_MEM, '7z memory limit exceeded');
+  Result := MemoryLimit - OwnedMemory;
+end;
+
+function SevenZipInfoMemory(const Info: TSevenZipArchiveInfo): UInt64;
+var
+  I: Integer;
+  NameLength: UInt64;
+begin
+  Result := CheckedMemoryMultiply(UInt64(Length(Info.PackStreams)), SizeOf(TSevenZipPackStreamInfo));
+  Result := CheckedMemoryAdd(Result,
+    CheckedMemoryMultiply(UInt64(Length(Info.Folders)), SizeOf(TSevenZipFolderInfo)));
+  Result := CheckedMemoryAdd(Result,
+    CheckedMemoryMultiply(UInt64(Length(Info.SubStreams)), SizeOf(TSevenZipSubStreamInfo)));
+  Result := CheckedMemoryAdd(Result,
+    CheckedMemoryMultiply(UInt64(Length(Info.Files)), SizeOf(TSevenZipFileInfo)));
+  for I := 0 to High(Info.Folders) do
+    Result := CheckedMemoryAdd(Result, UInt64(Length(Info.Folders[I].CoderProperties)));
+  for I := 0 to High(Info.Files) do
+  begin
+    NameLength := UInt64(Length(Info.Files[I].Entry.FileName));
+    if NameLength <> 0 then
+      Result := CheckedMemoryAdd(Result,
+        CheckedMemoryMultiply(CheckedMemoryAdd(NameLength, 1), SizeOf(Char)));
+  end;
+end;
+
+function SevenZipOwnedOutputMemory(const UnpackSize: UInt64): UInt64;
+begin
+  if UnpackSize > UInt64(High(NativeInt)) then
+    RaiseLzmaError(SZ_ERROR_MEM, '7z decoded folder exceeds native TBytes capacity');
+  Result := CheckedMemoryAdd(UnpackSize, TBytesStream.InstanceSize);
+end;
+
+function SevenZipFolderMemory(const Folder: TSevenZipFolderInfo;
+  const PackStream: TSevenZipPackStreamInfo): UInt64;
+var
+  Props: TLzmaProps;
+begin
+  case Folder.CoderMethod of
+    szcmLzma2:
+      Result := TLzma2Decoder.RequiredMemory(Lzma2DictionaryFromProperty(Folder.DictionaryProperty));
+    szcmLzma:
+      begin
+        if not TLzmaRawDecoder.DecodeProperties(Folder.CoderProperties, Props) then
+          RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Invalid raw LZMA properties');
+        Result := CheckedMemoryAdd(TLzmaDecoderState.RequiredMemory(Props.DictionarySize,
+          Props.Lc, Props.Lp), PackStream.Size);
+      end;
+  else
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z folder coder is missing');
+    Result := 0;
+  end;
+  Result := CheckedMemoryAdd(Result, TSevenZipBoundedReadStream.InstanceSize);
+  Result := CheckedMemoryAdd(Result, TSevenZipCrcWriteStream.InstanceSize);
+end;
+
+function SevenZipDataOptions(const Options: TLzma2Options; const OwnedMemory: UInt64;
+  const Folder: TSevenZipFolderInfo; const PackStream: TSevenZipPackStreamInfo): TLzma2Options;
+begin
+  Result := Options;
+  if Options.MemoryLimit = 0 then Exit;
+  Result.MemoryLimit := SevenZipDecodeAllowance(Options.MemoryLimit, OwnedMemory);
+  ValidateMemoryLimit(SevenZipFolderMemory(Folder, PackStream), Result.MemoryLimit);
+end;
+
+function CreateSevenZipFolderOutput(const UnpackSize: UInt64;
+  const Bounded: Boolean): TMemoryStream;
+var
+  Bytes: TBytes;
+begin
+  if not Bounded then Exit(TMemoryStream.Create);
+  SevenZipOwnedOutputMemory(UnpackSize);
+  SetLength(Bytes, NativeInt(UnpackSize));
+  // Constructor shares the exact array; no growable stream rounding or copy.
+  Result := TBytesStream.Create(Bytes);
+end;
+
 procedure DecodeSevenZipFolderToStream(Source: TStream; const ArchiveStart: Int64;
   const Folder: TSevenZipFolderInfo; const PackStream: TSevenZipPackStreamInfo;
   Destination: TStream; const Options: TLzma2Options;
-  const Progress: TLzma2ProgressEvent; out ConsumedBytes, ProducedBytes: UInt64);
+  const Progress: TLzma2ProgressEvent; out ConsumedBytes, ProducedBytes: UInt64;
+  const BoundOutput: Boolean = False);
 var
   RawOptions: TLzma2Options;
   PackedInput: TSevenZipBoundedReadStream;
   CheckedOutput: TSevenZipCrcWriteStream;
+
+  procedure DecodeLzmaFolder;
+  var
+    Decoded: TLzmaProps;
+    PackedData: TBytes;
+    State: TLzmaDecoderState;
+    RequiredBytes, DictionaryCapacity: UInt64;
+  begin
+    if not TLzmaRawDecoder.DecodeProperties(Folder.CoderProperties, Decoded) then
+      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Invalid raw LZMA properties');
+    if PackStream.Size > UInt64(High(NativeInt)) then
+      RaiseLzmaError(SZ_ERROR_MEM, '7z packed LZMA stream exceeds native TBytes capacity');
+    RequiredBytes := TLzmaDecoderState.RequiredMemory(Decoded.DictionarySize,
+      Decoded.Lc, Decoded.Lp);
+    RequiredBytes := CheckedMemoryAdd(RequiredBytes, PackStream.Size);
+    ValidateMemoryLimit(RequiredBytes, RawOptions.MemoryLimit);
+    SetLength(PackedData, NativeInt(PackStream.Size));
+    if Length(PackedData) <> 0 then
+      ReadExact(PackedInput, PackedData[0], NativeUInt(Length(PackedData)));
+    DictionaryCapacity := Decoded.DictionarySize;
+    if Folder.UnpackSize < DictionaryCapacity then
+      DictionaryCapacity := Folder.UnpackSize;
+    State := TLzmaDecoderState.Create(DictionaryCapacity);
+    try
+      State.SetProperties(Decoded);
+      State.ResetDictionary;
+      State.ResetState;
+      State.DecodeKnownSize(PackedData, 0, NativeUInt(Length(PackedData)),
+        Folder.UnpackSize, CheckedOutput);
+      ReportProgress(Progress, PackStream.Size, Folder.UnpackSize);
+    finally
+      State.Free;
+    end;
+  end;
+
 begin
   RawOptions := Options;
   if Folder.CoderMethod = szcmLzma2 then
@@ -1659,16 +1951,21 @@ begin
   else
     RawOptions.Container := lcLzma;
 
+  // The common owner layer charges adapter instances once for both coders.
+  RawOptions.MemoryLimit := SevenZipDecodeAllowance(RawOptions.MemoryLimit,
+    CheckedMemoryAdd(TSevenZipBoundedReadStream.InstanceSize, TSevenZipCrcWriteStream.InstanceSize));
   Source.Position := ArchiveStart + SEVENZ_SIGNATURE_HEADER_SIZE + Int64(PackStream.Offset);
   PackedInput := TSevenZipBoundedReadStream.Create(Source, PackStream.Size);
-  CheckedOutput := TSevenZipCrcWriteStream.Create(Destination);
+  CheckedOutput := nil;
   try
+    CheckedOutput := TSevenZipCrcWriteStream.Create(Destination, BoundOutput, Folder.UnpackSize);
+    try
     case Folder.CoderMethod of
       szcmLzma2:
         TLzma2Decoder.DecodeRawEmbedded(PackedInput, CheckedOutput, RawOptions, ConsumedBytes, ProducedBytes, Progress);
       szcmLzma:
         begin
-          TLzmaRawDecoder.Decode(PackedInput, CheckedOutput, Folder.CoderProperties, Folder.UnpackSize, Progress);
+          DecodeLzmaFolder;
           ConsumedBytes := PackedInput.BytesRead;
           ProducedBytes := CheckedOutput.BytesWritten;
         end;
@@ -1683,6 +1980,15 @@ begin
       RaiseLzmaError(SZ_ERROR_DATA, '7z unpacked size mismatch');
     if Folder.HasCrc and (CheckedOutput.Digest <> Folder.Crc) then
       RaiseLzmaError(SZ_ERROR_CRC, '7z unpacked stream CRC mismatch');
+    except
+      on E: ELzmaWriteError do
+      begin
+        // WriteExact normalizes stream exceptions; restore only our own data bound.
+        if CheckedOutput.SizeExceeded then
+          RaiseLzmaError(SZ_ERROR_DATA, '7z output exceeds declared folder size');
+        raise;
+      end;
+    end;
   finally
     CheckedOutput.Free;
     PackedInput.Free;
@@ -1690,36 +1996,59 @@ begin
 end;
 
 function DecodeSevenZipFolderToBytes(Source: TStream; const ArchiveStart: Int64;
-  const Info: TSevenZipArchiveInfo): TBytes;
+  const Info: TSevenZipArchiveInfo; var Budget: TSevenZipMemoryBudget): TBytes;
 var
   Options: TLzma2Options;
   Output: TMemoryStream;
-  ConsumedBytes: UInt64;
-  ProducedBytes: UInt64;
+  ConsumedBytes, ProducedBytes, OutputMemory: UInt64;
+  Transferred: Boolean;
 begin
   Options := Default(TLzma2Options);
   Options.ThreadCount := 1;
   Options.Lc := -1;
   Options.Lp := -1;
   Options.Pb := -1;
-  Output := TMemoryStream.Create;
+  Options.MemoryLimit := Budget.Limit;
+  if (Length(Info.Folders) <> 1) or (Length(Info.PackStreams) <> 1) then
+    RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Encoded 7z header must use one LZMA/LZMA2 folder');
+  OutputMemory := 0;
+  if Budget.Limit <> 0 then
+  begin
+    OutputMemory := SevenZipOwnedOutputMemory(Info.Folders[0].UnpackSize);
+    Options := SevenZipDataOptions(Options, CheckedMemoryAdd(Budget.Used, OutputMemory),
+      Info.Folders[0], Info.PackStreams[Info.Folders[0].PackStreamIndex]);
+  end;
+  Budget.Reserve(OutputMemory);
+  Output := nil;
+  Transferred := False;
   try
-    if (Length(Info.Folders) <> 1) or (Length(Info.PackStreams) <> 1) then
-      RaiseLzmaError(SZ_ERROR_UNSUPPORTED, 'Encoded 7z header must use one LZMA/LZMA2 folder');
+    Output := CreateSevenZipFolderOutput(Info.Folders[0].UnpackSize, Budget.Limit <> 0);
     DecodeSevenZipFolderToStream(Source, ArchiveStart, Info.Folders[0],
-      Info.PackStreams[Info.Folders[0].PackStreamIndex], Output, Options, nil, ConsumedBytes, ProducedBytes);
-    SetLength(Result, Output.Size);
-    if Output.Size <> 0 then
+      Info.PackStreams[Info.Folders[0].PackStreamIndex], Output, Options, nil,
+      ConsumedBytes, ProducedBytes, Budget.Limit <> 0);
+    if Budget.Limit <> 0 then
     begin
-      Output.Position := 0;
-      Output.ReadBuffer(Result[0], Output.Size);
+      Result := TBytesStream(Output).Bytes;
+      Transferred := True;
+    end
+    else
+    begin
+      SetLength(Result, Output.Size);
+      if Output.Size <> 0 then
+      begin
+        Output.Position := 0;
+        Output.ReadBuffer(Result[0], Output.Size);
+      end;
     end;
   finally
     Output.Free;
+    if Transferred then Budget.Release(TBytesStream.InstanceSize)
+    else Budget.Release(OutputMemory);
   end;
 end;
 
-function ReadSevenZipArchiveInfo(Source: TStream; out ArchiveStart: Int64): TSevenZipArchiveInfo;
+function ReadSevenZipArchiveInfo(Source: TStream; out ArchiveStart: Int64;
+  const MemoryLimit: UInt64 = 0): TSevenZipArchiveInfo;
 var
   SignatureHeader: array[0..SEVENZ_SIGNATURE_HEADER_SIZE - 1] of Byte;
   I: Integer;
@@ -1735,7 +2064,10 @@ var
   EncodedPackEndRelative: UInt64;
   PackEndRelative: UInt64;
   ArchiveEndRelative: UInt64;
+  Budget: TSevenZipMemoryBudget;
 begin
+  Budget := Default(TSevenZipMemoryBudget);
+  Budget.Limit := MemoryLimit;
   if Source = nil then
     RaiseLzmaError(SZ_ERROR_PARAM, 'Source stream is nil');
 
@@ -1769,6 +2101,7 @@ begin
     RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z next header offset overflows stream position');
 
   Source.Position := ArchiveStart + SEVENZ_SIGNATURE_HEADER_SIZE + Int64(NextHeaderOffset);
+  Budget.Reserve(NextHeaderSize);
   SetLength(Header, Integer(NextHeaderSize));
   if Length(Header) <> 0 then
     ReadExact(Source, Header[0], Length(Header));
@@ -1778,12 +2111,12 @@ begin
   HasEncodedHeader := (Length(Header) <> 0) and (Header[0] = SEVENZ_NID_ENCODED_HEADER);
   if HasEncodedHeader then
   begin
-    EncodedHeaderInfo := ParseSevenZipEncodedHeaderInfo(Header);
-    DecodedHeader := DecodeSevenZipFolderToBytes(Source, ArchiveStart, EncodedHeaderInfo);
-    Result := ParseSevenZipHeader(DecodedHeader);
+    EncodedHeaderInfo := ParseSevenZipEncodedHeaderInfo(Header, Budget);
+    DecodedHeader := DecodeSevenZipFolderToBytes(Source, ArchiveStart, EncodedHeaderInfo, Budget);
+    Result := ParseSevenZipHeader(DecodedHeader, Budget);
   end
   else
-    Result := ParseSevenZipHeader(Header);
+    Result := ParseSevenZipHeader(Header, Budget);
 
   HeaderEndRelative := NextHeaderOffset + NextHeaderSize;
   if HeaderEndRelative < NextHeaderOffset then
@@ -2053,6 +2386,8 @@ class procedure TLzma7z.Decode(Source: TStream; Destination: TStream; const Opti
 var
   ArchiveStart: Int64;
   Info: TSevenZipArchiveInfo;
+  DecodeOptions: TLzma2Options;
+  OwnedMemory, OutputMemory: UInt64;
   FileIndex: Integer;
   SubStreamIndex: Integer;
   FolderIndex: Integer;
@@ -2070,7 +2405,13 @@ begin
   if Destination = nil then
     RaiseLzmaError(SZ_ERROR_PARAM, 'Destination stream is nil');
 
-  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart);
+  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart, Options.MemoryLimit);
+  OwnedMemory := 0;
+  if Options.MemoryLimit <> 0 then
+  begin
+    OwnedMemory := SevenZipInfoMemory(Info);
+    ValidateMemoryLimit(OwnedMemory, Options.MemoryLimit);
+  end;
   if (Length(Info.Files) <> 1) or Info.Files[0].Entry.IsDirectory then
     RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z stream decode supports only a single file entry');
 
@@ -2088,18 +2429,25 @@ begin
     (Info.SubStreams[SubStreamIndex].OffsetInFolder = 0) and
     (Info.SubStreams[SubStreamIndex].Size = Info.Folders[FolderIndex].UnpackSize) then
   begin
+    DecodeOptions := SevenZipDataOptions(Options, OwnedMemory, Info.Folders[FolderIndex],
+      Info.PackStreams[Info.Folders[FolderIndex].PackStreamIndex]);
     DecodeSevenZipFolderToStream(Source, ArchiveStart, Info.Folders[FolderIndex],
-      Info.PackStreams[Info.Folders[FolderIndex].PackStreamIndex], Destination, Options, Progress,
+      Info.PackStreams[Info.Folders[FolderIndex].PackStreamIndex], Destination, DecodeOptions, Progress,
       ConsumedBytes, ProducedBytes);
     Source.Position := Info.ArchiveEndPosition;
     Exit;
   end;
 
-  TempFolder := TMemoryStream.Create;
+  OutputMemory := 0;
+  if Options.MemoryLimit <> 0 then
+    OutputMemory := SevenZipOwnedOutputMemory(Info.Folders[FolderIndex].UnpackSize);
+  DecodeOptions := SevenZipDataOptions(Options, CheckedMemoryAdd(OwnedMemory, OutputMemory),
+    Info.Folders[FolderIndex], Info.PackStreams[Info.Folders[FolderIndex].PackStreamIndex]);
+  TempFolder := CreateSevenZipFolderOutput(Info.Folders[FolderIndex].UnpackSize, Options.MemoryLimit <> 0);
   try
     DecodeSevenZipFolderToStream(Source, ArchiveStart, Info.Folders[FolderIndex],
-      Info.PackStreams[Info.Folders[FolderIndex].PackStreamIndex], TempFolder, Options, Progress,
-      ConsumedBytes, ProducedBytes);
+      Info.PackStreams[Info.Folders[FolderIndex].PackStreamIndex], TempFolder, DecodeOptions, Progress,
+      ConsumedBytes, ProducedBytes, Options.MemoryLimit <> 0);
     TempFolder.Position := Int64(Info.SubStreams[SubStreamIndex].OffsetInFolder);
     Remaining := Info.SubStreams[SubStreamIndex].Size;
     Crc := CRC_INIT_VAL;
@@ -2125,12 +2473,20 @@ begin
 end;
 
 class function TLzma7z.List(Source: TStream): TArray<TLzma7zEntry>;
+begin
+  Result := List(Source, Default(TLzma2Options));
+end;
+
+class function TLzma7z.List(Source: TStream; const Options: TLzma2Options): TArray<TLzma7zEntry>;
 var
   ArchiveStart: Int64;
   Info: TSevenZipArchiveInfo;
   I: Integer;
 begin
-  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart);
+  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart, Options.MemoryLimit);
+  if Options.MemoryLimit <> 0 then
+    ValidateMemoryLimit(CheckedMemoryAdd(SevenZipInfoMemory(Info),
+      CheckedMemoryMultiply(UInt64(Length(Info.Files)), SizeOf(TLzma7zEntry))), Options.MemoryLimit);
   SetLength(Result, Length(Info.Files));
   for I := 0 to High(Info.Files) do
     Result[I] := Info.Files[I].Entry;
@@ -2143,6 +2499,8 @@ var
   ArchiveStart: Int64;
   Info: TSevenZipArchiveInfo;
   FolderCache: TArray<TMemoryStream>;
+  OwnedMetadata, LiveFolderMemory: UInt64;
+  LastSubStream: Boolean;
   I: Integer;
   SubStreamIndex: Integer;
   FolderIndex: Integer;
@@ -2156,13 +2514,23 @@ var
   ProducedBytes: UInt64;
 
   function DecodedFolder(const Index: Integer): TMemoryStream;
+  var
+    DecodeOptions: TLzma2Options;
+    ReservedMemory: UInt64;
   begin
     if FolderCache[Index] = nil then
     begin
-      FolderCache[Index] := TMemoryStream.Create;
+      ReservedMemory := 0;
+      if Options.MemoryLimit <> 0 then
+        ReservedMemory := SevenZipOwnedOutputMemory(Info.Folders[Index].UnpackSize);
+      DecodeOptions := SevenZipDataOptions(Options,
+        CheckedMemoryAdd(OwnedMetadata, CheckedMemoryAdd(LiveFolderMemory, ReservedMemory)),
+        Info.Folders[Index], Info.PackStreams[Info.Folders[Index].PackStreamIndex]);
+      FolderCache[Index] := CreateSevenZipFolderOutput(Info.Folders[Index].UnpackSize, Options.MemoryLimit <> 0);
+      LiveFolderMemory := CheckedMemoryAdd(LiveFolderMemory, ReservedMemory);
       DecodeSevenZipFolderToStream(Source, ArchiveStart, Info.Folders[Index],
-        Info.PackStreams[Info.Folders[Index].PackStreamIndex], FolderCache[Index], Options, Progress,
-        ConsumedBytes, ProducedBytes);
+        Info.PackStreams[Info.Folders[Index].PackStreamIndex], FolderCache[Index], DecodeOptions, Progress,
+        ConsumedBytes, ProducedBytes, Options.MemoryLimit <> 0);
     end;
     Result := FolderCache[Index];
   end;
@@ -2173,7 +2541,15 @@ begin
   if not Assigned(OpenEntry) then
     RaiseLzmaError(SZ_ERROR_PARAM, '7z extract callback is nil');
 
-  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart);
+  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart, Options.MemoryLimit);
+  OwnedMetadata := 0;
+  LiveFolderMemory := 0;
+  if Options.MemoryLimit <> 0 then
+  begin
+    OwnedMetadata := CheckedMemoryAdd(SevenZipInfoMemory(Info),
+      CheckedMemoryMultiply(UInt64(Length(Info.Folders)), SizeOf(TMemoryStream)));
+    ValidateMemoryLimit(OwnedMetadata, Options.MemoryLimit);
+  end;
   SetLength(FolderCache, Length(Info.Folders));
   try
     for I := 0 to High(Info.Files) do
@@ -2204,6 +2580,16 @@ begin
       if Info.SubStreams[SubStreamIndex].HasCrc and
         ((Crc xor CRC_INIT_VAL) <> Info.SubStreams[SubStreamIndex].Crc) then
         RaiseLzmaError(SZ_ERROR_CRC, '7z file CRC mismatch');
+      // File streams map monotonically to contiguous per-folder substreams.
+      LastSubStream := SubStreamIndex = High(Info.SubStreams);
+      if not LastSubStream then
+        LastSubStream := Info.SubStreams[SubStreamIndex + 1].FolderIndex <> FolderIndex;
+      if LastSubStream then
+      begin
+        if Options.MemoryLimit <> 0 then
+          Dec(LiveFolderMemory, SevenZipOwnedOutputMemory(Info.Folders[FolderIndex].UnpackSize));
+        FreeAndNil(FolderCache[FolderIndex]);
+      end;
     end;
   finally
     for I := 0 to High(FolderCache) do
@@ -2213,11 +2599,16 @@ begin
 end;
 
 class function TLzma7z.ReadSingleFileName(Source: TStream): string;
+begin
+  Result := ReadSingleFileName(Source, Default(TLzma2Options));
+end;
+
+class function TLzma7z.ReadSingleFileName(Source: TStream; const Options: TLzma2Options): string;
 var
   ArchiveStart: Int64;
   Info: TSevenZipArchiveInfo;
 begin
-  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart);
+  Info := ReadSevenZipArchiveInfo(Source, ArchiveStart, Options.MemoryLimit);
   if (Length(Info.Files) <> 1) or Info.Files[0].Entry.IsDirectory then
     RaiseLzmaError(SZ_ERROR_UNSUPPORTED, '7z archive does not contain exactly one file entry');
   Result := Info.Files[0].Entry.FileName;

@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <ProjectGuid>{2F3C1C14-3C80-4381-A773-593E18B9699E}</ProjectGuid>
     <ProjectVersion>22.0</ProjectVersion>
@@ -14,8 +14,24 @@
   <PropertyGroup Condition="'$(Base)'!=''">
     <DCC_Namespace>System;System.Win;Winapi;Vcl;$(DCC_Namespace)</DCC_Namespace>
     <DCC_UnitSearchPath>..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
-    <DCC_UsePackage>rtl;vcl;$(DCC_UsePackage)</DCC_UsePackage>
-    <Custom_Styles>&quot;Windows Modern Dark|VCLSTYLE|$(BDSCOMMONDIR)\Styles\WindowsModernDark.vsf&quot;</Custom_Styles>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Config)'=='Debug'">
+    <DCC_Optimize>false</DCC_Optimize>
+    <DCC_DebugInformation>1</DCC_DebugInformation>
+    <DCC_LocalDebugSymbols>true</DCC_LocalDebugSymbols>
+    <DCC_GenerateStackFrames>true</DCC_GenerateStackFrames>
+    <DCC_RangeChecking>true</DCC_RangeChecking>
+    <DCC_AssertionsAtRuntime>true</DCC_AssertionsAtRuntime>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Config)'=='Release'">
+    <DCC_Optimize>true</DCC_Optimize>
+    <DCC_DebugInformation>0</DCC_DebugInformation>
+    <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
+    <DCC_GenerateStackFrames>false</DCC_GenerateStackFrames>
+    <DCC_RangeChecking>false</DCC_RangeChecking>
+    <DCC_OverflowChecking>false</DCC_OverflowChecking>
+    <DCC_AssertionsAtRuntime>true</DCC_AssertionsAtRuntime>
+    <DCC_Define>LZMA_MF_NATIVE_COMPACT_COLLECT;$(DCC_Define)</DCC_Define>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Cfg_1)'!=''">
     <CfgParent>Base</CfgParent>
@@ -35,6 +51,13 @@
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
     <DCCReference Include="Lzma2GUIMain.pas"/>
+    <DCCReference Include="Lzma2GuiCatalog.pas"/>
+    <DCCReference Include="Lzma2GuiSettings.pas"/>
+    <DCCReference Include="Lzma2LanguagePicker.pas"/>
+    <DCCReference Include="Lzma2GuiResources.pas"/>
+    <DCCReference Include="Lzma2Benchmark.pas"/>
+    <None Include="Lzma2BenchmarkBuild.inc"/>
+    <None Include="Lzma2BenchmarkMethods.inc"/>
     <DCCReference Include="..\src\Lzma.Api.pas"/>
     <DCCReference Include="..\src\Lzma.Types.pas"/>
     <DCCReference Include="..\src\Lzma.Errors.pas"/>

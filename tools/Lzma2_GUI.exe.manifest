@@ -1,7 +1,7 @@
-﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
-  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="Lzma2Delphi.Lzma2_GUI" type="win32"/>
-  <description>LZMA2 GUI</description>
+  <assemblyIdentity version="26.6.0.0" processorArchitecture="*" name="Lzma2Delphi.Lzma2_GUI" type="win32"/>
+  <description>LZMA2 Delphi</description>
   <asmv3:application>
     <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
       <dpiAware>True/PM</dpiAware>

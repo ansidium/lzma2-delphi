@@ -16,6 +16,9 @@ param(
   [string]$ApprovedWarningsPath = $env:LZMA_APPROVED_WARNINGS
 )
 
+$script:RunCiScriptPath = $PSCommandPath
+$script:RunCiBoundParameters = @{} + $PSBoundParameters
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
@@ -79,18 +82,37 @@ function Join-CommandLine([string]$Command, [object[]]$Arguments) {
   }) -join ' '
 }
 
+function Get-ScriptInvocationCommandLine([string]$ScriptPath, [System.Collections.IDictionary]$BoundParameters) {
+  $parts = @("& '" + ($ScriptPath -replace "'", "''") + "'")
+  foreach ($parameter in $BoundParameters.GetEnumerator()) {
+    $name = '-' + [string]$parameter.Key
+    $value = $parameter.Value
+    if ($value -is [bool] -or $value -is [System.Management.Automation.SwitchParameter]) {
+      $literal = if ([bool]$value) { '$true' } else { '$false' }
+      $parts += "${name}:$literal"
+    } elseif ($value -is [int]) {
+      $parts += Join-CommandLine $name @($value.ToString([Globalization.CultureInfo]::InvariantCulture))
+    } else {
+      $parts += $name + " '" + ([string]$value -replace "'", "''") + "'"
+    }
+  }
+  return $parts -join ' '
+}
+
+$script:RunCiCommandLine = Get-ScriptInvocationCommandLine $script:RunCiScriptPath $script:RunCiBoundParameters
+
 function Get-DUnitXCategoryArgs([string]$CiMode) {
   switch ($CiMode) {
     'inner' {
       return @(
         '--include:unit',
-        '--exclude:container,compat,perf-smoke,perf-release,soak,fuzz'
+        '--exclude:container,compat,perf_smoke,perf_release,soak,fuzz'
       )
     }
     'quick' {
       return @(
-        '--include:unit,container,compat,perf-smoke',
-        '--exclude:perf-release,soak,fuzz'
+        '--include:unit,container,compat,perf_smoke',
+        '--exclude:perf_release,soak,fuzz'
       )
     }
     'release' {
@@ -578,7 +600,8 @@ function Write-CiArtifactsManifest {
       }
     }
     commands = [ordered]@{
-      runCi = [Environment]::CommandLine
+      runCi = $script:RunCiCommandLine
+      runCiProcess = [Environment]::CommandLine
       runPerformance = $script:RunPerformanceCommandLine
     }
     tools = [ordered]@{
@@ -691,10 +714,15 @@ Invoke-CompilerChecked {
 } 'Compile DUnitX tests'
 
 Invoke-Checked {
-  $dunitxArgs = @(Get-DUnitXCategoryArgs $Mode)
-  & (Join-Path $testBin 'Lzma.Tests.exe') @dunitxArgs 2>&1 | Tee-Object -FilePath $dunitxConsolePath
-  $testExitCode = $LASTEXITCODE
-  $global:LASTEXITCODE = $testExitCode
+  Push-Location -LiteralPath $root
+  try {
+    $dunitxArgs = @(Get-DUnitXCategoryArgs $Mode)
+    & (Join-Path $testBin 'Lzma.Tests.exe') @dunitxArgs 2>&1 | Tee-Object -FilePath $dunitxConsolePath
+    $testExitCode = $LASTEXITCODE
+    $global:LASTEXITCODE = $testExitCode
+  } finally {
+    Pop-Location
+  }
 } 'Run DUnitX tests'
 Write-MemoryReport $dunitxConsolePath
 
@@ -742,6 +770,32 @@ foreach ($config in @('Debug', 'Release')) {
 Invoke-CompilerCheckedParallel $msBuilds 'MSBuild Lzma2 CLI/VCL Debug/Release Win64'
 
 Write-CompilerWarningsReport
+
+$configurationSmokeDir = Join-Path $root 'build\configuration-smoke'
+Clear-OwnedDirectory $configurationSmokeDir
+$configurationInput = Join-Path $configurationSmokeDir 'input.bin'
+$configurationBytes = New-Object byte[] 131072
+for ($index = 0; $index -lt $configurationBytes.Length; $index++) {
+  $configurationBytes[$index] = [byte](($index * 17 + $index / 19) -band 255)
+}
+[IO.File]::WriteAllBytes($configurationInput, $configurationBytes)
+$configurationInputHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $configurationInput).Hash
+foreach ($config in @('Debug', 'Release')) {
+  $configurationCli = Join-Path $toolBin ("msbuild\$config\lzma2-cli\Lzma2.exe")
+  foreach ($container in @('lzma2', 'lzma', 'xz', '7z')) {
+    $configurationArchive = Join-Path $configurationSmokeDir ("$config.$container")
+    $configurationOutput = $configurationArchive + '.out'
+    Invoke-Checked {
+      & $configurationCli compress $configurationInput $configurationArchive $container 1 1048576 2 crc64
+    } "$config $container encode runtime smoke"
+    Invoke-Checked {
+      & $configurationCli decompress $configurationArchive $configurationOutput $container
+    } "$config $container decode runtime smoke"
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $configurationOutput).Hash -ne $configurationInputHash) {
+      throw "$config $container runtime smoke produced different bytes."
+    }
+  }
+}
 
 if ($SevenZip) {
   Invoke-Checked {
