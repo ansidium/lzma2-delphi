@@ -325,7 +325,9 @@ function Invoke-CompilerCheckedParallel([object[]]$Builds, [string]$Name) {
 function Write-CompilerWarningsReport {
   New-Item -ItemType Directory -Force -Path $ciDir | Out-Null
   $warningLines = @($script:CompilerMessageLines | Where-Object {
-    $_ -match '(?i)\bwarning\b' -or $_ -match '\bW\d{4}\b'
+    # MSBuild labels Delphi H-codes as "Hint warning"; the compiler still classifies them as hints.
+    ($_ -match '\bW\d{4}\b') -or
+    (($_ -match '\bwarning\b') -and ($_ -notmatch '\bHint warning H\d{4}\s*:'))
   })
   $deprecatedLines = @($script:CompilerMessageLines | Where-Object {
     $_ -match '(?i)\bdeprecated\b'
