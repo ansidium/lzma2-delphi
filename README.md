@@ -1,6 +1,6 @@
 # LZMA2 Delphi
 
-A pure Delphi port of [LZMA SDK 26.06](https://www.7-zip.org/sdk.html) for Windows x86 and x64. Use the `TLzma2` stream API in a Delphi project, or run the command-line tool and VCL application from [GitHub Releases](https://github.com/ansidium/lzma2-delphi/releases).
+A pure Delphi port of [LZMA SDK 26.06](https://github.com/ip7z/7zip/releases/tag/26.06) for Windows x86 and x64. Use the `TLzma2` stream API in a Delphi project, or run the command-line tool and VCL application from [GitHub Releases](https://github.com/ansidium/lzma2-delphi/releases).
 
 | Format | Support |
 | --- | --- |
@@ -14,6 +14,8 @@ The 7z reader supports a subset of the 7z format. See [format limits](docs/relea
 ## Windows tools
 
 Unzip the package for your architecture. `Lzma2_GUI.exe` opens the compression, extraction, and benchmark interface. `Lzma2.exe` runs from a terminal.
+
+![LZMA2 Delphi ready to compress a sample file into a 7z archive on Windows](assets/screenshots/compression.png)
 
 ```powershell
 .\Lzma2.exe a data.xz data.bin -txz -mx=1 -mmt=4 -mcheck=crc64

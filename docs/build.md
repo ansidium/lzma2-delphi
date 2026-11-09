@@ -2,7 +2,7 @@
 
 Use Windows with Delphi 13.2 (RAD Studio 37.0), the Win32 and Win64 target platforms, VCL, and PowerShell 5.1 or newer.
 
-From the repository root, run:
+Run both commands from the repository root.
 
 ```powershell
 .\build.ps1 -Platform Win64 -OutputRoot .\build\win64
