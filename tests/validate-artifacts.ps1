@@ -569,6 +569,10 @@ function Assert-NativeRuntimeSource {
     [pscustomobject]@{ Pattern = '(?<![\w.-])(?:cmd|powershell|7z|7zr|xz|lzma|tar)\.exe(?![\w.-])'; Description = 'runtime external executable reference' },
     [pscustomobject]@{ Pattern = '\b(?:WScript\.Shell|Shell\.Application)\b'; Description = 'runtime COM shell automation' }
   )
+  $systemCalls = @{
+    'src/Lzma.Sdk.Threads26.pas' = '\bWinapi\.Windows\.GetProcAddress\(\s*Winapi\.Windows\.GetModuleHandle\(''kernel32\.dll''\), ''SetThreadGroupAffinity''\)'
+    'tools/Lzma2MtCodecQA.dpr' = '\bexternal ''kernel32\.dll'' name ''OpenThread'';'
+  }
   foreach ($sourceFile in $sourceFiles) {
     $text = Get-Content -LiteralPath $sourceFile.FullName -Raw
     foreach ($directivePattern in $directivePatterns) {
@@ -579,7 +583,24 @@ function Assert-NativeRuntimeSource {
       }
     }
 
-    $semanticText = Remove-DelphiCommentsAndStrings $text
+    $relativePath = Get-RepoRelativePath $sourceFile.FullName
+    $referenceText = Remove-DelphiCommentsPreserveStrings $text
+    $semanticText = Remove-DelphiCommentsAndStrings $referenceText
+    $systemCall = $systemCalls[$relativePath]
+    if ($relativePath -eq 'tools/Lzma2GUIMain.pas' -and
+        $referenceText -match '\bfunction GuiProjectUrl: string;\s*begin Result:=GuiApplicationValue\(''repository''\);end;') {
+      $catalog = Get-Content -LiteralPath (Join-Path $root 'assets\gui.json') -Raw | ConvertFrom-Json
+      if ($catalog.application.repository -match '\Ahttps://github\.com/[\w.-]+/[\w.-]+\z') {
+        $systemCall = '\bprocedure TMainForm\.OpenProjectPage\(Sender: TObject\);\s*begin\s*ShellExecute\(Handle,''open'',PChar\(GuiProjectUrl\),nil,nil,SW_SHOWNORMAL\);\s*end;'
+      }
+    }
+    if ($systemCall) {
+      # Mask only the audited Windows integration calls and preserve diagnostic line numbers.
+      foreach ($allowed in [regex]::Matches($referenceText, $systemCall)) {
+        $semanticText = $semanticText.Remove($allowed.Index, $allowed.Length).Insert(
+          $allowed.Index, ($allowed.Value -replace '[^\r\n]', ' '))
+      }
+    }
     foreach ($runtimeCallPattern in $runtimeCallPatterns) {
       $match = [regex]::Match($semanticText, $runtimeCallPattern.Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
       if ($match.Success) {
@@ -588,7 +609,6 @@ function Assert-NativeRuntimeSource {
       }
     }
 
-    $referenceText = Remove-DelphiCommentsPreserveStrings $text
     foreach ($runtimeReferencePattern in $runtimeReferencePatterns) {
       $match = [regex]::Match($referenceText, $runtimeReferencePattern.Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
       if ($match.Success) {
@@ -600,10 +620,7 @@ function Assert-NativeRuntimeSource {
 
   $projectSourceDir = $toolsSourceDir
   if (Test-Path -LiteralPath $projectSourceDir) {
-    $projectExtensions = @('.dproj', '.dpr', '.pas')
-    $projectFiles = @(Get-ChildItem -LiteralPath $projectSourceDir -Recurse -File | Where-Object {
-      $projectExtensions -contains $_.Extension.ToLowerInvariant()
-    })
+    $projectFiles = @(Get-ChildItem -LiteralPath $projectSourceDir -Recurse -File -Filter '*.dproj')
     $projectPatterns = @(
       [pscustomobject]@{
         Pattern = '\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|obj|o|lib|a|dll|so|dylib)(?=[''"<>\s;/\\])'
@@ -629,16 +646,6 @@ function Assert-NativeRuntimeSource {
         if ($match.Success) {
           $lineNumber = Get-LineNumber $text $match.Index
           throw "forbidden runtime dependency in $(Get-RepoRelativePath $projectFile.FullName):$lineNumber ($($runtimeReferencePattern.Description))"
-        }
-      }
-      if ($projectFile.Extension.ToLowerInvariant() -in @('.dpr', '.pas')) {
-        $semanticText = Remove-DelphiCommentsAndStrings $text
-        foreach ($runtimeCallPattern in $runtimeCallPatterns) {
-          $match = [regex]::Match($semanticText, $runtimeCallPattern.Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-          if ($match.Success) {
-            $lineNumber = Get-LineNumber $text $match.Index
-            throw "forbidden runtime dependency in $(Get-RepoRelativePath $projectFile.FullName):$lineNumber ($($runtimeCallPattern.Description))"
-          }
         }
       }
     }

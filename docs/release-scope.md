@@ -15,3 +15,4 @@ Each Windows package contains `Lzma2.exe`, `Lzma2_GUI.exe`, and the license noti
 The 26.06 codec checks compared 43,168 cases with the upstream C SDK across Win32 and Win64. They covered single and multithreaded builds, 16- and 32-bit probabilities, and checked and release builds. The comparison covered the tested API behavior and output bytes. Benchmark parity is a separate measurement.
 
 The `quick` tier does not run `tests/run-performance.ps1`. See [release acceptance](release-acceptance.md) for the benchmark tiers.
+Validation checks the absence of `lzma2-delphi-graph.*` in release artifacts.
